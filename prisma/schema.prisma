@@ -1,0 +1,113 @@
+// PolicyManager Prisma schema.
+// RULE (AGENTS.md §3): every model MUST declare @@schema("policytracker").
+// No PolicyManager business objects in `public`.
+// Models are added per phase as vertical slices — not one big dump.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["policytracker"]
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 — Auth & RBAC
+// ---------------------------------------------------------------------------
+
+enum UserStatus {
+  active
+  disabled
+
+  @@schema("policytracker")
+}
+
+model User {
+  id           String        @id @default(uuid())
+  email        String        @unique
+  name         String
+  title        String?
+  passwordHash String?
+  status       UserStatus    @default(active)
+  mfaSecret    String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  roles        UserRole[]
+  identities   UserIdentity[]
+
+  @@schema("policytracker")
+}
+
+model UserIdentity {
+  id        String   @id @default(uuid())
+  userId    String
+  provider  String // local | azure | google | okta | cognito ...
+  subject   String
+  email     String?
+  linkedAt  DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, subject])
+  @@schema("policytracker")
+}
+
+model Role {
+  id          String           @id @default(uuid())
+  name        String           @unique
+  description String?
+  isSystem    Boolean          @default(false)
+
+  users       UserRole[]
+  permissions RolePermission[]
+
+  @@schema("policytracker")
+}
+
+model Permission {
+  id          String           @id @default(uuid())
+  key         String           @unique // e.g. document.read
+  description String?
+
+  roles       RolePermission[]
+
+  @@schema("policytracker")
+}
+
+model UserRole {
+  userId String
+  roleId String
+
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@schema("policytracker")
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@schema("policytracker")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@schema("policytracker")
+}

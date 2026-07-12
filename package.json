@@ -1,0 +1,29 @@
+{
+  "name": "policymanager",
+  "private": true,
+  "version": "0.1.0",
+  "description": "PolicyManager — document management for a behavioral health clinic",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:e2e": "npm run test:e2e --workspaces --if-present",
+    "dev:api": "npm run start:dev --workspace @policymanager/api",
+    "dev:web": "npm run dev --workspace @policymanager/web",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:deploy": "prisma migrate deploy",
+    "db:seed": "npm run seed --workspace @policymanager/api"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "prisma": "^5.22.0"
+  }
+}
