@@ -89,6 +89,11 @@ export interface BulkReviewScheduleInput {
   nextReviewDate?: string | null;
 }
 
+export interface UpdateReviewScheduleInput {
+  reviewCadence: ReviewCadence;
+  nextReviewDate?: string | null;
+}
+
 export interface DownloadTicket {
   url: string;
   expiresIn: number;
@@ -138,6 +143,14 @@ export async function bulkUpdateReviewSchedule(
     '/documents/bulk-review-schedule',
     input,
   );
+  return data;
+}
+
+export async function updateReviewSchedule(
+  id: string,
+  input: UpdateReviewScheduleInput,
+): Promise<DocumentDetail> {
+  const { data } = await http.patch<DocumentDetail>(`/documents/${id}/review-schedule`, input);
   return data;
 }
 

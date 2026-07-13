@@ -269,6 +269,20 @@ describe('LibraryPage', () => {
     );
   });
 
+  it('shows bulk scheduling for review managers without document.write', async () => {
+    mockHasPermission.mockImplementation(
+      (key: string) => key === 'document.read' || key === 'review.manage',
+    );
+    mockListDocuments.mockResolvedValue(oneDoc());
+    renderLibrary();
+    await waitFor(() => expect(screen.getByText('Seclusion & Restraint Policy')).toBeInTheDocument());
+
+    expect(screen.getByLabelText('Bulk review cadence')).toBeInTheDocument();
+    expect(screen.getByLabelText('Select Seclusion & Restraint Policy')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'New document' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Archive' })).not.toBeInTheDocument();
+  });
+
   it('applies a review schedule to the current filtered result set', async () => {
     mockHasPermission.mockReturnValue(true);
     mockListDocuments.mockResolvedValue(oneDoc());

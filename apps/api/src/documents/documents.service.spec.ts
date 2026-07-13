@@ -964,7 +964,63 @@ describe('DocumentsService.update', () => {
 });
 
 describe('DocumentsService.bulkUpdateReviewSchedule', () => {
-  it('updates selected documents only after edit access is validated for all targets', async () => {
+  it('updates one document through the review-schedule path with view access', async () => {
+    const { svc, prisma, access, audit } = build();
+    prisma.document.findFirst
+      .mockResolvedValueOnce(accessDoc())
+      .mockResolvedValueOnce(fullDocRow({ reviewCadence: 'quarterly' }));
+    prisma.document.update.mockResolvedValue({});
+
+    const result = await svc.updateReviewSchedule(
+      'doc-1',
+      { reviewCadence: 'quarterly', nextReviewDate: '2026-10-01' },
+      actor,
+      reqCtx,
+    );
+
+    expect(access.canAccess).toHaveBeenCalledWith(actor, accessDoc(), 'view');
+    expect(prisma.document.update).toHaveBeenCalledWith({
+      where: { id: 'doc-1' },
+      data: {
+        reviewCadence: 'quarterly',
+        nextReviewDate: new Date('2026-10-01'),
+      },
+    });
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'document.updated',
+        documentId: 'doc-1',
+        metadata: expect.objectContaining({ reviewSchedule: true }),
+      }),
+    );
+    expect(result.reviewCadence).toBe('quarterly');
+  });
+
+  it('denies one-document review scheduling when the document is out of scope', async () => {
+    const { svc, prisma, access, audit } = build();
+    prisma.document.findFirst.mockResolvedValue(accessDoc({ accessLevel: 'confidential' }));
+    access.canAccess.mockResolvedValue(false);
+
+    await expect(
+      svc.updateReviewSchedule(
+        'doc-1',
+        { reviewCadence: 'quarterly', nextReviewDate: '2026-10-01' },
+        actor,
+        reqCtx,
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+
+    expect(prisma.document.update).not.toHaveBeenCalled();
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'access.denied',
+        documentId: 'doc-1',
+        metadata: expect.objectContaining({ attemptedAction: 'review.schedule' }),
+      }),
+    );
+  });
+
+  it('updates selected documents only after review-schedule access is validated for all targets', async () => {
     const { svc, prisma, access, audit } = build();
     prisma.document.findMany.mockResolvedValue([
       accessDoc({ id: 'doc-1' }),
@@ -982,8 +1038,8 @@ describe('DocumentsService.bulkUpdateReviewSchedule', () => {
       reqCtx,
     );
 
-    expect(access.canAccess).toHaveBeenCalledWith(actor, accessDoc({ id: 'doc-1' }), 'edit');
-    expect(access.canAccess).toHaveBeenCalledWith(actor, accessDoc({ id: 'doc-2' }), 'edit');
+    expect(access.canAccess).toHaveBeenCalledWith(actor, accessDoc({ id: 'doc-1' }), 'view');
+    expect(access.canAccess).toHaveBeenCalledWith(actor, accessDoc({ id: 'doc-2' }), 'view');
     const updateArg = prisma.document.updateMany.mock.calls[0][0];
     expect(updateArg.where).toEqual({ id: { in: ['doc-1', 'doc-2'] }, deletedAt: null });
     expect(updateArg.data.reviewCadence).toBe('quarterly');
@@ -1055,7 +1111,7 @@ describe('DocumentsService.bulkUpdateReviewSchedule', () => {
     expect(prisma.document.updateMany).not.toHaveBeenCalled();
   });
 
-  it('does not partially update when a selected target fails edit authorization', async () => {
+  it('does not partially update when a selected target fails schedule authorization', async () => {
     const { svc, prisma, access, audit } = build();
     prisma.document.findMany.mockResolvedValue([
       accessDoc({ id: 'doc-1' }),

@@ -29,7 +29,10 @@ import { buildDocumentListQuery, type ListDocumentsQuery } from './document-quer
 import type { CreateDocumentDto } from './dto/create-document.dto';
 import type { CreateVersionDto } from './dto/create-version.dto';
 import type { UpdateDocumentDto } from './dto/update-document.dto';
-import type { BulkReviewScheduleDto } from './dto/bulk-review-schedule.dto';
+import type {
+  BulkReviewScheduleDto,
+  UpdateReviewScheduleDto,
+} from './dto/bulk-review-schedule.dto';
 import {
   OnlyOfficeService,
   callbackWantsSave,
@@ -358,9 +361,37 @@ export class DocumentsService {
     return this.loadDetail(id);
   }
 
+  /** Review-management-only schedule update for the document detail Review Schedule card. */
+  async updateReviewSchedule(
+    id: string,
+    dto: UpdateReviewScheduleDto,
+    user: AuthUser,
+    ctx: RequestContext = {},
+  ): Promise<DocumentDetail> {
+    const doc = await this.loadAccessDoc(id);
+    await this.enforceReviewScheduleAccess(user, doc, ctx);
+    const schedule = this.reviewSchedulePatch(dto.reviewCadence, dto.nextReviewDate);
+
+    await this.prisma.document.update({ where: { id }, data: schedule });
+    await this.audit.record({
+      action: AUDIT_ACTIONS.DOCUMENT_UPDATED,
+      actorUserId: user.id,
+      documentId: id,
+      targetType: 'document',
+      ...ctx,
+      metadata: {
+        fields: ['reviewCadence', 'nextReviewDate'],
+        reviewSchedule: true,
+        reviewCadence: dto.reviewCadence,
+        nextReviewDate: schedule.nextReviewDate ? schedule.nextReviewDate.toISOString() : null,
+      },
+    });
+    return this.loadDetail(id);
+  }
+
   /**
    * Applies one review schedule to either explicit library selections or every
-   * active document matching the current filters. Each target is edit-authorized
+   * active document matching the current filters. Each target is schedule-authorized
    * before any row is updated, preventing partial bulk changes on mixed-access
    * selections.
    */
@@ -1182,9 +1213,7 @@ export class DocumentsService {
       );
     }
 
-    for (const target of targets) {
-      await this.enforce(user, target, 'edit', ctx);
-    }
+    for (const target of targets) await this.enforceReviewScheduleAccess(user, target, ctx);
     return targets;
   }
 
@@ -1246,6 +1275,28 @@ export class DocumentsService {
       targetType: 'document',
       ...ctx,
       metadata: { attemptedAction: action, accessLevel: doc.accessLevel },
+    });
+    throw new ForbiddenException('You do not have access to this document');
+  }
+
+  /**
+   * Review scheduling is a review.manage workflow, not a full document-write
+   * workflow. Still require the caller to be in scope for the document so a review
+   * manager cannot schedule confidential documents they cannot see.
+   */
+  private async enforceReviewScheduleAccess(
+    user: AuthUser,
+    doc: AccessDocument,
+    ctx: RequestContext,
+  ): Promise<void> {
+    if (await this.access.canAccess(user, doc, 'view')) return;
+    await this.audit.record({
+      action: AUDIT_ACTIONS.ACCESS_DENIED,
+      actorUserId: user.id,
+      documentId: doc.id,
+      targetType: 'document',
+      ...ctx,
+      metadata: { attemptedAction: 'review.schedule', accessLevel: doc.accessLevel },
     });
     throw new ForbiddenException('You do not have access to this document');
   }

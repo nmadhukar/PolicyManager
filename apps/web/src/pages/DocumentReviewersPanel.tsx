@@ -2,7 +2,7 @@ import { FormEvent, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AxiosError } from 'axios';
 import { REVIEW_CADENCES, type DocumentDetail, type ReviewCadence } from '@policymanager/shared';
-import { updateDocument } from '../api/documents';
+import { updateReviewSchedule } from '../api/documents';
 import { assignReviewer, listReviewers, removeReviewer } from '../api/reviews';
 import { listUsers } from '../api/users';
 import { apiErrorMessage } from '../lib/apiError';
@@ -16,10 +16,8 @@ import { useToast } from '../ui/Toast';
  */
 export function DocumentReviewersPanel({
   doc,
-  canWrite,
 }: {
   doc: DocumentDetail;
-  canWrite: boolean;
 }) {
   const queryClient = useQueryClient();
   const [editingSchedule, setEditingSchedule] = useState(false);
@@ -38,7 +36,7 @@ export function DocumentReviewersPanel({
       <div>
         <div className="flex items-center justify-between gap-3">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-muted">Review schedule</h2>
-          {canWrite && (
+          {!forbidden && (
             <button
               type="button"
               className="text-xs font-medium text-brand-600 hover:underline"
@@ -115,7 +113,7 @@ function EditScheduleForm({ doc, onDone }: { doc: DocumentDetail; onDone: () => 
 
   const mutation = useMutation({
     mutationFn: () =>
-      updateDocument(doc.id, {
+      updateReviewSchedule(doc.id, {
         reviewCadence,
         nextReviewDate: reviewCadence === 'none' ? null : nextReviewDate,
       }),

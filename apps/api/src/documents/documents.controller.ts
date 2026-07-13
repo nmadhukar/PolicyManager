@@ -35,7 +35,7 @@ import { CreateHtmlVersionDto } from './dto/create-html-version.dto';
 import { CreateVersionDto } from './dto/create-version.dto';
 import { ListDocumentsQueryDto } from './dto/list-documents-query.dto';
 import { UpdateDocumentDto } from './dto/update-document.dto';
-import { BulkReviewScheduleDto } from './dto/bulk-review-schedule.dto';
+import { BulkReviewScheduleDto, UpdateReviewScheduleDto } from './dto/bulk-review-schedule.dto';
 
 /** Upload guardrail: reject files above this size before buffering to S3. */
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MB
@@ -116,7 +116,7 @@ export class DocumentsController {
 
   @Post('bulk-review-schedule')
   @HttpCode(200)
-  @RequirePermission(PERMISSIONS.DOCUMENT_WRITE)
+  @RequirePermission(PERMISSIONS.REVIEW_MANAGE)
   @ApiOperation({
     summary: 'Apply one review cadence and next-review date to selected or filtered documents.',
   })
@@ -126,6 +126,18 @@ export class DocumentsController {
     @ReqContext() ctx: RequestContext,
   ) {
     return this.documents.bulkUpdateReviewSchedule(dto, user, ctx);
+  }
+
+  @Patch(':id/review-schedule')
+  @RequirePermission(PERMISSIONS.REVIEW_MANAGE)
+  @ApiOperation({ summary: 'Update one document review cadence and next-review date.' })
+  updateReviewSchedule(
+    @Param('id') id: string,
+    @Body() dto: UpdateReviewScheduleDto,
+    @CurrentUser() user: AuthUser,
+    @ReqContext() ctx: RequestContext,
+  ) {
+    return this.documents.updateReviewSchedule(id, dto, user, ctx);
   }
 
   @Patch(':id')

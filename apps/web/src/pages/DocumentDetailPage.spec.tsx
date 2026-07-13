@@ -11,6 +11,7 @@ const mockUnarchive = vi.fn();
 const mockSoftDelete = vi.fn();
 const mockRestoreVersion = vi.fn();
 const mockUpdateDocument = vi.fn();
+const mockUpdateReviewSchedule = vi.fn();
 const mockNavigate = vi.fn();
 
 vi.mock('../auth/AuthContext', () => ({
@@ -44,6 +45,7 @@ vi.mock('../api/documents', () => ({
   regenerateRendition: vi.fn(),
   getDownloadUrl: vi.fn(),
   updateDocument: (...args: unknown[]) => mockUpdateDocument(...args),
+  updateReviewSchedule: (...args: unknown[]) => mockUpdateReviewSchedule(...args),
   uploadVersion: vi.fn(),
   UPLOAD_ACCEPT: '.pdf,.docx',
 }));
@@ -156,6 +158,7 @@ describe('DocumentDetailPage', () => {
     mockSoftDelete.mockReset().mockResolvedValue({});
     mockRestoreVersion.mockReset().mockResolvedValue({});
     mockUpdateDocument.mockReset().mockResolvedValue({});
+    mockUpdateReviewSchedule.mockReset().mockResolvedValue({});
     mockNavigate.mockReset();
   });
 
@@ -226,12 +229,15 @@ describe('DocumentDetailPage', () => {
     expect(screen.queryByRole('button', { name: 'Restore' })).not.toBeInTheDocument();
   });
 
-  it('updates the review schedule from the Review Schedule panel', async () => {
-    mockHasPermission.mockReturnValue(true);
+  it('updates the review schedule for a review manager without document.write', async () => {
+    mockHasPermission.mockImplementation(
+      (key: string) => key === 'document.read' || key === 'review.manage',
+    );
     mockGetDocument.mockResolvedValue(detail({ reviewCadence: 'none', nextReviewDate: null }));
     renderDetail();
     await waitFor(() => expect(screen.getByText('Review schedule')).toBeInTheDocument());
 
+    expect(screen.queryByRole('button', { name: 'Archive' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Edit schedule' }));
     fireEvent.change(screen.getByLabelText('Cadence'), { target: { value: 'quarterly' } });
     fireEvent.change(screen.getByLabelText('Next review date'), {
@@ -240,7 +246,7 @@ describe('DocumentDetailPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save schedule' }));
 
     await waitFor(() =>
-      expect(mockUpdateDocument).toHaveBeenCalledWith('doc-1', {
+      expect(mockUpdateReviewSchedule).toHaveBeenCalledWith('doc-1', {
         reviewCadence: 'quarterly',
         nextReviewDate: '2026-10-01',
       }),

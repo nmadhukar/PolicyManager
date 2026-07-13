@@ -75,11 +75,11 @@ Manual trigger: `POST /api/reviews/run-sweep` (review.manage; admin/test).
 
 ## Schedule setup & bulk scheduling
 
-Single-document schedule edits use the existing metadata update path:
-`PATCH /api/documents/:id` with `reviewCadence` and `nextReviewDate`.
+Single-document schedule edits use `PATCH /api/documents/:id/review-schedule`
+(`review.manage`) with `reviewCadence` and `nextReviewDate`.
 
 Bulk schedule edits use `POST /api/documents/bulk-review-schedule`
-(`document.write`). The request targets either:
+(`review.manage`). The request targets either:
 
 - `documentIds`: explicit row selections from the library table; or
 - `filters`: the current library filters, with paging/sorting/trash omitted.
@@ -116,8 +116,8 @@ date). `percentCurrent = round(current / total * 100)` (100 when there are no do
 
 | Route | Permission |
 | --- | --- |
-| `PATCH /api/documents/:id` schedule fields | `document.write` |
-| `POST /api/documents/bulk-review-schedule` | `document.write` |
+| `PATCH /api/documents/:id/review-schedule` | `review.manage` |
+| `POST /api/documents/bulk-review-schedule` | `review.manage` |
 | `GET/POST /api/documents/:id/reviewers`, `DELETE .../:userId` | `review.manage` |
 | `POST /api/reviews/run-sweep`, `GET /api/reviews/compliance-summary` | `review.manage` |
 | `GET /api/reviews`, `GET /api/reviews/tasks/:id`, `POST /api/reviews/:taskId/complete` | authenticated; **service scopes non-managers to their own tasks** |
@@ -140,8 +140,7 @@ Audit actions added: `review.assigned`, `review.task_created`, `review.completed
   (password write-only — shows set/not-set, never the value), a Send-Test-Email
   card, and the notification delivery log.
 - **Document detail** gains a Reviewers panel (`review.manage`) to assign/unassign
-  reviewers, show cadence + next review date, and edit the schedule when the
-  user also has `document.write`.
+  reviewers, show cadence + next review date, and edit the schedule.
 - **Library** gains row selection plus a bulk review scheduler. It can apply a
   cadence/date to selected rows or to every document matching the current filters
   (category, tag, owner, status, due state, and date bounds).

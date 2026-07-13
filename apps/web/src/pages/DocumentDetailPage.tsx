@@ -167,7 +167,7 @@ function Detail({ id }: { id: string }) {
           <DocumentSignoffPanel doc={doc} />
           {canManageReviews && <DocumentAcknowledgmentPanel doc={doc} />}
           {canWrite && <QuickTags doc={doc} />}
-          {canManageReviews && <DocumentReviewersPanel doc={doc} canWrite={canWrite} />}
+          {canManageReviews && <DocumentReviewersPanel doc={doc} />}
           {canWrite && <DocumentAclPanel doc={doc} />}
         </div>
       </div>

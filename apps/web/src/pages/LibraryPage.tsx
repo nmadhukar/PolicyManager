@@ -102,6 +102,7 @@ export function LibraryPage() {
 function Library() {
   const { hasPermission } = useAuth();
   const canWrite = hasPermission(PERMISSIONS.DOCUMENT_WRITE);
+  const canManageReviews = hasPermission(PERMISSIONS.REVIEW_MANAGE);
   const canManageUsers = hasPermission(PERMISSIONS.USER_MANAGE);
 
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
@@ -213,7 +214,7 @@ function Library() {
   const items = query.data?.items ?? [];
 
   const activeChips = buildActiveChips(filters, categoryOptions, ownerOptions);
-  const bulkSchedulingEnabled = canWrite && view !== 'trash';
+  const bulkSchedulingEnabled = canManageReviews && view !== 'trash';
   const toggleSelected = (id: string) => {
     setSelectedIds((current) => {
       const next = new Set(current);
