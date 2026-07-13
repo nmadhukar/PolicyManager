@@ -12,13 +12,14 @@ Edit Office documents (docx, xlsx, pptx) in the browser via a self-hosted OnlyOf
 ## Procedure
 
 1. Require `document.write` permission and document/category ACL before opening an editor session.
-2. Issue a short-lived, signed editor config so OnlyOffice loads the current version's source from a scoped URL (not a public bucket).
-3. On editor save, receive the OnlyOffice save callback and validate its authenticity (JWT-signed callback secret).
-4. Store the saved bytes as a NEW immutable `DocumentVersion` (increment version, new S3 object, new checksum) — never overwrite the prior version's bytes.
-5. Regenerate the PDF rendition for the new version (see `.ai/skills/document-rendition-viewer.md`).
-6. Write an audit event for the edit/version creation, capturing user, version, and timestamp.
-7. Re-open any pending staff acknowledgments against the new published version when applicable.
-8. Update developer docs and code comments for the callback contract, secrets, and version-on-save invariant.
+2. Issue a short-lived, signed editor config so OnlyOffice loads the current version's source from a scoped URL, not a public bucket.
+3. On editor save, receive the OnlyOffice save callback and validate its authenticity with the JWT-signed callback secret.
+4. Require the callback token to carry the editor user and re-check that user's live `document.write` plus document/category access before downloading edited bytes.
+5. Store the saved bytes as a NEW immutable `DocumentVersion`: increment version, new S3 object, new checksum, and never overwrite the prior version's bytes.
+6. Regenerate the PDF rendition for the new version. See `.ai/skills/document-rendition-viewer.md`.
+7. Write an audit event for the edit/version creation, capturing user, version, and timestamp.
+8. Re-open any pending staff acknowledgments against the new published version when applicable.
+9. Update developer docs and code comments for the callback contract, secrets, and version-on-save invariant.
 
 ## Required Companion Skills
 
@@ -28,4 +29,4 @@ Edit Office documents (docx, xlsx, pptx) in the browser via a self-hosted OnlyOf
 
 ## Notes
 
-- OnlyOffice Docs Community Edition caps concurrent editing connections (~20). Sufficient for a single clinic; note this limit in an ADR if broad multi-site concurrent editing is expected (Collabora or a paid tier is the escalation path).
+- OnlyOffice Docs Community Edition caps concurrent editing connections at roughly 20. Sufficient for a single clinic; note this limit in an ADR if broad multi-site concurrent editing is expected. Collabora or a paid tier is the escalation path.

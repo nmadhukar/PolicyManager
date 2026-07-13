@@ -63,9 +63,12 @@ Env-driven so one image serves MinIO (local) and AWS/S3-compatible storage
 `S3_SSE`, `S3_KMS_KEY_ID`, `S3_AUTO_CREATE`.
 
 - `onModuleInit`: when `S3_AUTO_CREATE=true`, `HeadBucket` → `CreateBucket` if
-  missing, then enable **bucket versioning**. Failures log a warning (non-fatal).
-  Production bucket/KMS/public-access changes stay gated behind explicit env
-  flags.
+  missing, then enable **bucket versioning** and apply a public-access block.
+  Failures log a warning (non-fatal). Production bucket/KMS/public-access changes
+  stay gated behind explicit env flags.
+- Development `minioadmin` credential defaults are allowed only for explicit local
+  endpoints (`localhost`, `127.*`, `host.docker.internal`). Private/VPC endpoints
+  must set `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` explicitly.
 - `buildDocumentKey`, `putObject` (returns `{ versionId }`), and
   `getPresignedDownloadUrl(key, ttl=300, fileName?)`.
 - The bucket is **never** made public. Bytes leave the system only through a

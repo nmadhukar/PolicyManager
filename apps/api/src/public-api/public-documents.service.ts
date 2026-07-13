@@ -177,7 +177,7 @@ export class PublicDocumentsService {
   ): Promise<ApiDownloadTicket> {
     const doc = await this.loadVisible(client, id, {
       currentVersion: {
-        select: { versionNumber: true, s3Key: true, fileName: true },
+        select: { versionNumber: true, s3Key: true, s3VersionId: true, fileName: true },
       },
     });
     const version = doc.currentVersion;
@@ -187,6 +187,7 @@ export class PublicDocumentsService {
       version.s3Key,
       DOWNLOAD_TTL_SECONDS,
       version.fileName,
+      version.s3VersionId ?? undefined,
     );
     await this.audit.record({
       action: AUDIT_ACTIONS.API_DOWNLOAD_ISSUED,

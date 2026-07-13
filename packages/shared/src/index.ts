@@ -475,7 +475,7 @@ export interface DocumentAnnotationListResponse {
   items: DocumentAnnotationItem[];
   /**
    * Server-calculated capability for the current user. This includes direct
-   * `document.comment`, reviewer assignment, or an open review task.
+   * `document.comment`, reviewer assignment, or an open review task for this version.
    */
   canAnnotate: boolean;
   /** Delete moderation is intentionally narrower than annotation rights. */
@@ -838,11 +838,10 @@ export interface CoverPageData {
 // ---------------------------------------------------------------------------
 
 /**
- * Scopes a public API client can hold. `documents:read` is the baseline (list +
- * metadata + versions + search); `content:read` additionally unlocks extracted
- * text; `download` unlocks short-lived presigned file downloads. Scopes are
- * additive and independent — a client may hold any subset — and, per AGENTS.md §8,
- * access to extracted text obeys the SAME gate as file download (its own scope).
+ * Scopes a public API client can hold. `documents:read` is the baseline for list,
+ * detail, and version metadata. `content:read` unlocks extracted text and search
+ * snippets; `download` unlocks short-lived presigned file downloads. Scopes are
+ * additive and independent; extracted text uses its own explicit scope gate.
  */
 export type ApiScope = 'documents:read' | 'content:read' | 'download';
 
@@ -857,7 +856,7 @@ export const API_DEFAULT_SCOPE: ApiScope = 'documents:read';
 
 /** Human labels for scopes (management UI checkboxes). */
 export const API_SCOPE_LABELS: Record<ApiScope, string> = {
-  'documents:read': 'Read document metadata & search',
+  'documents:read': 'Read document metadata',
   'content:read': 'Read extracted text content',
   download: 'Download document files',
 };

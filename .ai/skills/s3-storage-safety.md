@@ -23,7 +23,7 @@ Keep document storage private, immutable, and auditable.
 7. Authorize before issuing presigned URL.
 8. Use short TTL for presigned URL.
 9. Write audit event.
-10. Verify bucket is not public.
+10. Verify bucket is not public and public-access block was attempted for created or auto-provisioned buckets.
 
 ## Key Pattern
 
@@ -34,6 +34,7 @@ Keep document storage private, immutable, and auditable.
 ## Production Guardrails
 
 - Auto-create is acceptable for local MinIO.
+- `minioadmin` development defaults are acceptable only for explicit local endpoints (`localhost`, `127.*`, `host.docker.internal`); private/VPC endpoints require explicit credentials.
 - Production AWS bucket/KMS/public-access changes require explicit env flags.
 - Destructive bucket/object operations are out of v1 unless separately approved.
 

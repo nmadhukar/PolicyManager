@@ -67,6 +67,9 @@ Editing docx/xlsx/pptx uses a self-hosted OnlyOffice DocumentServer.
 - On a save status (`2` ready-to-save / `6` force-save) the edited bytes are
   downloaded and written as a **new** version (`changeSummary: "Edited in
   OnlyOffice"`); other statuses just ack `{ error: 0 }`.
+- Save callbacks must carry the token-bound editor user and re-check that user's
+  live `document.write` plus document/category access before downloading edited
+  bytes or writing the new version. A revoked editor token cannot save later.
 
 > ⚠️ **Networking (Docker Desktop / Windows).** The Docs *container* reaches this
 > API via **`host.docker.internal`**, not `localhost`. All content + callback

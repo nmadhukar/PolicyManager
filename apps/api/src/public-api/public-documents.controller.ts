@@ -36,8 +36,8 @@ export class PublicDocumentsController {
   }
 
   @Get('search')
-  @RequireScope('documents:read')
-  @ApiOperation({ summary: 'Keyword search over title + extracted text (semantic-ready contract).' })
+  @RequireScope('documents:read', 'content:read')
+  @ApiOperation({ summary: 'Keyword search over title + extracted text (requires content:read).' })
   search(
     @Query() query: PublicSearchQueryDto,
     @CurrentApiClient() client: AuthenticatedApiClient,

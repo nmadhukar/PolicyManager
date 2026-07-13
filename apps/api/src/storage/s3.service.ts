@@ -15,7 +15,7 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { hostOf, isPrivateOrLoopbackHost } from '../common/net.util';
+import { hostOf } from '../common/net.util';
 import {
   buildDocumentObjectKey,
   buildRenditionObjectKey,
@@ -103,11 +103,11 @@ export class S3Service implements OnModuleInit {
   }
 
   /**
-   * Resolves S3 credentials (SM2). The convenient `minioadmin` default is kept ONLY
-   * when the endpoint is a LOCAL MinIO (loopback / RFC-1918 / host.docker.internal).
-   * For real AWS S3 (no endpoint) or a remote S3-compatible endpoint, explicit
-   * `S3_ACCESS_KEY_ID`/`S3_SECRET_ACCESS_KEY` are required — the app refuses to boot
-   * with a shipped default that would otherwise silently ship to production.
+   * Resolves S3 credentials (SM2). The convenient `minioadmin` default is kept
+   * ONLY for explicit local-development endpoints: localhost, loopback IPs, or
+   * host.docker.internal. AWS S3, remote S3-compatible storage, and VPC/private
+   * IP endpoints require explicit credentials so a shipped default cannot reach
+   * production storage.
    */
   private static resolveCredentials(
     config: ConfigService,
@@ -118,7 +118,7 @@ export class S3Service implements OnModuleInit {
     if (accessKeyId && secretAccessKey) return { accessKeyId, secretAccessKey };
 
     const host = endpoint ? hostOf(endpoint) : null;
-    const local = !!host && isPrivateOrLoopbackHost(host);
+    const local = S3Service.allowsLocalCredentialDefault(host);
     if (local) {
       return {
         accessKeyId: accessKeyId || 'minioadmin',
@@ -128,6 +128,15 @@ export class S3Service implements OnModuleInit {
     throw new Error(
       'S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY are required when S3_ENDPOINT is not a local MinIO endpoint (no default credential is shipped for non-local storage).',
     );
+  }
+
+  private static allowsLocalCredentialDefault(host: string | null): boolean {
+    const h = (host ?? '').toLowerCase().replace(/^\[|\]$/g, '');
+    if (h === 'localhost' || h.endsWith('.localhost') || h === 'host.docker.internal') return true;
+    if (h === '::1' || h === '0:0:0:0:0:0:0:1') return true;
+    const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+    if (!m) return false;
+    return Number(m[1]) === 127;
   }
 
   /**
@@ -152,6 +161,7 @@ export class S3Service implements OnModuleInit {
           VersioningConfiguration: { Status: 'Enabled' },
         }),
       );
+      await this.blockPublicAccess(this.bucket);
     } catch (err) {
       this.logger.warn(
         `Storage auto-provisioning skipped for "${this.bucket}": ${(err as Error).message}`,
@@ -310,23 +320,7 @@ export class S3Service implements OnModuleInit {
         VersioningConfiguration: { Status: 'Enabled' },
       }),
     );
-    try {
-      await this.client.send(
-        new PutPublicAccessBlockCommand({
-          Bucket: name,
-          PublicAccessBlockConfiguration: {
-            BlockPublicAcls: true,
-            IgnorePublicAcls: true,
-            BlockPublicPolicy: true,
-            RestrictPublicBuckets: true,
-          },
-        }),
-      );
-    } catch (err) {
-      this.logger.warn(
-        `Public-access-block not applied to "${name}" (private by default): ${(err as Error).message}`,
-      );
-    }
+    await this.blockPublicAccess(name);
     return { name, createdAt: new Date().toISOString(), isDefault: name === this.bucket };
   }
 
@@ -368,6 +362,27 @@ export class S3Service implements OnModuleInit {
       }),
     );
     return { prefix: marker };
+  }
+
+  /** Applies S3 block-public-access. Best-effort for MinIO compatibility. */
+  private async blockPublicAccess(bucket: string): Promise<void> {
+    try {
+      await this.client.send(
+        new PutPublicAccessBlockCommand({
+          Bucket: bucket,
+          PublicAccessBlockConfiguration: {
+            BlockPublicAcls: true,
+            IgnorePublicAcls: true,
+            BlockPublicPolicy: true,
+            RestrictPublicBuckets: true,
+          },
+        }),
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Public-access-block not applied to "${bucket}" (private by default): ${(err as Error).message}`,
+      );
+    }
   }
 }
 

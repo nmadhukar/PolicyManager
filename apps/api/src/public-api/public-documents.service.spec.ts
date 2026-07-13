@@ -159,7 +159,12 @@ describe('PublicDocumentsService', () => {
     it('presigns the current version and audits api.download.issued', async () => {
       const prisma = makePrisma();
       prisma.document.findFirst.mockResolvedValue({
-        currentVersion: { versionNumber: 3, s3Key: 'documents/doc-1/v3/policy.pdf', fileName: 'policy.pdf' },
+        currentVersion: {
+          versionNumber: 3,
+          s3Key: 'documents/doc-1/v3/policy.pdf',
+          s3VersionId: 's3v-public',
+          fileName: 'policy.pdf',
+        },
       });
       const { svc, s3, audit } = build(prisma);
       const ticket = await svc.getDownload(client, 'doc-1');
@@ -167,6 +172,7 @@ describe('PublicDocumentsService', () => {
         'documents/doc-1/v3/policy.pdf',
         300,
         'policy.pdf',
+        's3v-public',
       );
       expect(ticket).toMatchObject({ url: expect.stringMatching(/^https?:\/\//), expiresIn: 300, fileName: 'policy.pdf', version: 3 });
       expect(audit.record).toHaveBeenCalledWith(

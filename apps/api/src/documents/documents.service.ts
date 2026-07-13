@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import {
@@ -701,14 +702,21 @@ export class DocumentsService {
     if (!body.url) {
       throw new BadRequestException('Save callback missing document url');
     }
+    if (!editorUserId) {
+      throw new UnauthorizedException('Callback token does not identify an editor');
+    }
 
-    // Resolve the edited version's name/mime + the fallback author, scoped to a
+    // Resolve the edited version's name/mime + access fields, scoped to a
     // non-deleted document.
     const source = await this.prisma.documentVersion.findFirst({
       where: { id: editedVersionId, documentId, document: { deletedAt: null } },
-      select: { fileName: true, mimeType: true, document: { select: { ownerId: true } } },
+      select: { fileName: true, mimeType: true, document: { select: accessSelect } },
     });
     if (!source) throw new NotFoundException('Version not found');
+    const stillCanEdit = await this.access.canAccessByUserId(editorUserId, source.document, 'edit');
+    if (!stillCanEdit) {
+      throw new ForbiddenException('You do not have access to this document');
+    }
 
     const buffer = await this.onlyOffice.downloadEditedFile(body.url);
     const file: VersionBytes = {
@@ -716,11 +724,10 @@ export class DocumentsService {
       mimetype: source.mimeType,
       buffer,
     };
-    const uploadedById = editorUserId ?? source.document.ownerId;
-    const version = await this.writeVersion(documentId, file, 'Edited in OnlyOffice', uploadedById);
+    const version = await this.writeVersion(documentId, file, 'Edited in OnlyOffice', editorUserId);
     await this.audit.record({
       action: AUDIT_ACTIONS.DOCUMENT_EDITED,
-      actorUserId: editorUserId ?? source.document.ownerId,
+      actorUserId: editorUserId,
       documentId,
       versionId: version.id,
       targetType: 'version',

@@ -16,8 +16,8 @@ Implement and review governed, version-scoped annotations for document review wi
 1. Annotations belong to one immutable `DocumentVersion`.
 2. Publishing or restoring a version must not carry annotations forward automatically.
 3. Annotation create/update/delete requires server-side document view access first.
-4. Creating annotations requires `document.comment`, an assigned reviewer relationship, or an open review task for the document.
-5. Resolving or reopening annotations is limited to the author, an authorized commenter, or assigned reviewer.
+4. Creating annotations requires `document.comment`, an assigned reviewer relationship, or an open review task for the same version. Versionless legacy tasks authorize only the document's current version.
+5. Resolving or reopening annotations is limited to the author, an authorized commenter, or assigned reviewer/task for the same version.
 6. Deleting annotations is soft-delete only and limited to the author, Admin, or Compliance Officer.
 7. Public API, cover-page generation, export, and official download flows must not include annotation data.
 8. Every create, resolve, reopen, and delete writes an audit event.

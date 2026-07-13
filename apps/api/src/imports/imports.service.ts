@@ -328,10 +328,10 @@ export class ImportsService {
       throw err;
     }
 
-    // C3/D5: the document exists but is not yet usable until its first version (and
-    // any ownership transfer) succeeds. If the version step fails, roll the document
-    // back so a headless, version-less orphan is never left behind — the row is
-    // reported as an error instead.
+    // C3/D5: the document exists but is not yet usable until its first version
+    // and ownership transfer succeed. If either step fails, move the just-created
+    // document to trash instead of hard-deleting it. That keeps the document,
+    // version, and audit trail intact while hiding the failed import artifact.
     try {
       if (file) {
         await this.documents.addVersion(documentId, file, { changeSummary: 'Imported' }, user, ctx);
@@ -340,7 +340,7 @@ export class ImportsService {
         await this.prisma.document.update({ where: { id: documentId }, data: { ownerId } });
       }
     } catch (err) {
-      await this.prisma.document.delete({ where: { id: documentId } }).catch(() => undefined);
+      await this.documents.softDelete(documentId, user, ctx).catch(() => undefined);
       return { status: 'error', documentId: null, message: errorMessage(err) };
     }
 

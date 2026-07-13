@@ -65,6 +65,9 @@ panel and as highlights over the document preview. Reviewers can resolve or
 reopen comments, and authors or compliance staff can delete comments. Deleting
 an annotation removes it from normal views but keeps an audit record.
 
+If your assignment or access changes while the viewer is open, resolve/reopen/delete
+actions show an error in the annotation panel instead of silently failing.
+
 Approval and review screens show a warning when the current version still has
 open annotations. The warning does not block sign-off; it gives the signer the
 current issue count before they approve or complete the review.

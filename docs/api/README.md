@@ -34,8 +34,8 @@ X-Api-Key: <clientId>.<secret>
 
 | Scope            | Unlocks                                             |
 | ---------------- | --------------------------------------------------- |
-| `documents:read` | list, detail, versions, search (baseline)           |
-| `content:read`   | `GET /documents/:id/content` (extracted text)       |
+| `documents:read` | list, detail, and version metadata (baseline)       |
+| `content:read`   | extracted text and extracted-text search snippets   |
 | `download`       | `GET /documents/:id/download` (presigned file URL)  |
 
 ## Visibility
@@ -55,11 +55,12 @@ read as `404` (their existence is not disclosed).
 | `GET /api/v1/documents/:id/content`    | `content:read`   | Current version's extracted text (RAG-ready).       |
 | `GET /api/v1/documents/:id/download`   | `download`       | Short-lived (≤300s) presigned download URL.         |
 | `GET /api/v1/documents/:id/versions`   | `documents:read` | Version history metadata (newest first).            |
-| `GET /api/v1/search?q=`                | `documents:read` | Keyword hits over title + extracted text; each hit carries `score` + `snippet`. |
+| `GET /api/v1/search?q=`                | `documents:read` + `content:read` | Keyword hits over title + extracted text; each hit carries `score` + `snippet`. |
 
 ## Search & the RAG seam
 
 Search uses PostgreSQL full-text ranking over document metadata and the current
-version's extracted/OCR text. The response shape (`{ query, total, page, pageSize, items:[{ document, score, snippet }] }`)
+version's extracted/OCR text. Because snippets can include extracted text,
+`/api/v1/search` requires both `documents:read` and `content:read`. The response shape (`{ query, total, page, pageSize, items:[{ document, score, snippet }] }`)
 is deliberately stable so a future pgvector/semantic backend can replace the match
 predicate behind the **same contract** — existing integrations do not change.

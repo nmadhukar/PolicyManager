@@ -115,6 +115,24 @@ describe('DocumentAnnotationsService', () => {
     ).resolves.toMatchObject({ id: 'ann-1' });
   });
 
+  it('does not let an open review task for another version authorize annotation', async () => {
+    const prisma = makePrisma();
+    prisma.reviewAssignment.count.mockResolvedValue(0);
+    prisma.reviewTask.count.mockImplementation(({ where }: { where: Record<string, unknown> }) =>
+      Promise.resolve('OR' in where ? 0 : 1),
+    );
+    const svc = new DocumentAnnotationsService(prisma, makeAccess() as never, makeAudit() as never);
+
+    await expect(
+      svc.create(
+        'doc-1',
+        'v-1',
+        { pageNumber: 1, x: 0.1, y: 0.1, width: 0.2, height: 0.1, body: 'Wrong version' },
+        user({ roles: ['Staff'], permissions: ['document.read'] }),
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
   it('blocks a read-only auditor from creating annotations', async () => {
     const svc = new DocumentAnnotationsService(makePrisma(), makeAccess() as never, makeAudit() as never);
 

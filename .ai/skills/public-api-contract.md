@@ -13,7 +13,7 @@ Keep `/api/v1` stable, read-only, scoped, documented, and audit-friendly.
 ## Procedure
 
 1. Define endpoint and response shape.
-2. Define required API scope.
+2. Define required API scope. If a response can include extracted text or extracted-text snippets, require `content:read` in addition to any metadata scope.
 3. Define category/document scope behavior.
 4. Define 401 and 403 behavior.
 5. Add tests for valid, invalid, and under-scoped clients.
@@ -29,7 +29,7 @@ GET /api/v1/documents/:id
 GET /api/v1/documents/:id/content
 GET /api/v1/documents/:id/download
 GET /api/v1/documents/:id/versions
-GET /api/v1/search?q=
+GET /api/v1/search?q=  (requires documents:read + content:read)
 ```
 
 ## Output

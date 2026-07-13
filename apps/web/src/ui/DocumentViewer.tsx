@@ -54,6 +54,7 @@ export function DocumentViewer({
   const [draftType, setDraftType] = useState<AnnotationType>('comment');
   const [draftBody, setDraftBody] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const hasCommentPermission = hasPermission(PERMISSIONS.DOCUMENT_COMMENT);
 
@@ -101,15 +102,21 @@ export function DocumentViewer({
   });
   const resolve = useMutation({
     mutationFn: (annotationId: string) => resolveAnnotation(documentId, version.id, annotationId),
+    onMutate: () => setActionError(null),
     onSuccess: invalidateAnnotations,
+    onError: (err) => setActionError(apiErrorMessage(err, 'Could not resolve the annotation.')),
   });
   const reopen = useMutation({
     mutationFn: (annotationId: string) => reopenAnnotation(documentId, version.id, annotationId),
+    onMutate: () => setActionError(null),
     onSuccess: invalidateAnnotations,
+    onError: (err) => setActionError(apiErrorMessage(err, 'Could not reopen the annotation.')),
   });
   const remove = useMutation({
     mutationFn: (annotationId: string) => deleteAnnotation(documentId, version.id, annotationId),
+    onMutate: () => setActionError(null),
     onSuccess: invalidateAnnotations,
+    onError: (err) => setActionError(apiErrorMessage(err, 'Could not delete the annotation.')),
   });
 
   const pageWidth = Math.min(900, Math.max(320, window.innerWidth - 420));
@@ -227,7 +234,9 @@ export function DocumentViewer({
           draftType={draftType}
           draftBody={draftBody}
           formError={formError}
+          actionError={actionError}
           busy={create.isPending}
+          actionBusy={resolve.isPending || reopen.isPending || remove.isPending}
           onRectChange={setDraftRect}
           onTypeChange={setDraftType}
           onBodyChange={setDraftBody}
@@ -292,7 +301,9 @@ function AnnotationPanel({
   draftType,
   draftBody,
   formError,
+  actionError,
   busy,
+  actionBusy,
   onRectChange,
   onTypeChange,
   onBodyChange,
@@ -313,7 +324,9 @@ function AnnotationPanel({
   draftType: AnnotationType;
   draftBody: string;
   formError: string | null;
+  actionError: string | null;
   busy: boolean;
+  actionBusy: boolean;
   onRectChange: (rect: AnnotationRect) => void;
   onTypeChange: (type: AnnotationType) => void;
   onBodyChange: (body: string) => void;
@@ -401,6 +414,14 @@ function AnnotationPanel({
       )}
 
       <div className="min-h-0 flex-1 overflow-auto p-4">
+        {actionError && (
+          <p
+            className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
+            role="alert"
+          >
+            {actionError}
+          </p>
+        )}
         {loading ? (
           <LoadingState label="Loading annotations..." />
         ) : error ? (
@@ -440,6 +461,7 @@ function AnnotationPanel({
                         (a.status === 'open' ? (
                           <button
                             className="btn-secondary !px-2 !py-1 text-xs"
+                            disabled={actionBusy}
                             onClick={() => onResolve(a.id)}
                           >
                             Resolve
@@ -447,6 +469,7 @@ function AnnotationPanel({
                         ) : (
                           <button
                             className="btn-secondary !px-2 !py-1 text-xs"
+                            disabled={actionBusy}
                             onClick={() => onReopen(a.id)}
                           >
                             Reopen
@@ -455,6 +478,7 @@ function AnnotationPanel({
                       {canDelete && (
                         <button
                           className="btn-danger !px-2 !py-1 text-xs"
+                          disabled={actionBusy}
                           onClick={() => onDelete(a.id)}
                         >
                           Delete

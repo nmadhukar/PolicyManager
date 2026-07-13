@@ -3,6 +3,7 @@ import {
   ConflictException,
   ForbiddenException,
   NotFoundException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type { AuthUser } from '@policymanager/shared';
@@ -523,12 +524,12 @@ describe('DocumentsService.applyEditorCallback (save => new version)', () => {
     expect(audit.record).not.toHaveBeenCalled();
   });
 
-  it('on status 2 writes a NEW immutable version and audits document.edited (source=system)', async () => {
-    const { svc, prisma, s3, onlyOffice, audit } = build();
+  it('on status 2 re-checks edit access, writes a NEW immutable version, and audits document.edited', async () => {
+    const { svc, prisma, s3, onlyOffice, access, audit } = build();
     prisma.documentVersion.findFirst.mockResolvedValue({
       fileName: 'policy.docx',
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      document: { ownerId: 'owner-1' },
+      document: accessDoc(),
     });
     prisma.documentVersion.aggregate.mockResolvedValue({ _max: { versionNumber: 2 } });
     prisma.documentVersion.create.mockResolvedValue(
@@ -544,6 +545,11 @@ describe('DocumentsService.applyEditorCallback (save => new version)', () => {
     );
 
     expect(onlyOffice.downloadEditedFile).toHaveBeenCalledWith('http://docs/cache/out.docx');
+    expect(access.canAccessByUserId).toHaveBeenCalledWith(
+      'u-editor',
+      expect.objectContaining({ id: 'doc-1' }),
+      'edit',
+    );
     const createArg = prisma.documentVersion.create.mock.calls[0][0];
     expect(createArg.data.versionNumber).toBe(3);
     expect(createArg.data.changeSummary).toBe('Edited in OnlyOffice');
@@ -564,20 +570,40 @@ describe('DocumentsService.applyEditorCallback (save => new version)', () => {
     expect(res).toEqual({ error: 0 });
   });
 
-  it('falls back to the document owner when the token carries no editor id', async () => {
-    const { svc, prisma } = build();
+  it('403s without downloading when the token-bound editor no longer has edit access', async () => {
+    const { svc, prisma, access, onlyOffice, s3 } = build();
     prisma.documentVersion.findFirst.mockResolvedValue({
       fileName: 'policy.docx',
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      document: { ownerId: 'owner-1' },
+      document: accessDoc({ accessLevel: 'confidential' }),
     });
-    prisma.documentVersion.aggregate.mockResolvedValue({ _max: { versionNumber: 1 } });
-    prisma.documentVersion.create.mockResolvedValue(versionRow({ id: 'v-2', versionNumber: 2 }));
-    prisma.document.update.mockResolvedValue({});
+    access.canAccessByUserId.mockResolvedValue(false);
 
-    await svc.applyEditorCallback('doc-1', 'v-1', { status: 2, url: 'http://x' }, undefined);
+    await expect(
+      svc.applyEditorCallback('doc-1', 'v-1', { status: 2, url: 'http://x' }, 'u-revoked'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(access.canAccessByUserId).toHaveBeenCalledWith(
+      'u-revoked',
+      expect.objectContaining({ id: 'doc-1' }),
+      'edit',
+    );
+    expect(onlyOffice.downloadEditedFile).not.toHaveBeenCalled();
+    expect(s3.putObject).not.toHaveBeenCalled();
+  });
 
-    expect(prisma.documentVersion.create.mock.calls[0][0].data.uploadedById).toBe('owner-1');
+  it('401s a save callback whose scoped token carries no editor id', async () => {
+    const { svc, prisma, onlyOffice, s3 } = build();
+    prisma.documentVersion.findFirst.mockResolvedValue({
+      fileName: 'policy.docx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      document: accessDoc(),
+    });
+
+    await expect(
+      svc.applyEditorCallback('doc-1', 'v-1', { status: 2, url: 'http://x' }, undefined),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(onlyOffice.downloadEditedFile).not.toHaveBeenCalled();
+    expect(s3.putObject).not.toHaveBeenCalled();
   });
 
   it('400s a save callback that is missing the document url', async () => {

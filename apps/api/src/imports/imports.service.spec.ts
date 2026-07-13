@@ -79,6 +79,7 @@ describe('ImportsService', () => {
     return {
       create: jest.fn().mockImplementation(() => Promise.resolve({ id: `doc-${++seq}` })),
       addVersion: jest.fn().mockResolvedValue({ id: 'ver-1', versionNumber: 1 }),
+      softDelete: jest.fn().mockResolvedValue({ id: 'doc-rollback' }),
     };
   };
   const makeAudit = () => ({ record: jest.fn().mockResolvedValue('ae-1') });
@@ -186,8 +187,10 @@ describe('ImportsService', () => {
     const csv = 'title,fileName\nGood Title,a.pdf\n';
     await svc.runManifestImport(manifest(csv), [file('a.pdf')], importer);
 
-    // The just-created document was deleted so no version-less orphan remains.
-    expect(prisma.document.delete).toHaveBeenCalledTimes(1);
+    // The just-created document is soft-deleted, never hard-deleted, so active
+    // views stay clean without destroying the document/version/audit trail.
+    expect(documents.softDelete).toHaveBeenCalledWith('doc-1', importer, {});
+    expect(prisma.document.delete).not.toHaveBeenCalled();
     const item = prisma.importItem.create.mock.calls[0][0].data;
     expect(item.status).toBe('error');
     expect(item.documentId).toBeNull();

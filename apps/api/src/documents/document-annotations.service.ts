@@ -7,6 +7,7 @@ import {
 import type { Prisma } from '@prisma/client';
 import {
   AUDIT_ACTIONS,
+  OPEN_REVIEW_TASK_STATUSES,
   PERMISSIONS,
   ROLES,
   type AuthUser,
@@ -56,7 +57,7 @@ export class DocumentAnnotationsService {
     });
     return {
       items: rows.map(toItem),
-      canAnnotate: await this.canComment(user, documentId),
+      canAnnotate: await this.canComment(user, documentId, versionId),
       canComplianceDelete: this.hasComplianceDelete(user),
     };
   }
@@ -217,7 +218,7 @@ export class DocumentAnnotationsService {
     versionId: string,
   ): Promise<void> {
     await this.enforceView(user, doc, ctx, versionId);
-    if (await this.canComment(user, doc.id)) return;
+    if (await this.canComment(user, doc.id, versionId)) return;
     throw new ForbiddenException('You do not have permission to annotate this document');
   }
 
@@ -229,7 +230,7 @@ export class DocumentAnnotationsService {
     versionId: string,
   ): Promise<void> {
     await this.enforceView(user, doc, ctx, versionId);
-    if (authorId === user.id || (await this.canComment(user, doc.id))) return;
+    if (authorId === user.id || (await this.canComment(user, doc.id, versionId))) return;
     throw new ForbiddenException('You do not have permission to update this annotation');
   }
 
@@ -248,14 +249,27 @@ export class DocumentAnnotationsService {
     return user.roles.includes(ROLES.ADMIN) || user.roles.includes(ROLES.COMPLIANCE_OFFICER);
   }
 
-  private async canComment(user: AuthUser, documentId: string): Promise<boolean> {
+  private async canComment(
+    user: AuthUser,
+    documentId: string,
+    versionId: string,
+  ): Promise<boolean> {
     if (user.permissions.includes(PERMISSIONS.DOCUMENT_COMMENT)) return true;
     const assigned = await this.prisma.reviewAssignment.count({
       where: { documentId, reviewerId: user.id },
     });
     if (assigned > 0) return true;
     const task = await this.prisma.reviewTask.count({
-      where: { documentId, assignedToId: user.id, status: { in: ['pending', 'in_progress', 'overdue'] } },
+      where: {
+        documentId,
+        assignedToId: user.id,
+        status: { in: [...OPEN_REVIEW_TASK_STATUSES] },
+        OR: [
+          { versionId },
+          // Older tasks may be versionless; treat them as current-version tasks only.
+          { versionId: null, document: { currentVersionId: versionId } },
+        ],
+      },
     });
     return task > 0;
   }

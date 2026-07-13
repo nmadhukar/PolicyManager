@@ -32,7 +32,7 @@ Secrets come from the platform secret store / env — never committed. `APP_ENCR
 
 1. Provision PostgreSQL + create the database. The first migration creates the
    app-owned `policytracker` schema before creating any tables or enums.
-2. Provision the S3 bucket (or let `S3_AUTO_CREATE=true` create it) and Gotenberg/OnlyOffice/SMTP.
+2. Provision the S3 bucket (or let `S3_AUTO_CREATE=true` create it) and Gotenberg/OnlyOffice/SMTP. Auto-create enables versioning and attempts a public-access block. Always set explicit S3 credentials for production or private/VPC S3-compatible endpoints.
 3. Deploy the API; confirm `/health` and `/api/docs`.
 4. Seed baseline roles/permissions/admin once (one-off job against the prod `DATABASE_URL`): `npm run db:seed` from a checkout, or a Coolify one-off command. Idempotent.
 5. Deploy the web with `API_BASE_URL` set to the public API origin.
