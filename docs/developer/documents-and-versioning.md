@@ -29,6 +29,22 @@ broken by a nullable FK with `onDelete: NoAction` so Postgres accepts it.
 Migration: `prisma/migrations/*_documents_versioning`. Verify placement with the
 query in `AGENTS.md` §3 — Phase 3 adds 0 objects to `public`.
 
+### Category creation UI
+
+The web app exposes `POST /api/document-categories` through the shared
+`CategorySelectWithCreate` control. It is used in the document create and
+metadata edit flows so document writers can add missing root or child categories
+without leaving the document workflow. The control invalidates the `category-tree`
+query after creation and keeps the newly created option locally selected while
+the tree refreshes.
+
+### Initial schema bootstrap
+
+The initial auth/RBAC migration creates the app-owned PostgreSQL schema with
+`CREATE SCHEMA IF NOT EXISTS "policytracker"` before creating any types or
+tables. This keeps `prisma migrate deploy` reliable on a completely empty
+database and preserves the no-application-objects-in-`public` rule.
+
 ## Immutability & storage invariants (AGENTS.md §9)
 
 - **Every upload creates a new `DocumentVersion` row + a new S3 object.** Prior

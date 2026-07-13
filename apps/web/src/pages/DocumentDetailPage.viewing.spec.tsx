@@ -36,7 +36,24 @@ vi.mock('../api/documents', () => ({
 
 vi.mock('../api/categories', () => ({
   listCategoryTree: vi.fn().mockResolvedValue([]),
+  createCategory: vi.fn(),
   flattenCategories: () => [],
+}));
+// The acknowledgment panel may mount for broad permission mocks; keep its
+// optional user-directory lookup isolated from real HTTP in viewing tests.
+vi.mock('../api/users', () => ({
+  listRoles: vi.fn().mockResolvedValue([]),
+  listUsers: vi.fn().mockResolvedValue([]),
+}));
+vi.mock('../api/acl', () => ({
+  addAcl: vi.fn(),
+  listAcl: vi.fn().mockResolvedValue([]),
+  removeAcl: vi.fn(),
+}));
+vi.mock('../api/reviews', () => ({
+  assignReviewer: vi.fn(),
+  listReviewers: vi.fn().mockResolvedValue([]),
+  removeReviewer: vi.fn(),
 }));
 // Phase 6 sign-off / acknowledgment panels — stub their reads (no network in tests).
 vi.mock('../api/signoff', () => ({

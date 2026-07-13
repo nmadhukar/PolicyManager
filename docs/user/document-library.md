@@ -26,6 +26,9 @@ You need the *document.write* permission (Manager, Compliance Officer, or Admin)
 2. Enter a **Title** — this is required.
 3. Optionally set a document number, category, description, tags, access level,
    review cadence, and next review date.
+   - If the category does not exist yet, click **New category**, enter the name,
+     optionally choose a parent category, and save it. The new category is
+     selected immediately.
 4. Click **Create document**. You'll land on the new document's page, ready to
    upload its first file.
 
@@ -58,6 +61,8 @@ With *document.write* you can:
 
 - Click **Edit** in the **Details** panel to change the title, number, category,
   status, access level, review cadence, and dates.
+- Click **New category** from the category field when a missing category needs
+  to be added while editing a document.
 - Use the **Tags** panel to add a tag (type and press Enter) or remove one (click
   its ✕). Tags power quick filtering back in the library.
 

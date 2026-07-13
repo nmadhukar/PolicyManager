@@ -31,6 +31,7 @@ import { DocumentAcknowledgmentPanel } from './DocumentAcknowledgmentPanel';
 import { useAuth } from '../auth/AuthContext';
 import { formatBytes, formatDate, statusBadgeClasses, statusLabel } from '../lib/format';
 import { AppShell } from '../ui/AppShell';
+import { CategorySelectWithCreate } from '../ui/CategorySelectWithCreate';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { EmptyState, ErrorState, ForbiddenState, LoadingState } from '../ui/states';
 import { TagInput } from '../ui/TagInput';
@@ -373,19 +374,12 @@ function EditMetadata({ doc, onDone }: { doc: DocumentDetail; onDone: () => void
         <label htmlFor="ed-category" className="label">
           Category
         </label>
-        <select
+        <CategorySelectWithCreate
           id="ed-category"
-          className="input"
           value={form.categoryId ?? ''}
-          onChange={(e) => setForm({ ...form, categoryId: e.target.value })}
-        >
-          <option value="">Uncategorized</option>
-          {categoryOptions.map((c) => (
-            <option key={c.id} value={c.id}>
-              {`${' '.repeat(c.depth * 2)}${c.name}`}
-            </option>
-          ))}
-        </select>
+          categoryOptions={categoryOptions}
+          onChange={(categoryId) => setForm({ ...form, categoryId })}
+        />
       </div>
       <div>
         <label htmlFor="ed-status" className="label">

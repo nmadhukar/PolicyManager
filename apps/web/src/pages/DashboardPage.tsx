@@ -1,23 +1,112 @@
 import { Link } from 'react-router-dom';
-import { PERMISSIONS } from '@policymanager/shared';
+import { PERMISSIONS, type PermissionKey } from '@policymanager/shared';
 import { useAuth } from '../auth/AuthContext';
 import { AppShell } from '../ui/AppShell';
+
+interface DashboardAction {
+  title: string;
+  description: string;
+  to: string;
+  label: string;
+  requires?: PermissionKey;
+}
+
+const ACTIONS: DashboardAction[] = [
+  {
+    title: 'Document library',
+    description: 'Search, create, version, archive, and restore controlled documents.',
+    to: '/library',
+    label: 'Open library',
+    requires: PERMISSIONS.DOCUMENT_READ,
+  },
+  {
+    title: 'Import documents',
+    description: 'Bulk onboard scattered policies with duplicate detection and import reports.',
+    to: '/library/import',
+    label: 'Run import',
+    requires: PERMISSIONS.DOCUMENT_WRITE,
+  },
+  {
+    title: 'Reviews',
+    description: 'Complete assigned QC reviews and monitor upcoming due dates.',
+    to: '/reviews',
+    label: 'View reviews',
+  },
+  {
+    title: 'Acknowledgments',
+    description: 'Read and sign documents assigned to you for staff acknowledgment.',
+    to: '/acknowledgments',
+    label: 'View acknowledgments',
+  },
+  {
+    title: 'Users and roles',
+    description: 'Manage accounts, role assignments, lockouts, and password resets.',
+    to: '/admin/users',
+    label: 'Manage users',
+    requires: PERMISSIONS.USER_MANAGE,
+  },
+  {
+    title: 'Audit log',
+    description: 'Review document access, security events, API reads, and admin actions.',
+    to: '/admin/audit',
+    label: 'Open audit log',
+    requires: PERMISSIONS.AUDIT_READ,
+  },
+  {
+    title: 'Storage',
+    description: 'Review S3/MinIO configuration and create private buckets or prefixes.',
+    to: '/admin/storage',
+    label: 'Manage storage',
+    requires: PERMISSIONS.STORAGE_MANAGE,
+  },
+  {
+    title: 'Email',
+    description: 'Configure SMTP, send test email, and inspect notification delivery.',
+    to: '/admin/email',
+    label: 'Manage email',
+    requires: PERMISSIONS.SMTP_MANAGE,
+  },
+  {
+    title: 'API clients',
+    description: 'Create scoped read-only keys for EMR or AI ingestion integrations.',
+    to: '/admin/api-clients',
+    label: 'Manage API clients',
+    requires: PERMISSIONS.API_MANAGE,
+  },
+];
 
 export function DashboardPage() {
   const { user, hasPermission } = useAuth();
   const firstName = user?.name.split(' ')[0] ?? 'there';
+  const visibleActions = ACTIONS.filter(
+    (action) => !action.requires || hasPermission(action.requires),
+  );
 
   return (
     <AppShell>
-      <div className="mx-auto max-w-3xl">
+      <div className="mx-auto max-w-6xl">
         <h1 className="text-2xl font-semibold text-ink">Welcome back, {firstName}</h1>
         <p className="mt-2 text-ink-muted">
           A single, versioned, access-controlled home for your clinic&apos;s policies, procedures,
-          job descriptions, and IOP/PHP curriculums — built for CARF and Joint Commission compliance.
+          job descriptions, and IOP/PHP curriculums.
         </p>
 
-        <div className="mt-6 grid gap-4 sm:grid-cols-2">
-          <div className="card p-6">
+        <div className="mt-6 grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
+          <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3" aria-label="Available modules">
+            {visibleActions.map((action) => (
+              <div key={action.to} className="card flex min-h-44 flex-col p-5">
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-muted">
+                  {action.title}
+                </h2>
+                <p className="mt-3 flex-1 text-sm text-ink-soft">{action.description}</p>
+                <Link to={action.to} className="btn-primary mt-4 inline-flex self-start">
+                  {action.label}
+                </Link>
+              </div>
+            ))}
+          </section>
+
+          <aside className="card h-fit p-6">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-muted">
               Your access
             </h2>
@@ -35,39 +124,12 @@ export function DashboardPage() {
                 <dd className="text-right">{user?.permissions.length ?? 0}</dd>
               </div>
             </dl>
-          </div>
-
-          {hasPermission(PERMISSIONS.DOCUMENT_READ) && (
-            <div className="card p-6">
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-muted">
-                Documents
-              </h2>
-              <div className="mt-3 space-y-2 text-sm text-ink-soft">
-                <p>Search, version, and manage your clinic&apos;s controlled documents.</p>
-                <Link to="/library" className="btn-primary mt-2 inline-flex">
-                  Open library
-                </Link>
-              </div>
-            </div>
-          )}
-
-          <div className="card p-6">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-muted">
-              Administration
-            </h2>
-            {hasPermission(PERMISSIONS.USER_MANAGE) ? (
-              <div className="mt-3 space-y-2 text-sm text-ink-soft">
-                <p>Manage who can access PolicyManager and what they can do.</p>
-                <Link to="/admin/users" className="btn-primary mt-2 inline-flex">
-                  Manage users
-                </Link>
-              </div>
-            ) : (
-              <p className="mt-3 text-sm text-ink-muted">
-                Additional tools will appear here as your access allows.
+            {visibleActions.length === 0 && (
+              <p className="mt-4 text-sm text-ink-muted">
+                No modules are currently available for your role.
               </p>
             )}
-          </div>
+          </aside>
         </div>
       </div>
     </AppShell>

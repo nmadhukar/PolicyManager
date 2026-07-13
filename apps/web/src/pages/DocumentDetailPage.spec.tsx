@@ -49,6 +49,7 @@ vi.mock('../api/documents', () => ({
 
 vi.mock('../api/categories', () => ({
   listCategoryTree: vi.fn().mockResolvedValue([]),
+  createCategory: vi.fn(),
   flattenCategories: () => [],
 }));
 

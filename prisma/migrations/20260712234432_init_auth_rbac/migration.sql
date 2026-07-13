@@ -1,3 +1,8 @@
+-- Bootstrap the app-owned schema before any policytracker objects are created.
+-- Fresh databases do not have this schema by default; without this line,
+-- `prisma migrate deploy` fails before the first table/type is created.
+CREATE SCHEMA IF NOT EXISTS "policytracker";
+
 -- CreateEnum
 CREATE TYPE "policytracker"."UserStatus" AS ENUM ('active', 'disabled');
 

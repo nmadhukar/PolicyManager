@@ -11,6 +11,7 @@ const mockSoftDelete = vi.fn();
 const mockRestore = vi.fn();
 const mockArchive = vi.fn();
 const mockUnarchive = vi.fn();
+const mockCreateCategory = vi.fn();
 
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
@@ -72,6 +73,7 @@ function oneDoc(over: Record<string, unknown> = {}) {
 
 vi.mock('../api/categories', () => ({
   listCategoryTree: vi.fn().mockResolvedValue([]),
+  createCategory: (...args: unknown[]) => mockCreateCategory(...args),
   flattenCategories: () => [],
 }));
 
@@ -101,6 +103,13 @@ describe('LibraryPage', () => {
     mockRestore.mockReset().mockResolvedValue({});
     mockArchive.mockReset().mockResolvedValue({});
     mockUnarchive.mockReset().mockResolvedValue({});
+    mockCreateCategory.mockReset().mockResolvedValue({
+      id: 'cat-1',
+      name: 'Policies',
+      parentId: null,
+      description: null,
+      children: [],
+    });
   });
 
   it('shows the forbidden state when the user lacks document.read', () => {

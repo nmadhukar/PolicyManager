@@ -12,18 +12,18 @@ interface NavItem {
 }
 
 const NAV: NavItem[] = [
-  { label: 'Dashboard', to: '/', icon: '▚' },
-  { label: 'Library', to: '/library', icon: '▤', requires: PERMISSIONS.DOCUMENT_READ },
-  { label: 'Import', to: '/library/import', icon: '⇪', requires: PERMISSIONS.DOCUMENT_WRITE },
-  // Reviews is a personal dashboard: any signed-in user may be assigned as a reviewer.
-  { label: 'Reviews', to: '/reviews', icon: '✔' },
-  // Acknowledgments is personal too: any signed-in user may be assigned to read & sign.
-  { label: 'Acknowledgments', to: '/acknowledgments', icon: '✍' },
-  { label: 'Audit Log', to: '/admin/audit', icon: '▧', requires: PERMISSIONS.AUDIT_READ },
-  { label: 'Users', to: '/admin/users', icon: '⚙', requires: PERMISSIONS.USER_MANAGE },
-  { label: 'Storage', to: '/admin/storage', icon: '▦', requires: PERMISSIONS.STORAGE_MANAGE },
-  { label: 'Email', to: '/admin/email', icon: '✉', requires: PERMISSIONS.SMTP_MANAGE },
-  { label: 'API Clients', to: '/admin/api-clients', icon: '⚿', requires: PERMISSIONS.API_MANAGE },
+  { label: 'Dashboard', to: '/', icon: 'DB' },
+  { label: 'Library', to: '/library', icon: 'LB', requires: PERMISSIONS.DOCUMENT_READ },
+  { label: 'Import', to: '/library/import', icon: 'IM', requires: PERMISSIONS.DOCUMENT_WRITE },
+  // Personal dashboard: any signed-in user may be assigned as a reviewer.
+  { label: 'Reviews', to: '/reviews', icon: 'RV' },
+  // Personal dashboard: any signed-in user may be assigned to read and sign.
+  { label: 'Acknowledgments', to: '/acknowledgments', icon: 'AK' },
+  { label: 'Audit Log', to: '/admin/audit', icon: 'AU', requires: PERMISSIONS.AUDIT_READ },
+  { label: 'Users', to: '/admin/users', icon: 'US', requires: PERMISSIONS.USER_MANAGE },
+  { label: 'Storage', to: '/admin/storage', icon: 'ST', requires: PERMISSIONS.STORAGE_MANAGE },
+  { label: 'Email', to: '/admin/email', icon: 'EM', requires: PERMISSIONS.SMTP_MANAGE },
+  { label: 'API Clients', to: '/admin/api-clients', icon: 'API', requires: PERMISSIONS.API_MANAGE },
 ];
 
 function NavItems({ items, onNavigate }: { items: NavItem[]; onNavigate?: () => void }) {
@@ -41,7 +41,10 @@ function NavItems({ items, onNavigate }: { items: NavItem[]; onNavigate?: () => 
             }`
           }
         >
-          <span aria-hidden className="text-ink-muted">
+          <span
+            aria-hidden
+            className="grid min-w-7 place-items-center rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-ink-muted"
+          >
             {item.icon}
           </span>
           {item.label}
@@ -61,7 +64,6 @@ export function AppShell({ children }: { children: ReactNode }) {
   );
 
   const closeMobileNav = () => setMobileNavOpen(false);
-  // Trap focus in the drawer while open; Escape closes it.
   useFocusTrap(mobileNavOpen, drawerRef, closeMobileNav);
 
   const initials = user?.name
@@ -90,7 +92,6 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
       </aside>
 
-      {/* Mobile nav drawer (below md). Closes on nav, Escape, or backdrop. */}
       {mobileNavOpen && (
         <div className="fixed inset-0 z-40 md:hidden">
           <div
@@ -119,7 +120,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                 onClick={closeMobileNav}
                 aria-label="Close navigation menu"
               >
-                ✕
+                X
               </button>
             </div>
             <nav className="flex-1 space-y-1 overflow-y-auto p-3" aria-label="Primary">
@@ -140,7 +141,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               aria-controls="mobile-nav"
             >
               <span aria-hidden className="text-lg leading-none">
-                ☰
+                Menu
               </span>
             </button>
             <div className="truncate text-sm text-ink-muted">
