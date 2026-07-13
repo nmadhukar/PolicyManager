@@ -28,6 +28,10 @@ export interface DocumentListParams {
   accessLevel?: AccessLevel;
   reviewBefore?: string;
   reviewAfter?: string;
+  /** Trash view: only soft-deleted documents (requires document.write). */
+  deleted?: boolean;
+  /** Include archived documents in the active list. */
+  includeArchived?: boolean;
   page?: number;
   pageSize?: number;
   sort?: DocumentSortField;
@@ -119,6 +123,44 @@ export async function getDownloadUrl(
 ): Promise<DownloadTicket> {
   const { data } = await http.get<DownloadTicket>(
     `/documents/${documentId}/versions/${versionId}/download`,
+  );
+  return data;
+}
+
+/** Soft-delete: moves the document to the trash (never destroys bytes). */
+export async function softDeleteDocument(id: string): Promise<DocumentDetail> {
+  const { data } = await http.delete<DocumentDetail>(`/documents/${id}`);
+  return data;
+}
+
+/** Restore a soft-deleted document from the trash. */
+export async function restoreDocument(id: string): Promise<DocumentDetail> {
+  const { data } = await http.post<DocumentDetail>(`/documents/${id}/restore`);
+  return data;
+}
+
+/** Archive: keeps the document accessible but out of active lists. */
+export async function archiveDocument(id: string): Promise<DocumentDetail> {
+  const { data } = await http.post<DocumentDetail>(`/documents/${id}/archive`);
+  return data;
+}
+
+/** Unarchive: returns the document to its prior status/active lists. */
+export async function unarchiveDocument(id: string): Promise<DocumentDetail> {
+  const { data } = await http.post<DocumentDetail>(`/documents/${id}/unarchive`);
+  return data;
+}
+
+/**
+ * Restore an older version as a new current version. Copies the chosen version's
+ * bytes to a new version and points the document at it; history is preserved.
+ */
+export async function restoreVersion(
+  documentId: string,
+  versionId: string,
+): Promise<DocumentVersionSummary> {
+  const { data } = await http.post<DocumentVersionSummary>(
+    `/documents/${documentId}/versions/${versionId}/restore`,
   );
   return data;
 }

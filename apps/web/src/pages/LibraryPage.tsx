@@ -12,18 +12,27 @@ import {
   type SortOrder,
 } from '@policymanager/shared';
 import {
+  archiveDocument,
   CreateDocumentInput,
   createDocument,
+  type DocumentListItem,
   DocumentListParams,
   listDocuments,
+  restoreDocument,
+  softDeleteDocument,
+  unarchiveDocument,
 } from '../api/documents';
 import { flattenCategories, listCategoryTree } from '../api/categories';
 import { useAuth } from '../auth/AuthContext';
 import { useDebouncedValue } from '../lib/useDebouncedValue';
 import { formatDate, statusBadgeClasses, statusLabel } from '../lib/format';
 import { AppShell } from '../ui/AppShell';
+import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { EmptyState, ErrorState, ForbiddenState, LoadingState } from '../ui/states';
 import { TagInput } from '../ui/TagInput';
+
+/** Library scope: active (default), archived-only, or the soft-delete trash. */
+type LibraryView = 'active' | 'archived' | 'trash';
 
 interface Filters {
   q: string;
@@ -65,6 +74,7 @@ function Library() {
   const canWrite = hasPermission(PERMISSIONS.DOCUMENT_WRITE);
 
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
+  const [view, setView] = useState<LibraryView>('active');
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState<DocumentSortField>('createdAt');
   const [order, setOrder] = useState<SortOrder>('desc');
@@ -79,16 +89,21 @@ function Library() {
       categoryId: filters.categoryId || undefined,
       ownerId: filters.ownerId || undefined,
       tag: debouncedTag || undefined,
-      status: (filters.status as DocumentStatus) || undefined,
+      // The Archived view forces status=archived; other views honor the filter.
+      status:
+        view === 'archived' ? 'archived' : (filters.status as DocumentStatus) || undefined,
       accessLevel: (filters.accessLevel as DocumentListParams['accessLevel']) || undefined,
       reviewAfter: filters.reviewAfter || undefined,
       reviewBefore: filters.reviewBefore || undefined,
+      // Trash view is the only place soft-deleted rows appear (server also
+      // enforces document.write for this).
+      deleted: view === 'trash' ? true : undefined,
       page,
       pageSize: PAGE_SIZE,
       sort,
       order,
     }),
-    [debouncedQ, debouncedTag, filters, page, sort, order],
+    [debouncedQ, debouncedTag, filters, page, sort, order, view],
   );
 
   const query = useQuery({
@@ -131,6 +146,11 @@ function Library() {
     setPage(1);
   };
 
+  const changeView = (next: LibraryView) => {
+    setView(next);
+    setPage(1);
+  };
+
   const forbidden = (query.error as AxiosError | null)?.response?.status === 403;
 
   const total = query.data?.total ?? 0;
@@ -148,14 +168,16 @@ function Library() {
             Search, filter, and manage your clinic&apos;s controlled documents.
           </p>
         </div>
-        {canWrite && (
+        {canWrite && view === 'active' && (
           <button className="btn-primary" onClick={() => setShowCreate((v) => !v)}>
             {showCreate ? 'Close' : 'New document'}
           </button>
         )}
       </header>
 
-      {showCreate && canWrite && (
+      <ViewTabs view={view} onChange={changeView} canWrite={canWrite} />
+
+      {showCreate && canWrite && view === 'active' && (
         <CreateDocumentPanel
           categoryOptions={categoryOptions}
           onClose={() => setShowCreate(false)}
@@ -208,14 +230,24 @@ function Library() {
         />
       ) : items.length === 0 ? (
         <EmptyState
-          title="No documents found"
+          title={
+            view === 'trash'
+              ? 'Trash is empty'
+              : view === 'archived'
+                ? 'No archived documents'
+                : 'No documents found'
+          }
           description={
-            activeChips.length > 0
-              ? 'Try adjusting or clearing your filters.'
-              : 'Create your first document to get started.'
+            view === 'trash'
+              ? 'Deleted documents appear here and can be restored.'
+              : view === 'archived'
+                ? 'Documents you archive will appear here.'
+                : activeChips.length > 0
+                  ? 'Try adjusting or clearing your filters.'
+                  : 'Create your first document to get started.'
           }
           action={
-            canWrite && activeChips.length === 0 ? (
+            canWrite && view === 'active' && activeChips.length === 0 ? (
               <button className="btn-primary" onClick={() => setShowCreate(true)}>
                 New document
               </button>
@@ -225,6 +257,8 @@ function Library() {
       ) : (
         <DocumentsTable
           items={items}
+          view={view}
+          canWrite={canWrite}
           sort={sort}
           order={order}
           onSort={changeSort}
@@ -434,25 +468,73 @@ const SORTABLE: { field: DocumentSortField; label: string }[] = [
   { field: 'nextReviewDate', label: 'Next review' },
 ];
 
+function ViewTabs({
+  view,
+  onChange,
+  canWrite,
+}: {
+  view: LibraryView;
+  onChange: (v: LibraryView) => void;
+  canWrite: boolean;
+}) {
+  const tabs: { key: LibraryView; label: string }[] = [
+    { key: 'active', label: 'Active' },
+    { key: 'archived', label: 'Archived' },
+    ...(canWrite ? [{ key: 'trash' as const, label: 'Trash' }] : []),
+  ];
+  return (
+    <div
+      className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5"
+      role="tablist"
+      aria-label="Library view"
+    >
+      {tabs.map((t) => {
+        const active = view === t.key;
+        return (
+          <button
+            key={t.key}
+            role="tab"
+            aria-selected={active}
+            className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
+              active ? 'bg-brand-600 text-white' : 'text-ink-soft hover:bg-slate-50'
+            }`}
+            onClick={() => onChange(t.key)}
+          >
+            {t.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function DocumentsTable({
   items,
+  view,
+  canWrite,
   sort,
   order,
   onSort,
   isFetching,
 }: {
-  items: import('../api/documents').DocumentListItem[];
+  items: DocumentListItem[];
+  view: LibraryView;
+  canWrite: boolean;
   sort: DocumentSortField;
   order: SortOrder;
   onSort: (field: DocumentSortField) => void;
   isFetching: boolean;
 }) {
   const navigate = useNavigate();
+  // Soft-deleted documents 404 on the detail route, so rows are not navigable
+  // in the trash — the row exposes Restore instead.
+  const navigable = view !== 'trash';
+  const showActions = canWrite;
   const arrow = (field: DocumentSortField) =>
     sort === field ? (order === 'asc' ? ' ▲' : ' ▼') : '';
 
   const header = (field: DocumentSortField, label: string) => (
-    <th scope="col" className="px-4 py-3 font-medium">
+    <th key={field} scope="col" className="px-4 py-3 font-medium">
       <button
         className="inline-flex items-center font-medium text-ink-muted hover:text-ink"
         onClick={() => onSort(field)}
@@ -476,28 +558,41 @@ function DocumentsTable({
               Category
             </th>
             <th scope="col" className="px-4 py-3 font-medium">
-              Owner
+              {view === 'trash' ? 'Deleted by' : 'Owner'}
             </th>
             {header('nextReviewDate', 'Next review')}
+            {showActions && (
+              <th scope="col" className="px-4 py-3 text-right font-medium">
+                Actions
+              </th>
+            )}
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100">
           {items.map((doc) => (
             <tr
               key={doc.id}
-              className="cursor-pointer hover:bg-slate-50 focus-within:bg-slate-50"
-              onClick={() => navigate(`/library/${doc.id}`)}
+              className={
+                navigable
+                  ? 'cursor-pointer hover:bg-slate-50 focus-within:bg-slate-50'
+                  : 'hover:bg-slate-50'
+              }
+              onClick={navigable ? () => navigate(`/library/${doc.id}`) : undefined}
             >
               <td className="px-4 py-3 align-top">
-                <button
-                  className="text-left font-medium text-brand-700 hover:underline"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    navigate(`/library/${doc.id}`);
-                  }}
-                >
-                  {doc.title}
-                </button>
+                {navigable ? (
+                  <button
+                    className="text-left font-medium text-brand-700 hover:underline"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      navigate(`/library/${doc.id}`);
+                    }}
+                  >
+                    {doc.title}
+                  </button>
+                ) : (
+                  <span className="font-medium text-ink">{doc.title}</span>
+                )}
                 {doc.documentNumber && (
                   <div className="text-xs text-ink-muted">{doc.documentNumber}</div>
                 )}
@@ -510,14 +605,94 @@ function DocumentsTable({
                 >
                   {statusLabel(doc.status)}
                 </span>
+                {doc.deletedAt && (
+                  <span className="ml-1.5 inline-flex rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-medium text-red-700">
+                    Deleted
+                  </span>
+                )}
               </td>
               <td className="px-4 py-3 align-top text-ink-soft">{doc.categoryName ?? '—'}</td>
-              <td className="px-4 py-3 align-top text-ink-soft">{doc.ownerName ?? '—'}</td>
+              <td className="px-4 py-3 align-top text-ink-soft">
+                {view === 'trash' ? (doc.deletedByName ?? '—') : (doc.ownerName ?? '—')}
+              </td>
               <td className="px-4 py-3 align-top text-ink-soft">{formatDate(doc.nextReviewDate)}</td>
+              {showActions && (
+                <td className="px-4 py-3 text-right align-top">
+                  <RowActions doc={doc} view={view} />
+                </td>
+              )}
             </tr>
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/** Per-row soft-delete / restore / archive actions (write users only). */
+function RowActions({ doc, view }: { doc: DocumentListItem; view: LibraryView }) {
+  const queryClient = useQueryClient();
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['documents'] });
+
+  const del = useMutation({
+    mutationFn: () => softDeleteDocument(doc.id),
+    onSuccess: () => {
+      setConfirmDelete(false);
+      void invalidate();
+    },
+  });
+  const restore = useMutation({ mutationFn: () => restoreDocument(doc.id), onSuccess: invalidate });
+  const archive = useMutation({ mutationFn: () => archiveDocument(doc.id), onSuccess: invalidate });
+  const unarchive = useMutation({
+    mutationFn: () => unarchiveDocument(doc.id),
+    onSuccess: invalidate,
+  });
+
+  const busy = del.isPending || restore.isPending || archive.isPending || unarchive.isPending;
+  const btn = 'btn-secondary !px-2.5 !py-1 text-xs';
+
+  return (
+    <div className="inline-flex justify-end gap-2" onClick={(e) => e.stopPropagation()}>
+      {view === 'trash' ? (
+        <button className={btn} onClick={() => restore.mutate()} disabled={busy}>
+          {restore.isPending ? '…' : 'Restore'}
+        </button>
+      ) : (
+        <>
+          {doc.status === 'archived' ? (
+            <button className={btn} onClick={() => unarchive.mutate()} disabled={busy}>
+              {unarchive.isPending ? '…' : 'Unarchive'}
+            </button>
+          ) : (
+            <button className={btn} onClick={() => archive.mutate()} disabled={busy}>
+              {archive.isPending ? '…' : 'Archive'}
+            </button>
+          )}
+          <button
+            className="btn-danger !px-2.5 !py-1 text-xs"
+            onClick={() => setConfirmDelete(true)}
+            disabled={busy}
+          >
+            Delete
+          </button>
+        </>
+      )}
+      <ConfirmDialog
+        open={confirmDelete}
+        title="Move to trash?"
+        body={
+          <>
+            <span className="font-medium text-ink">{doc.title}</span> will be moved to the trash.
+            Nothing is permanently deleted — you can restore it later.
+          </>
+        }
+        confirmLabel="Delete"
+        tone="danger"
+        busy={del.isPending}
+        onConfirm={() => del.mutate()}
+        onCancel={() => setConfirmDelete(false)}
+      />
     </div>
   );
 }

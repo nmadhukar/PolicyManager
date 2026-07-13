@@ -2,7 +2,10 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
+  ForbiddenException,
   Get,
+  HttpCode,
   Param,
   Patch,
   Post,
@@ -48,8 +51,19 @@ export class DocumentsController {
 
   @Get()
   @RequirePermission(PERMISSIONS.DOCUMENT_READ)
-  @ApiOperation({ summary: 'List documents (paginated, filterable, sortable).' })
-  list(@Query() query: ListDocumentsQueryDto) {
+  @ApiOperation({
+    summary: 'List documents (paginated, filterable, sortable).',
+    description:
+      'Excludes soft-deleted and archived documents by default. `includeArchived=true` ' +
+      'surfaces archived; `deleted=true` is the trash view (only soft-deleted) and ' +
+      'additionally requires document.write.',
+  })
+  list(@Query() query: ListDocumentsQueryDto, @CurrentUser() user: AuthUser) {
+    // The trash view exposes deleted records, so it is gated to write-capable
+    // users even though the base route only needs document.read (AGENTS.md §8).
+    if (query.deleted && !user.permissions.includes(PERMISSIONS.DOCUMENT_WRITE)) {
+      throw new ForbiddenException('Viewing deleted documents requires document.write');
+    }
     return this.documents.list(query);
   }
 
@@ -104,5 +118,51 @@ export class DocumentsController {
   @ApiOperation({ summary: 'Get a short-lived presigned download URL for a version.' })
   download(@Param('id') id: string, @Param('versionId') versionId: string) {
     return this.documents.getVersionDownloadTicket(id, versionId);
+  }
+
+  @Post(':id/versions/:versionId/restore')
+  @RequirePermission(PERMISSIONS.DOCUMENT_WRITE)
+  @ApiOperation({
+    summary: 'Restore an older version as a new current version (history preserved).',
+  })
+  restoreVersion(
+    @Param('id') id: string,
+    @Param('versionId') versionId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.documents.restoreVersion(id, versionId, user.id);
+  }
+
+  @Delete(':id')
+  @RequirePermission(PERMISSIONS.DOCUMENT_WRITE)
+  @ApiOperation({
+    summary: 'Soft-delete a document (moves it to the trash; never destroys bytes).',
+  })
+  softDelete(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.documents.softDelete(id, user.id);
+  }
+
+  @Post(':id/restore')
+  @HttpCode(200)
+  @RequirePermission(PERMISSIONS.DOCUMENT_WRITE)
+  @ApiOperation({ summary: 'Restore a soft-deleted document from the trash.' })
+  restore(@Param('id') id: string) {
+    return this.documents.restore(id);
+  }
+
+  @Post(':id/archive')
+  @HttpCode(200)
+  @RequirePermission(PERMISSIONS.DOCUMENT_WRITE)
+  @ApiOperation({ summary: 'Archive a document (keeps it accessible but out of active lists).' })
+  archive(@Param('id') id: string) {
+    return this.documents.archive(id);
+  }
+
+  @Post(':id/unarchive')
+  @HttpCode(200)
+  @RequirePermission(PERMISSIONS.DOCUMENT_WRITE)
+  @ApiOperation({ summary: 'Unarchive a document, restoring its prior status.' })
+  unarchive(@Param('id') id: string) {
+    return this.documents.unarchive(id);
   }
 }

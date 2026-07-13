@@ -45,6 +45,7 @@ model User {
   roles            UserRole[]
   identities       UserIdentity[]
   ownedDocuments   Document[]        @relation("DocumentOwner")
+  deletedDocuments Document[]        @relation("DocumentDeleter")
   uploadedVersions DocumentVersion[] @relation("VersionUploader")
 
   @@schema("policytracker")
@@ -200,11 +201,20 @@ model Document {
   reviewCadence    ReviewCadence  @default(none)
   nextReviewDate   DateTime?
   effectiveDate    DateTime?
+  // Soft-delete only (AGENTS.md §9): a non-null `deletedAt` hides the document
+  // from default lists/reads but never removes the row or its version bytes.
+  // `deletedById` records who trashed it. Both cleared on restore.
+  deletedAt        DateTime?
+  deletedById      String?
+  // Lets archive/unarchive be reversible: the status held before archiving is
+  // stashed here so unarchive can restore the exact prior lifecycle state.
+  preArchiveStatus DocumentStatus?
   createdAt        DateTime       @default(now())
   updatedAt        DateTime       @updatedAt
 
   category       DocumentCategory? @relation(fields: [categoryId], references: [id])
   owner          User              @relation("DocumentOwner", fields: [ownerId], references: [id])
+  deletedBy      User?             @relation("DocumentDeleter", fields: [deletedById], references: [id])
   // Nullable FK breaks the Document<->DocumentVersion cycle; NoAction avoids a
   // referential-action loop that Postgres would otherwise reject.
   currentVersion DocumentVersion?  @relation("CurrentVersion", fields: [currentVersionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -215,6 +225,7 @@ model Document {
   @@index([ownerId])
   @@index([status])
   @@index([nextReviewDate])
+  @@index([deletedAt])
   @@schema("policytracker")
 }
 

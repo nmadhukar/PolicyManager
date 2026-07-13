@@ -15,6 +15,14 @@ export interface ListDocumentsQuery {
   accessLevel?: string;
   reviewBefore?: string;
   reviewAfter?: string;
+  /**
+   * Trash view. When true, return ONLY soft-deleted documents; when false/absent,
+   * soft-deleted documents are excluded. RBAC for this view is enforced in the
+   * controller (requires `document.write`), not here.
+   */
+  deleted?: boolean;
+  /** When true, archived documents are included in the active view. */
+  includeArchived?: boolean;
   page?: number;
   pageSize?: number;
   sort?: DocumentSortField;
@@ -73,9 +81,28 @@ export function buildDocumentListQuery(query: ListDocumentsQuery): BuiltDocument
   if (query.categoryId) where.categoryId = query.categoryId;
   if (query.ownerId) where.ownerId = query.ownerId;
   if (query.tag) where.tags = { has: query.tag };
-  if (query.status) where.status = query.status as Prisma.DocumentWhereInput['status'];
   if (query.accessLevel) {
     where.accessLevel = query.accessLevel as Prisma.DocumentWhereInput['accessLevel'];
+  }
+
+  // Soft-delete + archive scoping (AGENTS.md §9). Documents are never hard-deleted;
+  // `deletedAt` gates visibility. Archived documents stay accessible but are kept
+  // out of active lists unless explicitly requested.
+  const explicitStatus = query.status
+    ? (query.status as Prisma.DocumentWhereInput['status'])
+    : undefined;
+  if (query.deleted) {
+    // Trash view: only soft-deleted rows. Do NOT auto-hide archived here — the
+    // trash must surface everything that was deleted, archived or not.
+    where.deletedAt = { not: null };
+    if (explicitStatus) where.status = explicitStatus;
+  } else {
+    where.deletedAt = null;
+    if (explicitStatus) {
+      where.status = explicitStatus; // explicit filter wins (may be 'archived')
+    } else if (!query.includeArchived) {
+      where.status = { not: 'archived' };
+    }
   }
 
   const after = parseDate(query.reviewAfter);

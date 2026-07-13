@@ -1,4 +1,5 @@
 import {
+  CopyObjectCommand,
   CreateBucketCommand,
   GetObjectCommand,
   HeadBucketCommand,
@@ -96,6 +97,39 @@ export class S3Service implements OnModuleInit {
   /** Deterministic key for a document version's source bytes. */
   buildDocumentKey(documentId: string, versionNumber: number, fileName: string): string {
     return buildDocumentObjectKey(this.documentsPrefix, documentId, versionNumber, fileName);
+  }
+
+  /**
+   * Server-side copy of an existing object to a NEW key. Used to restore an older
+   * document version: the source (immutable) object is never moved or deleted —
+   * its bytes are duplicated to a fresh version-scoped key (AGENTS.md §9).
+   *
+   * `CopySource` is URL-encoded per segment so path separators survive while any
+   * unusual filename characters are escaped. Returns the destination object's S3
+   * version id when bucket versioning is enabled.
+   */
+  async copyObject(
+    sourceKey: string,
+    destKey: string,
+    contentType?: string,
+  ): Promise<PutObjectResult> {
+    const copySource = `${this.bucket}/${sourceKey}`
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/');
+    const result = await this.client.send(
+      new CopyObjectCommand({
+        Bucket: this.bucket,
+        Key: destKey,
+        CopySource: copySource,
+        // REPLACE so the new object gets an explicit content-type rather than
+        // inheriting stale metadata; omit to fall back to a straight copy.
+        ...(contentType ? { ContentType: contentType, MetadataDirective: 'REPLACE' } : {}),
+        ...(this.sse ? { ServerSideEncryption: this.sse as ServerSideEncryption } : {}),
+        ...(this.sse === 'aws:kms' && this.kmsKeyId ? { SSEKMSKeyId: this.kmsKeyId } : {}),
+      }),
+    );
+    return { versionId: result.VersionId };
   }
 
   /** Uploads bytes at `key`; returns the S3 version id when available. */

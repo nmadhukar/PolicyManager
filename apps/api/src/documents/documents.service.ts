@@ -83,10 +83,26 @@ export class DocumentsService {
     };
   }
 
-  /** Full detail incl. the complete, newest-first version history. */
+  /**
+   * Full detail incl. the complete, newest-first version history. Excludes
+   * soft-deleted documents — a trashed doc reads as 404 via the normal route
+   * (AGENTS.md §9).
+   */
   async get(id: string): Promise<DocumentDetail> {
-    const doc = await this.prisma.document.findUnique({
-      where: { id },
+    return this.loadDetail(id, { includeDeleted: false });
+  }
+
+  /**
+   * Loads a document's full detail. `includeDeleted` is used only by the internal
+   * state-change methods (soft-delete/restore/archive) that have already
+   * validated the delete state and need to return the (possibly deleted) row.
+   */
+  private async loadDetail(
+    id: string,
+    { includeDeleted = false }: { includeDeleted?: boolean } = {},
+  ): Promise<DocumentDetail> {
+    const doc = await this.prisma.document.findFirst({
+      where: { id, ...(includeDeleted ? {} : { deletedAt: null }) },
       include: {
         ...this.listInclude(),
         versions: {
@@ -232,7 +248,9 @@ export class DocumentsService {
    */
   async getVersionDownloadTicket(documentId: string, versionId: string): Promise<DownloadTicket> {
     const version = await this.prisma.documentVersion.findFirst({
-      where: { id: versionId, documentId },
+      // The parent-document join enforces soft-delete: a version of a trashed
+      // document is not downloadable via the normal route (reads as 404).
+      where: { id: versionId, documentId, document: { deletedAt: null } },
       select: { s3Key: true, fileName: true },
     });
     if (!version) throw new NotFoundException('Version not found');
@@ -245,18 +263,195 @@ export class DocumentsService {
     return { url, expiresIn: DOWNLOAD_TTL_SECONDS, fileName: version.fileName };
   }
 
+  // ---- Soft delete / restore / archive (AGENTS.md §9) ----------------------
+
+  /**
+   * Soft-deletes a document: stamps `deletedAt`/`deletedById` so it drops out of
+   * default lists and reads, WITHOUT removing the row, its versions, or any S3
+   * bytes. Fully reversible via {@link restore}. 404 if already deleted/missing.
+   *
+   * TODO(Phase 4 audit): emit a `document.deleted` audit event (actor, doc id).
+   */
+  async softDelete(id: string, deletedById: string): Promise<DocumentDetail> {
+    const doc = await this.prisma.document.findFirst({
+      where: { id, deletedAt: null },
+      select: { id: true },
+    });
+    if (!doc) throw new NotFoundException('Document not found');
+
+    await this.prisma.document.update({
+      where: { id },
+      data: { deletedAt: new Date(), deletedBy: { connect: { id: deletedById } } },
+    });
+    return this.loadDetail(id, { includeDeleted: true });
+  }
+
+  /**
+   * Restores a soft-deleted document by clearing `deletedAt`/`deletedById`.
+   * 404 if the document is not currently in the trash.
+   *
+   * TODO(Phase 4 audit): emit a `document.restored` audit event.
+   */
+  async restore(id: string): Promise<DocumentDetail> {
+    const doc = await this.prisma.document.findFirst({
+      where: { id, deletedAt: { not: null } },
+      select: { id: true },
+    });
+    if (!doc) throw new NotFoundException('Document not found');
+
+    await this.prisma.document.update({
+      where: { id },
+      data: { deletedAt: null, deletedById: null },
+    });
+    return this.loadDetail(id);
+  }
+
+  /**
+   * Archives a document (status -> archived), stashing the prior status so the
+   * change is reversible. Archived documents stay fully readable/downloadable but
+   * are kept out of active lists. No-op if already archived. 404 if
+   * missing/soft-deleted (restore it first).
+   *
+   * TODO(Phase 4 audit): emit a `document.archived` audit event.
+   */
+  async archive(id: string): Promise<DocumentDetail> {
+    const doc = await this.prisma.document.findFirst({
+      where: { id, deletedAt: null },
+      select: { id: true, status: true },
+    });
+    if (!doc) throw new NotFoundException('Document not found');
+
+    if (doc.status !== 'archived') {
+      await this.prisma.document.update({
+        where: { id },
+        data: { status: 'archived', preArchiveStatus: doc.status },
+      });
+    }
+    return this.loadDetail(id);
+  }
+
+  /**
+   * Unarchives a document, restoring the status held before it was archived
+   * (falling back to `draft` when none was stashed) and clearing the stash.
+   * No-op if the document is not archived. 404 if missing/soft-deleted.
+   *
+   * TODO(Phase 4 audit): emit a `document.unarchived` audit event.
+   */
+  async unarchive(id: string): Promise<DocumentDetail> {
+    const doc = await this.prisma.document.findFirst({
+      where: { id, deletedAt: null },
+      select: { id: true, status: true, preArchiveStatus: true },
+    });
+    if (!doc) throw new NotFoundException('Document not found');
+
+    if (doc.status === 'archived') {
+      await this.prisma.document.update({
+        where: { id },
+        data: { status: doc.preArchiveStatus ?? 'draft', preArchiveStatus: null },
+      });
+    }
+    return this.loadDetail(id);
+  }
+
+  /**
+   * Restores an OLDER version as the new current version. The chosen version's
+   * immutable bytes are COPIED (never moved/deleted) to a fresh, version-scoped
+   * S3 key, and a brand-new DocumentVersion row is appended and made current.
+   * History is strictly preserved — the version count only ever grows and no
+   * prior row/object is mutated (AGENTS.md §9).
+   *
+   * Because the bytes are identical, the checksum is carried forward unchanged.
+   *
+   * TODO(Phase 4 audit): emit a `document.version_restored` audit event
+   * (source version -> new version).
+   */
+  async restoreVersion(
+    documentId: string,
+    versionId: string,
+    restoredById: string,
+  ): Promise<DocumentVersionSummary> {
+    const doc = await this.prisma.document.findFirst({
+      where: { id: documentId, deletedAt: null },
+      select: { id: true },
+    });
+    if (!doc) throw new NotFoundException('Document not found');
+
+    const source = await this.prisma.documentVersion.findFirst({
+      where: { id: versionId, documentId },
+      select: {
+        versionNumber: true,
+        s3Key: true,
+        fileName: true,
+        mimeType: true,
+        sizeBytes: true,
+        checksum: true,
+        extractedText: true,
+      },
+    });
+    if (!source) throw new NotFoundException('Version not found');
+
+    const agg = await this.prisma.documentVersion.aggregate({
+      where: { documentId },
+      _max: { versionNumber: true },
+    });
+    const versionNumber = computeNextVersionNumber(agg._max.versionNumber);
+    const s3Key = this.s3.buildDocumentKey(documentId, versionNumber, source.fileName);
+
+    // Duplicate the source object to the new key — the original is untouched.
+    const { versionId: s3VersionId } = await this.s3.copyObject(
+      source.s3Key,
+      s3Key,
+      source.mimeType,
+    );
+
+    const created = await this.prisma.$transaction(async (tx) => {
+      const version = await tx.documentVersion.create({
+        data: {
+          documentId,
+          versionNumber,
+          s3Key,
+          s3VersionId,
+          fileName: source.fileName,
+          mimeType: source.mimeType,
+          sizeBytes: source.sizeBytes,
+          checksum: source.checksum,
+          uploadedById: restoredById,
+          changeSummary: `Restored from v${source.versionNumber}`,
+          extractedText: source.extractedText ?? undefined,
+        },
+        select: versionSummarySelect,
+      });
+      await tx.document.update({
+        where: { id: documentId },
+        data: { currentVersion: { connect: { id: version.id } } },
+      });
+      return version;
+    });
+
+    return this.toVersionSummary(created);
+  }
+
   // ---- Helpers -------------------------------------------------------------
 
   private listInclude() {
     return {
       category: { select: { name: true } },
       owner: { select: { name: true } },
+      deletedBy: { select: { name: true } },
       currentVersion: { select: versionSummarySelect },
     } satisfies Prisma.DocumentInclude;
   }
 
+  /**
+   * Guards write operations (metadata update, new version) to ACTIVE documents:
+   * a soft-deleted document reads as 404 here, so it can't be edited or grown
+   * until restored (AGENTS.md §9).
+   */
   private async assertDocumentExists(id: string): Promise<void> {
-    const found = await this.prisma.document.findUnique({ where: { id }, select: { id: true } });
+    const found = await this.prisma.document.findFirst({
+      where: { id, deletedAt: null },
+      select: { id: true },
+    });
     if (!found) throw new NotFoundException('Document not found');
   }
 
@@ -320,6 +515,8 @@ export class DocumentsService {
     effectiveDate: Date | null;
     createdAt: Date;
     updatedAt: Date;
+    deletedAt: Date | null;
+    deletedBy: { name: string } | null;
     category: { name: string } | null;
     owner: { name: string } | null;
     currentVersion: Parameters<DocumentsService['toVersionSummary']>[0] | null;
@@ -340,6 +537,8 @@ export class DocumentsService {
       effectiveDate: doc.effectiveDate ? doc.effectiveDate.toISOString() : null,
       createdAt: doc.createdAt.toISOString(),
       updatedAt: doc.updatedAt.toISOString(),
+      deletedAt: doc.deletedAt ? doc.deletedAt.toISOString() : null,
+      deletedByName: doc.deletedBy?.name ?? null,
       currentVersion: doc.currentVersion ? this.toVersionSummary(doc.currentVersion) : null,
     };
   }

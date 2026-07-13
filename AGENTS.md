@@ -185,6 +185,7 @@ A ticket is complete only when all relevant items are true:
 - Local MinIO may auto-create buckets.
 - Production S3 bucket/KMS/public-access changes require explicit env flags and review.
 - Storage Admin UI v1 may create/list buckets and prefixes, but must not expose destructive bucket/object operations unless a separate ticket approves them.
+- Documents are **soft-deleted only** (set `deletedAt`); the API and UI must never hard-delete a document or destroy its version bytes/rows. Deleted documents are excluded from default lists but restorable by authorized users. Archiving (status archived/retired) keeps a document accessible but out of active views. All older versions remain accessible and downloadable; restoring an older version creates a new current version rather than mutating history.
 
 ## 10. Cover Page Rules
 

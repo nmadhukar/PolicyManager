@@ -164,6 +164,10 @@ export interface DocumentListItem {
   effectiveDate: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Non-null when the document is soft-deleted (in the trash); null otherwise. */
+  deletedAt: string | null;
+  /** Display name of the user who soft-deleted the document, when applicable. */
+  deletedByName: string | null;
   currentVersion: DocumentVersionSummary | null;
 }
 

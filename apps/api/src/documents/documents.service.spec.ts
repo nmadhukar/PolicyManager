@@ -10,6 +10,7 @@ const makePrisma = (): any => {
       findMany: jest.fn(),
       count: jest.fn(),
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
     },
@@ -31,6 +32,7 @@ const makeS3 = () => ({
     (id: string, n: number, name: string) => `documents/${id}/v${n}/${name}`,
   ),
   putObject: jest.fn().mockResolvedValue({ versionId: 's3-ver-1' }),
+  copyObject: jest.fn().mockResolvedValue({ versionId: 's3-copy-ver' }),
   getPresignedDownloadUrl: jest.fn().mockResolvedValue('https://minio.local/signed?x=1'),
 });
 
@@ -68,7 +70,7 @@ describe('DocumentsService.addVersion', () => {
 
   it('stores an immutable v1: checksum, deterministic key, S3 versionId, currentVersion set', async () => {
     const { svc, prisma, s3, extractor } = build();
-    prisma.document.findUnique.mockResolvedValue({ id: 'doc-1' }); // assertDocumentExists
+    prisma.document.findFirst.mockResolvedValue({ id: 'doc-1' }); // assertDocumentExists
     prisma.documentVersion.aggregate.mockResolvedValue({ _max: { versionNumber: null } });
     prisma.documentVersion.create.mockResolvedValue(versionRow());
     prisma.document.update.mockResolvedValue({});
@@ -103,7 +105,7 @@ describe('DocumentsService.addVersion', () => {
 
   it('increments to the next version number from the current maximum', async () => {
     const { svc, prisma } = build();
-    prisma.document.findUnique.mockResolvedValue({ id: 'doc-1' });
+    prisma.document.findFirst.mockResolvedValue({ id: 'doc-1' });
     prisma.documentVersion.aggregate.mockResolvedValue({ _max: { versionNumber: 4 } });
     prisma.documentVersion.create.mockResolvedValue(versionRow({ id: 'v-5', versionNumber: 5 }));
     prisma.document.update.mockResolvedValue({});
@@ -117,14 +119,14 @@ describe('DocumentsService.addVersion', () => {
 
   it('404s when the target document does not exist (no upload attempted)', async () => {
     const { svc, prisma, s3 } = build();
-    prisma.document.findUnique.mockResolvedValue(null);
+    prisma.document.findFirst.mockResolvedValue(null);
     await expect(svc.addVersion('ghost', file, {}, 'u')).rejects.toBeInstanceOf(NotFoundException);
     expect(s3.putObject).not.toHaveBeenCalled();
   });
 
   it('omits extractedText when extraction yields nothing', async () => {
     const { svc, prisma, extractor } = build();
-    prisma.document.findUnique.mockResolvedValue({ id: 'doc-1' });
+    prisma.document.findFirst.mockResolvedValue({ id: 'doc-1' });
     prisma.documentVersion.aggregate.mockResolvedValue({ _max: { versionNumber: null } });
     prisma.documentVersion.create.mockResolvedValue(versionRow({ extractedText: null }));
     prisma.document.update.mockResolvedValue({});
@@ -147,7 +149,8 @@ describe('DocumentsService.getVersionDownloadTicket', () => {
     const ticket = await svc.getVersionDownloadTicket('doc-1', 'v-1');
 
     expect(prisma.documentVersion.findFirst).toHaveBeenCalledWith({
-      where: { id: 'v-1', documentId: 'doc-1' },
+      // A version of a soft-deleted document must not be downloadable.
+      where: { id: 'v-1', documentId: 'doc-1', document: { deletedAt: null } },
       select: { s3Key: true, fileName: true },
     });
     expect(s3.getPresignedDownloadUrl).toHaveBeenCalledWith(
@@ -187,6 +190,8 @@ const fullDocRow = (over: Record<string, unknown> = {}) => ({
   effectiveDate: null,
   createdAt: new Date('2026-01-01T00:00:00Z'),
   updatedAt: new Date('2026-02-01T00:00:00Z'),
+  deletedAt: null,
+  deletedBy: null,
   category: { name: 'Policies' },
   owner: { name: 'Owner' },
   currentVersion: versionRow(),
@@ -220,7 +225,7 @@ describe('DocumentsService.list', () => {
 describe('DocumentsService.update', () => {
   it('builds a partial patch: disconnects category on null and clears a date', async () => {
     const { svc, prisma } = build();
-    prisma.document.findUnique
+    prisma.document.findFirst
       .mockResolvedValueOnce({ id: 'doc-1' }) // assertDocumentExists
       .mockResolvedValueOnce(fullDocRow()); // get() reload
     prisma.document.update.mockResolvedValue({});
@@ -244,7 +249,7 @@ describe('DocumentsService.update', () => {
   it('connects a category and parses a provided review date', async () => {
     const { svc, prisma } = build();
     prisma.documentCategory.findUnique.mockResolvedValue({ id: 'cat-9' });
-    prisma.document.findUnique
+    prisma.document.findFirst
       .mockResolvedValueOnce({ id: 'doc-1' })
       .mockResolvedValueOnce(fullDocRow());
     prisma.document.update.mockResolvedValue({});
@@ -256,9 +261,9 @@ describe('DocumentsService.update', () => {
     expect(data.nextReviewDate).toBeInstanceOf(Date);
   });
 
-  it('404s for an unknown document', async () => {
+  it('404s for an unknown (or soft-deleted) document', async () => {
     const { svc, prisma } = build();
-    prisma.document.findUnique.mockResolvedValue(null);
+    prisma.document.findFirst.mockResolvedValue(null);
     await expect(svc.update('ghost', { title: 'x' })).rejects.toBeInstanceOf(NotFoundException);
   });
 });
@@ -277,7 +282,7 @@ describe('DocumentsService.create', () => {
     const { svc, prisma } = build();
     prisma.document.create.mockResolvedValue({ id: 'doc-new' });
     // get() reload after create:
-    prisma.document.findUnique.mockResolvedValue({
+    prisma.document.findFirst.mockResolvedValue({
       id: 'doc-new',
       title: 'X',
       documentNumber: null,
@@ -305,5 +310,212 @@ describe('DocumentsService.create', () => {
     expect(createArg.data.tags).toEqual([]);
     expect(detail.id).toBe('doc-new');
     expect(detail.versions).toEqual([]);
+  });
+});
+
+describe('DocumentsService.get (soft-delete aware)', () => {
+  it('loads a document scoped to non-deleted rows and maps deletedAt', async () => {
+    const { svc, prisma } = build();
+    prisma.document.findFirst.mockResolvedValue(fullDocRow());
+
+    const detail = await svc.get('doc-1');
+
+    // get() must never surface a soft-deleted document.
+    const arg = prisma.document.findFirst.mock.calls[0][0];
+    expect(arg.where).toEqual({ id: 'doc-1', deletedAt: null });
+    expect(detail.deletedAt).toBeNull();
+    expect(detail.deletedByName).toBeNull();
+  });
+
+  it('404s when the document is missing or soft-deleted', async () => {
+    const { svc, prisma } = build();
+    prisma.document.findFirst.mockResolvedValue(null);
+    await expect(svc.get('gone')).rejects.toBeInstanceOf(NotFoundException);
+  });
+});
+
+describe('DocumentsService.softDelete', () => {
+  it('stamps deletedAt + deletedBy without removing rows or bytes', async () => {
+    const { svc, prisma } = build();
+    prisma.document.findFirst
+      .mockResolvedValueOnce({ id: 'doc-1', deletedAt: null }) // active guard
+      .mockResolvedValueOnce(fullDocRow({ deletedAt: new Date('2026-03-01T00:00:00Z'), deletedBy: { name: 'Admin' } })); // reload incl. deleted
+    prisma.document.update.mockResolvedValue({});
+
+    const detail = await svc.softDelete('doc-1', 'user-admin');
+
+    const updateArg = prisma.document.update.mock.calls[0][0];
+    expect(updateArg.where).toEqual({ id: 'doc-1' });
+    expect(updateArg.data.deletedAt).toBeInstanceOf(Date);
+    expect(updateArg.data.deletedBy).toEqual({ connect: { id: 'user-admin' } });
+    // No hard-delete anywhere.
+    expect(prisma.document.delete).toBeUndefined();
+    expect(detail.deletedAt).toBe('2026-03-01T00:00:00.000Z');
+    expect(detail.deletedByName).toBe('Admin');
+  });
+
+  it('404s (and does not write) when the document is already deleted/missing', async () => {
+    const { svc, prisma } = build();
+    prisma.document.findFirst.mockResolvedValue(null);
+    await expect(svc.softDelete('gone', 'u')).rejects.toBeInstanceOf(NotFoundException);
+    expect(prisma.document.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('DocumentsService.restore', () => {
+  it('clears deletedAt/deletedById for a trashed document', async () => {
+    const { svc, prisma } = build();
+    prisma.document.findFirst
+      .mockResolvedValueOnce({ id: 'doc-1' }) // trashed guard
+      .mockResolvedValueOnce(fullDocRow()); // reload
+    prisma.document.update.mockResolvedValue({});
+
+    await svc.restore('doc-1');
+
+    // Guard queried the trash (deletedAt not null).
+    expect(prisma.document.findFirst.mock.calls[0][0].where).toEqual({
+      id: 'doc-1',
+      deletedAt: { not: null },
+    });
+    const updateArg = prisma.document.update.mock.calls[0][0];
+    expect(updateArg.data).toEqual({ deletedAt: null, deletedById: null });
+  });
+
+  it('404s when the document is not in the trash', async () => {
+    const { svc, prisma } = build();
+    prisma.document.findFirst.mockResolvedValue(null);
+    await expect(svc.restore('doc-1')).rejects.toBeInstanceOf(NotFoundException);
+    expect(prisma.document.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('DocumentsService.archive / unarchive', () => {
+  it('archives a published document and stashes the prior status', async () => {
+    const { svc, prisma } = build();
+    prisma.document.findFirst
+      .mockResolvedValueOnce({ id: 'doc-1', status: 'published' }) // guard
+      .mockResolvedValueOnce(fullDocRow({ status: 'archived' })); // reload
+    prisma.document.update.mockResolvedValue({});
+
+    await svc.archive('doc-1');
+
+    const data = prisma.document.update.mock.calls[0][0].data;
+    expect(data.status).toBe('archived');
+    expect(data.preArchiveStatus).toBe('published');
+  });
+
+  it('archive is a no-op when already archived (no double-stash)', async () => {
+    const { svc, prisma } = build();
+    prisma.document.findFirst
+      .mockResolvedValueOnce({ id: 'doc-1', status: 'archived' }) // guard
+      .mockResolvedValueOnce(fullDocRow({ status: 'archived' })); // reload
+    await svc.archive('doc-1');
+    expect(prisma.document.update).not.toHaveBeenCalled();
+  });
+
+  it('unarchive restores the stashed prior status and clears it', async () => {
+    const { svc, prisma } = build();
+    prisma.document.findFirst
+      .mockResolvedValueOnce({ id: 'doc-1', status: 'archived', preArchiveStatus: 'published' })
+      .mockResolvedValueOnce(fullDocRow({ status: 'published' }));
+    prisma.document.update.mockResolvedValue({});
+
+    await svc.unarchive('doc-1');
+
+    const data = prisma.document.update.mock.calls[0][0].data;
+    expect(data.status).toBe('published');
+    expect(data.preArchiveStatus).toBeNull();
+  });
+
+  it('unarchive falls back to draft when no prior status was stashed', async () => {
+    const { svc, prisma } = build();
+    prisma.document.findFirst
+      .mockResolvedValueOnce({ id: 'doc-1', status: 'archived', preArchiveStatus: null })
+      .mockResolvedValueOnce(fullDocRow({ status: 'draft' }));
+    prisma.document.update.mockResolvedValue({});
+
+    await svc.unarchive('doc-1');
+
+    expect(prisma.document.update.mock.calls[0][0].data.status).toBe('draft');
+  });
+
+  it('archive 404s for a missing/soft-deleted document', async () => {
+    const { svc, prisma } = build();
+    prisma.document.findFirst.mockResolvedValue(null);
+    await expect(svc.archive('gone')).rejects.toBeInstanceOf(NotFoundException);
+    // Archive must only ever act on active (non-deleted) documents.
+    expect(prisma.document.findFirst.mock.calls[0][0].where).toEqual({
+      id: 'gone',
+      deletedAt: null,
+    });
+  });
+});
+
+describe('DocumentsService.restoreVersion', () => {
+  const sourceVersion = {
+    versionNumber: 1,
+    s3Key: 'documents/doc-1/v1/policy.pdf',
+    fileName: 'policy.pdf',
+    mimeType: 'application/pdf',
+    sizeBytes: 10,
+    checksum: 'sha-of-v1',
+    extractedText: 'v1 words',
+  };
+
+  it('copies the old object to a NEW key and appends a new current version (history preserved)', async () => {
+    const { svc, prisma, s3 } = build();
+    prisma.document.findFirst.mockResolvedValue({ id: 'doc-1' }); // active doc guard
+    prisma.documentVersion.findFirst.mockResolvedValue(sourceVersion);
+    prisma.documentVersion.aggregate.mockResolvedValue({ _max: { versionNumber: 2 } });
+    prisma.documentVersion.create.mockResolvedValue(
+      versionRow({ id: 'v-3', versionNumber: 3, changeSummary: 'Restored from v1' }),
+    );
+    prisma.document.update.mockResolvedValue({});
+
+    const result = await svc.restoreVersion('doc-1', 'v-1', 'user-admin');
+
+    // New, version-scoped destination key — never the source key.
+    expect(s3.buildDocumentKey).toHaveBeenCalledWith('doc-1', 3, 'policy.pdf');
+    expect(s3.copyObject).toHaveBeenCalledWith(
+      'documents/doc-1/v1/policy.pdf',
+      'documents/doc-1/v3/policy.pdf',
+      'application/pdf',
+    );
+    // The old object is copied, never moved/deleted.
+    expect(s3.putObject).not.toHaveBeenCalled();
+
+    const createArg = prisma.documentVersion.create.mock.calls[0][0];
+    expect(createArg.data.versionNumber).toBe(3);
+    expect(createArg.data.s3Key).toBe('documents/doc-1/v3/policy.pdf');
+    expect(createArg.data.s3VersionId).toBe('s3-copy-ver');
+    // Identical bytes ⇒ identical checksum is carried forward.
+    expect(createArg.data.checksum).toBe('sha-of-v1');
+    expect(createArg.data.changeSummary).toBe('Restored from v1');
+    expect(createArg.data.uploadedById).toBe('user-admin');
+    // Document now points at the newly created version.
+    expect(prisma.document.update).toHaveBeenCalledWith({
+      where: { id: 'doc-1' },
+      data: { currentVersion: { connect: { id: 'v-3' } } },
+    });
+    expect(result.versionNumber).toBe(3);
+  });
+
+  it('404s when the source version is not under the document (nothing copied)', async () => {
+    const { svc, prisma, s3 } = build();
+    prisma.document.findFirst.mockResolvedValue({ id: 'doc-1' });
+    prisma.documentVersion.findFirst.mockResolvedValue(null);
+    await expect(svc.restoreVersion('doc-1', 'ghost', 'u')).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    expect(s3.copyObject).not.toHaveBeenCalled();
+    expect(prisma.documentVersion.create).not.toHaveBeenCalled();
+  });
+
+  it('404s when the parent document is missing/soft-deleted (nothing copied)', async () => {
+    const { svc, prisma, s3 } = build();
+    prisma.document.findFirst.mockResolvedValue(null);
+    await expect(svc.restoreVersion('gone', 'v-1', 'u')).rejects.toBeInstanceOf(NotFoundException);
+    expect(prisma.documentVersion.findFirst).not.toHaveBeenCalled();
+    expect(s3.copyObject).not.toHaveBeenCalled();
   });
 });

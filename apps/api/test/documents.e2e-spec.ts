@@ -192,4 +192,142 @@ describe('Documents & Versioning (e2e)', () => {
     expect(download.body.expiresIn).toBeGreaterThan(0);
     expect(download.body.expiresIn).toBeLessThanOrEqual(300);
   }, 30000);
+
+  it('runs the soft-delete -> restore -> archive -> version-restore lifecycle', async () => {
+    const listContains = async (id: string, query: Record<string, unknown> = {}) => {
+      const res = await request(app.getHttpServer())
+        .get('/api/documents')
+        .query({ q: `LC-${suffix}`, pageSize: 100, ...query })
+        .set('Authorization', auth())
+        .expect(200);
+      return (res.body.items as { id: string }[]).some((d) => d.id === id);
+    };
+    const versionCount = async (id: string): Promise<number> => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/documents/${id}`)
+        .set('Authorization', auth())
+        .expect(200);
+      return res.body.versions.length as number;
+    };
+    const canDownload = async (id: string, versionId: string): Promise<boolean> => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/documents/${id}/versions/${versionId}/download`)
+        .set('Authorization', auth());
+      return res.status === 200 && typeof res.body.url === 'string';
+    };
+
+    // Create + upload v1 and v2.
+    const created = await request(app.getHttpServer())
+      .post('/api/documents')
+      .set('Authorization', auth())
+      .send({ title: `Lifecycle LC-${suffix}` })
+      .expect(201);
+    const docId = created.body.id as string;
+    createdDocIds.push(docId);
+
+    const pdfV1 = makePdf('Lifecycle version one');
+    const v1Checksum = createHash('sha256').update(pdfV1).digest('hex');
+    const upV1 = await request(app.getHttpServer())
+      .post(`/api/documents/${docId}/versions`)
+      .set('Authorization', auth())
+      .attach('file', pdfV1, { filename: 'v1.pdf', contentType: 'application/pdf' })
+      .expect(201);
+    const v1Id = upV1.body.id as string;
+
+    const upV2 = await request(app.getHttpServer())
+      .post(`/api/documents/${docId}/versions`)
+      .set('Authorization', auth())
+      .attach('file', makePdf('Lifecycle version two'), {
+        filename: 'v2.pdf',
+        contentType: 'application/pdf',
+      })
+      .expect(201);
+    const v2Id = upV2.body.id as string;
+    expect(await versionCount(docId)).toBe(2);
+    expect(await listContains(docId)).toBe(true);
+
+    // --- Soft delete -------------------------------------------------------
+    await request(app.getHttpServer())
+      .delete(`/api/documents/${docId}`)
+      .set('Authorization', auth())
+      .expect(200);
+    // Excluded from the default list, but present in the trash view.
+    expect(await listContains(docId)).toBe(false);
+    expect(await listContains(docId, { deleted: true })).toBe(true);
+    // A soft-deleted document reads as 404 via the normal route.
+    await request(app.getHttpServer())
+      .get(`/api/documents/${docId}`)
+      .set('Authorization', auth())
+      .expect(404);
+    // ...and its versions are not downloadable while trashed.
+    await request(app.getHttpServer())
+      .get(`/api/documents/${docId}/versions/${v1Id}/download`)
+      .set('Authorization', auth())
+      .expect(404);
+    // Rows and bytes are preserved — the version count is untouched.
+    const trashed = await prisma.documentVersion.count({ where: { documentId: docId } });
+    expect(trashed).toBe(2);
+
+    // --- Restore -----------------------------------------------------------
+    await request(app.getHttpServer())
+      .post(`/api/documents/${docId}/restore`)
+      .set('Authorization', auth())
+      .expect(200);
+    expect(await listContains(docId)).toBe(true);
+    expect(await versionCount(docId)).toBe(2);
+
+    // --- Archive -----------------------------------------------------------
+    await request(app.getHttpServer())
+      .post(`/api/documents/${docId}/archive`)
+      .set('Authorization', auth())
+      .expect(200);
+    // Excluded from the default list, present with status=archived, downloadable.
+    expect(await listContains(docId)).toBe(false);
+    expect(await listContains(docId, { status: 'archived' })).toBe(true);
+    expect(await listContains(docId, { includeArchived: true })).toBe(true);
+    expect(await canDownload(docId, v1Id)).toBe(true);
+
+    // Unarchive returns it to the active list with its prior (draft) status.
+    await request(app.getHttpServer())
+      .post(`/api/documents/${docId}/unarchive`)
+      .set('Authorization', auth())
+      .expect(200);
+    expect(await listContains(docId)).toBe(true);
+
+    // --- Restore version v1 (creates a NEW v3 current) ---------------------
+    const beforeRestore = await versionCount(docId);
+    const restored = await request(app.getHttpServer())
+      .post(`/api/documents/${docId}/versions/${v1Id}/restore`)
+      .set('Authorization', auth())
+      .expect(201);
+    expect(restored.body.versionNumber).toBe(3);
+    expect(restored.body.changeSummary).toBe('Restored from v1');
+    // Identical bytes ⇒ identical checksum carried forward from v1.
+    expect(restored.body.checksum).toBe(v1Checksum);
+    const v3Id = restored.body.id as string;
+
+    // The version count only ever GROWS; history is preserved.
+    const afterRestore = await versionCount(docId);
+    expect(afterRestore).toBe(beforeRestore + 1);
+    expect(afterRestore).toBe(3);
+
+    // Detail shows v3 as current, and v1/v2/v3 are all still present + downloadable.
+    const detail = await request(app.getHttpServer())
+      .get(`/api/documents/${docId}`)
+      .set('Authorization', auth())
+      .expect(200);
+    expect(detail.body.currentVersion.id).toBe(v3Id);
+    const versionIds = (detail.body.versions as { id: string }[]).map((v) => v.id);
+    expect(versionIds).toEqual(expect.arrayContaining([v1Id, v2Id, v3Id]));
+    expect(await canDownload(docId, v1Id)).toBe(true);
+    expect(await canDownload(docId, v2Id)).toBe(true);
+    expect(await canDownload(docId, v3Id)).toBe(true);
+
+    // The restored version is a NEW row/object — the original v1 row is intact.
+    const v1Row = await prisma.documentVersion.findUnique({ where: { id: v1Id } });
+    const v3Row = await prisma.documentVersion.findUnique({ where: { id: v3Id } });
+    expect(v1Row).not.toBeNull();
+    expect(v3Row?.s3Key).not.toBe(v1Row?.s3Key); // copied to a new key, not moved
+    expect(v3Row?.checksum).toBe(v1Row?.checksum); // identical bytes
+  }, 45000);
 });

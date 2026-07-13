@@ -1,5 +1,5 @@
 import { FormEvent, useMemo, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AxiosError } from 'axios';
 import {
@@ -8,11 +8,16 @@ import {
   PERMISSIONS,
   REVIEW_CADENCES,
   type DocumentDetail,
+  type DocumentVersionSummary,
 } from '@policymanager/shared';
 import {
   UpdateDocumentInput,
+  archiveDocument,
   getDocument,
   getDownloadUrl,
+  restoreVersion,
+  softDeleteDocument,
+  unarchiveDocument,
   updateDocument,
   uploadVersion,
 } from '../api/documents';
@@ -20,6 +25,7 @@ import { flattenCategories, listCategoryTree } from '../api/categories';
 import { useAuth } from '../auth/AuthContext';
 import { formatBytes, formatDate, statusBadgeClasses, statusLabel } from '../lib/format';
 import { AppShell } from '../ui/AppShell';
+import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { EmptyState, ErrorState, ForbiddenState, LoadingState } from '../ui/states';
 import { TagInput } from '../ui/TagInput';
 
@@ -81,7 +87,21 @@ function Detail({ id }: { id: string }) {
             </span>
           </div>
         </div>
+        {canWrite && <DocumentActions doc={doc} />}
       </header>
+
+      {doc.status === 'archived' && (
+        <div
+          className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm text-ink-soft"
+          role="status"
+        >
+          <span aria-hidden>🗄️</span>
+          <span>
+            This document is <span className="font-medium text-ink">archived</span> — it stays
+            accessible but is hidden from active lists.
+          </span>
+        </div>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
@@ -92,6 +112,66 @@ function Detail({ id }: { id: string }) {
           {canWrite && <QuickTags doc={doc} />}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Archive/Unarchive + soft-delete actions in the detail header (write users). */
+function DocumentActions({ doc }: { doc: DocumentDetail }) {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: ['document', doc.id] });
+    void queryClient.invalidateQueries({ queryKey: ['documents'] });
+  };
+
+  const archive = useMutation({ mutationFn: () => archiveDocument(doc.id), onSuccess: invalidate });
+  const unarchive = useMutation({
+    mutationFn: () => unarchiveDocument(doc.id),
+    onSuccess: invalidate,
+  });
+  const del = useMutation({
+    mutationFn: () => softDeleteDocument(doc.id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['documents'] });
+      // The document now 404s on this route — return to the library.
+      navigate('/library');
+    },
+  });
+
+  const busy = archive.isPending || unarchive.isPending || del.isPending;
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {doc.status === 'archived' ? (
+        <button className="btn-secondary" onClick={() => unarchive.mutate()} disabled={busy}>
+          {unarchive.isPending ? 'Unarchiving…' : 'Unarchive'}
+        </button>
+      ) : (
+        <button className="btn-secondary" onClick={() => archive.mutate()} disabled={busy}>
+          {archive.isPending ? 'Archiving…' : 'Archive'}
+        </button>
+      )}
+      <button className="btn-danger" onClick={() => setConfirmDelete(true)} disabled={busy}>
+        Delete
+      </button>
+      <ConfirmDialog
+        open={confirmDelete}
+        title="Move to trash?"
+        body={
+          <>
+            <span className="font-medium text-ink">{doc.title}</span> will be moved to the trash.
+            Nothing is permanently deleted — an administrator can restore it from the Trash view.
+          </>
+        }
+        confirmLabel="Delete"
+        tone="danger"
+        busy={del.isPending}
+        onConfirm={() => del.mutate()}
+        onCancel={() => setConfirmDelete(false)}
+      />
     </div>
   );
 }
@@ -416,45 +496,102 @@ function VersionsCard({ doc, canWrite }: { doc: DocumentDetail; canWrite: boolea
                 <th scope="col" className="py-2 pr-4 font-medium">
                   Uploaded
                 </th>
-                <th scope="col" className="py-2 pr-4 text-right font-medium">
-                  Download
+                <th scope="col" className="py-2 pr-0 text-right font-medium">
+                  Actions
                 </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {doc.versions.map((v) => (
-                <tr key={v.id} className={v.id === doc.currentVersion?.id ? 'bg-brand-50/40' : undefined}>
-                  <td className="py-2.5 pr-4 align-top">
-                    <div className="font-medium text-ink">
-                      v{v.versionNumber}
-                      {v.id === doc.currentVersion?.id && (
-                        <span className="ml-2 rounded bg-brand-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-brand-700">
-                          Current
-                        </span>
+              {doc.versions.map((v) => {
+                const isCurrent = v.id === doc.currentVersion?.id;
+                return (
+                  <tr key={v.id} className={isCurrent ? 'bg-brand-50/40' : undefined}>
+                    <td className="py-2.5 pr-4 align-top">
+                      <div className="font-medium text-ink">
+                        v{v.versionNumber}
+                        {isCurrent && (
+                          <span className="ml-2 rounded bg-brand-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-brand-700">
+                            Current
+                          </span>
+                        )}
+                      </div>
+                      {v.changeSummary && (
+                        <div className="text-xs text-ink-muted">{v.changeSummary}</div>
                       )}
-                    </div>
-                    {v.changeSummary && (
-                      <div className="text-xs text-ink-muted">{v.changeSummary}</div>
-                    )}
-                  </td>
-                  <td className="py-2.5 pr-4 align-top text-ink-soft">
-                    <div>{v.fileName}</div>
-                    <div className="text-xs text-ink-muted">{formatBytes(v.sizeBytes)}</div>
-                  </td>
-                  <td className="py-2.5 pr-4 align-top text-ink-soft">
-                    <div>{formatDate(v.createdAt)}</div>
-                    <div className="text-xs text-ink-muted">{v.uploadedByName ?? '—'}</div>
-                  </td>
-                  <td className="py-2.5 pr-0 text-right align-top">
-                    <DownloadButton documentId={doc.id} versionId={v.id} />
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                    <td className="py-2.5 pr-4 align-top text-ink-soft">
+                      <div>{v.fileName}</div>
+                      <div className="text-xs text-ink-muted">{formatBytes(v.sizeBytes)}</div>
+                    </td>
+                    <td className="py-2.5 pr-4 align-top text-ink-soft">
+                      <div>{formatDate(v.createdAt)}</div>
+                      <div className="text-xs text-ink-muted">{v.uploadedByName ?? '—'}</div>
+                    </td>
+                    <td className="py-2.5 pr-0 text-right align-top">
+                      <div className="inline-flex items-center justify-end gap-2">
+                        {canWrite && !isCurrent && (
+                          <RestoreVersionButton doc={doc} version={v} />
+                        )}
+                        <DownloadButton documentId={doc.id} versionId={v.id} />
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Restores an older version as a NEW current version (confirm first). The old
+ * version stays in history — nothing is overwritten.
+ */
+function RestoreVersionButton({
+  doc,
+  version,
+}: {
+  doc: DocumentDetail;
+  version: DocumentVersionSummary;
+}) {
+  const queryClient = useQueryClient();
+  const [confirm, setConfirm] = useState(false);
+  const mutation = useMutation({
+    mutationFn: () => restoreVersion(doc.id, version.id),
+    onSuccess: () => {
+      setConfirm(false);
+      void queryClient.invalidateQueries({ queryKey: ['document', doc.id] });
+      void queryClient.invalidateQueries({ queryKey: ['documents'] });
+    },
+  });
+
+  return (
+    <>
+      <button
+        className="btn-secondary !px-3 !py-1 text-xs"
+        onClick={() => setConfirm(true)}
+        disabled={mutation.isPending}
+      >
+        {mutation.isPending ? '…' : 'Restore'}
+      </button>
+      <ConfirmDialog
+        open={confirm}
+        title={`Restore v${version.versionNumber}?`}
+        body={
+          <>
+            This copies <span className="font-medium text-ink">v{version.versionNumber}</span> to a
+            new current version. Existing versions are kept in history — nothing is overwritten.
+          </>
+        }
+        confirmLabel="Restore version"
+        busy={mutation.isPending}
+        onConfirm={() => mutation.mutate()}
+        onCancel={() => setConfirm(false)}
+      />
+    </>
   );
 }
 

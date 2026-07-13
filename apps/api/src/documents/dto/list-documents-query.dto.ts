@@ -8,8 +8,11 @@ import {
   type DocumentStatus,
   type SortOrder,
 } from '@policymanager/shared';
-import { Type } from 'class-transformer';
-import { IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import { IsBoolean, IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+
+/** Coerces a wire string ('true'/'false') or real boolean into a boolean. */
+const toBool = ({ value }: { value: unknown }): boolean => value === true || value === 'true';
 
 /**
  * Query parameters for the paginated/sortable document library. All values are
@@ -56,6 +59,20 @@ export class ListDocumentsQueryDto {
   @IsOptional()
   @IsString()
   reviewAfter?: string;
+
+  @ApiPropertyOptional({
+    description: 'Trash view: only soft-deleted documents. Requires document.write.',
+  })
+  @IsOptional()
+  @Transform(toBool)
+  @IsBoolean()
+  deleted?: boolean;
+
+  @ApiPropertyOptional({ description: 'Include archived documents in the active list.' })
+  @IsOptional()
+  @Transform(toBool)
+  @IsBoolean()
+  includeArchived?: boolean;
 
   @ApiPropertyOptional({ default: 1, minimum: 1 })
   @IsOptional()

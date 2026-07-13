@@ -86,6 +86,9 @@ Tickets:
 - PM-0314 - Add Gotenberg + OnlyOffice services to Docker Compose and env config.
 - PM-0315 - Add quick tags and classification: inline tag add/remove on documents, classification via category tree, and filter/search by tag + category in the library UI.
 - PM-0316 - Require a title on every document. Add library search + filters: free-text search by title/name, and filters by classification/category, owner, tag, status, and last-review / next-review date range. Server-side paginated + sortable list endpoint; debounced search UI with clear/active-filter chips.
+- PM-0317 - Soft delete only: add `deletedAt` to Document; DELETE = soft delete (never hard delete or destroy version bytes); exclude deleted from default lists/API; restore endpoint + a "Deleted/Trash" view; all gated by RBAC and audited.
+- PM-0318 - Archiving: archive/unarchive (status archived/retired) keeps documents accessible but out of active views; library filter to show/hide archived.
+- PM-0319 - Version management: ensure all older versions are accessible + downloadable; add "restore this version" (make an older version current by creating a new version from it, history preserved) and a version compare/metadata view.
 
 ## Phase 4: Access Control And Audit
 
