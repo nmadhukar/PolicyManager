@@ -40,6 +40,7 @@ vi.mock('../api/documents', () => ({
   unarchiveDocument: (...args: unknown[]) => mockUnarchive(...args),
   softDeleteDocument: (...args: unknown[]) => mockSoftDelete(...args),
   restoreVersion: (...args: unknown[]) => mockRestoreVersion(...args),
+  regenerateRendition: vi.fn(),
   getDownloadUrl: vi.fn(),
   updateDocument: vi.fn(),
   uploadVersion: vi.fn(),
@@ -63,6 +64,7 @@ function version(over: Record<string, unknown> = {}) {
     createdAt: '2026-01-01T00:00:00.000Z',
     uploadedByName: 'Admin User',
     hasExtractedText: true,
+    hasRendition: true,
     ...over,
   };
 }

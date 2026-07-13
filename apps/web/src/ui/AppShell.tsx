@@ -14,6 +14,7 @@ const NAV: NavItem[] = [
   { label: 'Dashboard', to: '/', icon: '▚' },
   { label: 'Library', to: '/library', icon: '▤', requires: PERMISSIONS.DOCUMENT_READ },
   { label: 'Users', to: '/admin/users', icon: '⚙', requires: PERMISSIONS.USER_MANAGE },
+  { label: 'Storage', to: '/admin/storage', icon: '▦', requires: PERMISSIONS.STORAGE_MANAGE },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {

@@ -30,6 +30,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { DocumentsService, type UploadedFile } from './documents.service';
 import { CreateDocumentDto } from './dto/create-document.dto';
+import { CreateHtmlVersionDto } from './dto/create-html-version.dto';
 import { CreateVersionDto } from './dto/create-version.dto';
 import { ListDocumentsQueryDto } from './dto/list-documents-query.dto';
 import { UpdateDocumentDto } from './dto/update-document.dto';
@@ -118,6 +119,52 @@ export class DocumentsController {
   @ApiOperation({ summary: 'Get a short-lived presigned download URL for a version.' })
   download(@Param('id') id: string, @Param('versionId') versionId: string) {
     return this.documents.getVersionDownloadTicket(id, versionId);
+  }
+
+  @Get(':id/versions/:versionId/view-url')
+  @RequirePermission(PERMISSIONS.DOCUMENT_READ)
+  @ApiOperation({
+    summary: 'Get a short-lived presigned URL for in-browser viewing (PDF rendition/PDF/image).',
+  })
+  viewUrl(@Param('id') id: string, @Param('versionId') versionId: string) {
+    return this.documents.getVersionViewTicket(id, versionId);
+  }
+
+  @Post(':id/versions/:versionId/rendition')
+  @HttpCode(200)
+  @RequirePermission(PERMISSIONS.DOCUMENT_WRITE)
+  @ApiOperation({ summary: 'Regenerate the PDF rendition for a version (best-effort).' })
+  regenerateRendition(@Param('id') id: string, @Param('versionId') versionId: string) {
+    return this.documents.regenerateRendition(id, versionId);
+  }
+
+  @Get(':id/versions/:versionId/html')
+  @RequirePermission(PERMISSIONS.DOCUMENT_READ)
+  @ApiOperation({ summary: 'Get the raw HTML of an app-authored (TipTap) text version.' })
+  versionHtml(@Param('id') id: string, @Param('versionId') versionId: string) {
+    return this.documents.getVersionHtml(id, versionId);
+  }
+
+  @Post(':id/versions/html')
+  @RequirePermission(PERMISSIONS.DOCUMENT_WRITE)
+  @ApiOperation({
+    summary: 'Save an app-authored HTML (TipTap) document as a new immutable version.',
+  })
+  addHtmlVersion(
+    @Param('id') id: string,
+    @Body() dto: CreateHtmlVersionDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.documents.addHtmlVersion(id, dto.html, dto.changeSummary, user.id);
+  }
+
+  @Get(':id/editor-config')
+  @RequirePermission(PERMISSIONS.DOCUMENT_WRITE)
+  @ApiOperation({
+    summary: 'Get a signed OnlyOffice editor config for the current version (docx/xlsx/pptx).',
+  })
+  editorConfig(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.documents.getEditorConfig(id, { id: user.id, name: user.name });
   }
 
   @Post(':id/versions/:versionId/restore')

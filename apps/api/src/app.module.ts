@@ -6,6 +6,7 @@ import { MailModule } from './mail/mail.module';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { StorageModule } from './storage/storage.module';
+import { StorageAdminModule } from './storage-admin/storage-admin.module';
 import { DocumentsModule } from './documents/documents.module';
 
 @Module({
@@ -17,6 +18,7 @@ import { DocumentsModule } from './documents/documents.module';
     AuthModule,
     UsersModule,
     StorageModule,
+    StorageAdminModule,
     DocumentsModule,
   ],
 })

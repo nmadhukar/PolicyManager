@@ -10,6 +10,7 @@ import type {
   DocumentListItem,
   DocumentVersionSummary,
   Paginated,
+  ViewTicket,
 } from '@policymanager/shared';
 import { PrismaService } from '../prisma/prisma.service';
 import { S3Service } from '../storage/s3.service';
@@ -17,8 +18,23 @@ import { buildDocumentListQuery, type ListDocumentsQuery } from './document-quer
 import type { CreateDocumentDto } from './dto/create-document.dto';
 import type { CreateVersionDto } from './dto/create-version.dto';
 import type { UpdateDocumentDto } from './dto/update-document.dto';
+import {
+  OnlyOfficeService,
+  callbackWantsSave,
+  onlyOfficeDocumentType,
+  type OnlyOfficeCallbackBody,
+} from './onlyoffice.service';
+import { RenditionService } from './rendition.service';
 import { TextExtractionService } from './text-extraction.service';
 import { computeNextVersionNumber, sha256Hex } from './versioning.util';
+
+/** In-memory file shape used by the shared version-write path. */
+interface VersionBytes {
+  originalname: string;
+  mimetype: string;
+  size?: number;
+  buffer: Buffer;
+}
 
 /** Uploaded file shape (Express/Multer), narrowed to what we consume. */
 export interface UploadedFile {
@@ -36,6 +52,8 @@ export interface DownloadTicket {
 }
 
 const DOWNLOAD_TTL_SECONDS = 300;
+/** In-browser view URLs are equally short-lived (AGENTS.md §8). */
+const VIEW_TTL_SECONDS = 300;
 
 /** Version fields needed to build a summary — deliberately excludes the bytes. */
 const versionSummarySelect = {
@@ -49,6 +67,7 @@ const versionSummarySelect = {
   status: true,
   createdAt: true,
   extractedText: true,
+  renditionS3Key: true,
   uploadedBy: { select: { name: true } },
 } satisfies Prisma.DocumentVersionSelect;
 
@@ -58,6 +77,8 @@ export class DocumentsService {
     private readonly prisma: PrismaService,
     private readonly s3: S3Service,
     private readonly textExtraction: TextExtractionService,
+    private readonly renditions: RenditionService,
+    private readonly onlyOffice: OnlyOfficeService,
   ) {}
 
   // ---- Reads ---------------------------------------------------------------
@@ -191,7 +212,42 @@ export class DocumentsService {
   ): Promise<DocumentVersionSummary> {
     await this.assertDocumentExists(documentId);
     if (!file || !file.buffer) throw new BadRequestException('A file is required');
+    return this.writeVersion(documentId, file, dto.changeSummary, uploadedById);
+  }
 
+  /**
+   * Saves an app-authored (TipTap) HTML document as a NEW immutable version
+   * (fileName `.html`, mime `text/html`) and generates a PDF rendition via the
+   * Gotenberg Chromium route. Save == new version (AGENTS.md §10a).
+   */
+  async addHtmlVersion(
+    documentId: string,
+    html: string,
+    changeSummary: string | undefined,
+    uploadedById: string,
+  ): Promise<DocumentVersionSummary> {
+    await this.assertDocumentExists(documentId);
+    if (typeof html !== 'string') throw new BadRequestException('html is required');
+    const file: VersionBytes = {
+      originalname: 'document.html',
+      mimetype: 'text/html',
+      buffer: Buffer.from(html, 'utf8'),
+    };
+    return this.writeVersion(documentId, file, changeSummary ?? 'Edited text document', uploadedById);
+  }
+
+  /**
+   * Shared immutable-version write path used by uploads, TipTap saves, and
+   * OnlyOffice save-backs. Stores bytes at a fresh deterministic key, extracts
+   * text (best-effort), generates a PDF rendition (best-effort), records the
+   * version row, and points the document at it. Never overwrites prior bytes.
+   */
+  private async writeVersion(
+    documentId: string,
+    file: VersionBytes,
+    changeSummary: string | undefined,
+    uploadedById: string,
+  ): Promise<DocumentVersionSummary> {
     const agg = await this.prisma.documentVersion.aggregate({
       where: { documentId },
       _max: { versionNumber: true },
@@ -207,12 +263,23 @@ export class DocumentsService {
     // unreferenced immutable blob (never overwritten) — safe to retry.
     const { versionId } = await this.s3.putObject(s3Key, file.buffer, mimeType);
 
-    // Best-effort — must never crash the upload.
+    // Best-effort — must never crash the write.
     const extractedText = await this.textExtraction.extract(
       file.buffer,
       mimeType,
       file.originalname,
     );
+
+    // Best-effort PDF rendition for uniform in-browser viewing. On failure the
+    // key stays null and the original remains downloadable (AGENTS.md §10a).
+    const rendition = await this.renditions.generateForVersion({
+      documentId,
+      versionNumber,
+      mimeType,
+      fileName: file.originalname,
+      sourceS3Key: s3Key,
+      sourceBuffer: file.buffer,
+    });
 
     const version = await this.prisma.$transaction(async (tx) => {
       const created = await tx.documentVersion.create({
@@ -221,12 +288,13 @@ export class DocumentsService {
           versionNumber,
           s3Key,
           s3VersionId: versionId,
+          renditionS3Key: rendition.renditionS3Key ?? undefined,
           fileName: file.originalname,
           mimeType,
           sizeBytes,
           checksum,
           uploadedById,
-          changeSummary: dto.changeSummary,
+          changeSummary,
           extractedText: extractedText.length > 0 ? extractedText : undefined,
         },
         select: versionSummarySelect,
@@ -239,6 +307,90 @@ export class DocumentsService {
     });
 
     return this.toVersionSummary(version);
+  }
+
+  /**
+   * Regenerates the PDF rendition for a specific version on demand (e.g. after a
+   * transient Gotenberg outage). Best-effort: returns the refreshed version
+   * summary with `hasRendition` reflecting the outcome. Never mutates source
+   * bytes — only the derived rendition object + the `renditionS3Key` pointer.
+   */
+  async regenerateRendition(
+    documentId: string,
+    versionId: string,
+  ): Promise<DocumentVersionSummary> {
+    const version = await this.prisma.documentVersion.findFirst({
+      where: { id: versionId, documentId, document: { deletedAt: null } },
+      select: { versionNumber: true, mimeType: true, fileName: true, s3Key: true },
+    });
+    if (!version) throw new NotFoundException('Version not found');
+
+    const rendition = await this.renditions.generateForVersion({
+      documentId,
+      versionNumber: version.versionNumber,
+      mimeType: version.mimeType,
+      fileName: version.fileName,
+      sourceS3Key: version.s3Key,
+    });
+
+    const updated = await this.prisma.documentVersion.update({
+      where: { id: versionId },
+      data: { renditionS3Key: rendition.renditionS3Key },
+      select: versionSummarySelect,
+    });
+    return this.toVersionSummary(updated);
+  }
+
+  /**
+   * Authorizes (document.read enforced by the guard) then returns a SHORT-LIVED
+   * presigned URL for in-browser VIEWING: the PDF rendition when present, the
+   * source when it is itself a PDF, or the source image. Office/text sources
+   * without a rendition yet are not viewable — a rendition must be (re)generated
+   * first. The URL is inline (no attachment disposition). Bucket stays private.
+   */
+  async getVersionViewTicket(documentId: string, versionId: string): Promise<ViewTicket> {
+    const version = await this.prisma.documentVersion.findFirst({
+      where: { id: versionId, documentId, document: { deletedAt: null } },
+      select: { s3Key: true, renditionS3Key: true, mimeType: true },
+    });
+    if (!version) throw new NotFoundException('Version not found');
+
+    let key: string;
+    let mimeType: string;
+    if (version.renditionS3Key) {
+      key = version.renditionS3Key;
+      mimeType = 'application/pdf';
+    } else if (version.mimeType === 'application/pdf') {
+      key = version.s3Key;
+      mimeType = 'application/pdf';
+    } else if (version.mimeType.startsWith('image/')) {
+      key = version.s3Key;
+      mimeType = version.mimeType;
+    } else {
+      throw new NotFoundException(
+        'No viewable rendition is available yet. Download the original, or regenerate the rendition.',
+      );
+    }
+
+    const url = await this.s3.getPresignedDownloadUrl(key, VIEW_TTL_SECONDS);
+    return { url, expiresIn: VIEW_TTL_SECONDS, mimeType };
+  }
+
+  /**
+   * Returns the raw HTML of an app-authored (text/html) version for the TipTap
+   * editor to load. Scoped to non-deleted documents; rejects non-HTML versions.
+   */
+  async getVersionHtml(documentId: string, versionId: string): Promise<{ html: string }> {
+    const version = await this.prisma.documentVersion.findFirst({
+      where: { id: versionId, documentId, document: { deletedAt: null } },
+      select: { s3Key: true, mimeType: true },
+    });
+    if (!version) throw new NotFoundException('Version not found');
+    if (!version.mimeType.startsWith('text/html')) {
+      throw new BadRequestException('This version is not an editable text document');
+    }
+    const buffer = await this.s3.getObjectBuffer(version.s3Key);
+    return { html: buffer.toString('utf8') };
   }
 
   /**
@@ -261,6 +413,102 @@ export class DocumentsService {
       version.fileName,
     );
     return { url, expiresIn: DOWNLOAD_TTL_SECONDS, fileName: version.fileName };
+  }
+
+  // ---- OnlyOffice edit-in-browser (AGENTS.md §10a) -------------------------
+
+  /**
+   * Builds the signed OnlyOffice editor config for a document's CURRENT version.
+   * Rejects documents with no version, or whose current version is not an
+   * editable Office type (docx/xlsx/pptx…). `document.write` is enforced by the
+   * controller guard; this is the document/version resolution + config signing.
+   */
+  async getEditorConfig(
+    documentId: string,
+    user: { id: string; name: string },
+  ): Promise<Record<string, unknown>> {
+    const doc = await this.prisma.document.findFirst({
+      where: { id: documentId, deletedAt: null },
+      select: { currentVersion: { select: { id: true, fileName: true } } },
+    });
+    if (!doc) throw new NotFoundException('Document not found');
+    if (!doc.currentVersion) {
+      throw new BadRequestException('Upload a version before editing');
+    }
+    const documentType = onlyOfficeDocumentType(doc.currentVersion.fileName);
+    if (!documentType) {
+      throw new BadRequestException('This document type cannot be edited in OnlyOffice');
+    }
+    return this.onlyOffice.buildEditorConfig({
+      documentId,
+      versionId: doc.currentVersion.id,
+      fileName: doc.currentVersion.fileName,
+      documentType,
+      user,
+    });
+  }
+
+  /**
+   * Returns a version's SOURCE bytes for the OnlyOffice content route. This is
+   * called server-to-server (the Docs server fetches it), authorized by a scoped
+   * signed token verified in the controller — NOT a user JWT. Still scoped to a
+   * non-deleted document + matching version as defence in depth.
+   */
+  async getVersionSource(
+    documentId: string,
+    versionId: string,
+  ): Promise<{ buffer: Buffer; mimeType: string; fileName: string }> {
+    const version = await this.prisma.documentVersion.findFirst({
+      where: { id: versionId, documentId, document: { deletedAt: null } },
+      select: { s3Key: true, mimeType: true, fileName: true },
+    });
+    if (!version) throw new NotFoundException('Version not found');
+    const buffer = await this.s3.getObjectBuffer(version.s3Key);
+    return { buffer, mimeType: version.mimeType, fileName: version.fileName };
+  }
+
+  /**
+   * Applies an authenticated OnlyOffice save callback. The scoped callback token
+   * AND the Docs-server body signature are verified in the controller; this
+   * consumes the already-authenticated body.
+   *
+   * On a save status (2/6) it downloads the edited bytes and stores them as a
+   * BRAND-NEW immutable version (increment, changeSummary "Edited in OnlyOffice"),
+   * advancing `currentVersionId` and regenerating the rendition. It NEVER
+   * overwrites the edited version's bytes (AGENTS.md §10a). Non-save statuses are
+   * acked with no version created. Always returns OnlyOffice's `{ error: 0 }`.
+   */
+  async applyEditorCallback(
+    documentId: string,
+    editedVersionId: string,
+    body: OnlyOfficeCallbackBody,
+    editorUserId: string | undefined,
+  ): Promise<{ error: number }> {
+    if (!callbackWantsSave(body.status)) {
+      // 1 (editing), 4 (closed, no change), 3/7 (errors): nothing to persist.
+      return { error: 0 };
+    }
+    if (!body.url) {
+      throw new BadRequestException('Save callback missing document url');
+    }
+
+    // Resolve the edited version's name/mime + the fallback author, scoped to a
+    // non-deleted document.
+    const source = await this.prisma.documentVersion.findFirst({
+      where: { id: editedVersionId, documentId, document: { deletedAt: null } },
+      select: { fileName: true, mimeType: true, document: { select: { ownerId: true } } },
+    });
+    if (!source) throw new NotFoundException('Version not found');
+
+    const buffer = await this.onlyOffice.downloadEditedFile(body.url);
+    const file: VersionBytes = {
+      originalname: source.fileName,
+      mimetype: source.mimeType,
+      buffer,
+    };
+    const uploadedById = editorUserId ?? source.document.ownerId;
+    await this.writeVersion(documentId, file, 'Edited in OnlyOffice', uploadedById);
+    return { error: 0 };
   }
 
   // ---- Soft delete / restore / archive (AGENTS.md §9) ----------------------
@@ -381,6 +629,7 @@ export class DocumentsService {
       select: {
         versionNumber: true,
         s3Key: true,
+        renditionS3Key: true,
         fileName: true,
         mimeType: true,
         sizeBytes: true,
@@ -404,6 +653,20 @@ export class DocumentsService {
       source.mimeType,
     );
 
+    // Carry the source's PDF rendition forward too (identical bytes ⇒ identical
+    // rendition), so the restored version is immediately viewable. Best-effort:
+    // if the copy fails, viewing falls back to on-demand regeneration.
+    let renditionS3Key: string | null = null;
+    if (source.renditionS3Key) {
+      const destRenditionKey = this.s3.buildRenditionKey(documentId, versionNumber);
+      try {
+        await this.s3.copyObject(source.renditionS3Key, destRenditionKey, 'application/pdf');
+        renditionS3Key = destRenditionKey;
+      } catch {
+        renditionS3Key = null;
+      }
+    }
+
     const created = await this.prisma.$transaction(async (tx) => {
       const version = await tx.documentVersion.create({
         data: {
@@ -411,6 +674,7 @@ export class DocumentsService {
           versionNumber,
           s3Key,
           s3VersionId,
+          renditionS3Key: renditionS3Key ?? undefined,
           fileName: source.fileName,
           mimeType: source.mimeType,
           sizeBytes: source.sizeBytes,
@@ -482,6 +746,7 @@ export class DocumentsService {
     status: string;
     createdAt: Date;
     extractedText: string | null;
+    renditionS3Key: string | null;
     uploadedBy: { name: string } | null;
   }): DocumentVersionSummary {
     return {
@@ -498,6 +763,12 @@ export class DocumentsService {
       // Expose ONLY existence — the extracted text itself is scope-gated and
       // never returned by these endpoints (AGENTS.md §8).
       hasExtractedText: !!v.extractedText && v.extractedText.length > 0,
+      // A version is viewable in-browser when it has a PDF rendition or is itself
+      // a PDF/image; the UI uses this to decide whether to offer "View".
+      hasRendition:
+        !!v.renditionS3Key ||
+        v.mimeType === 'application/pdf' ||
+        v.mimeType.startsWith('image/'),
     };
   }
 

@@ -52,6 +52,11 @@ services:
       - "8080:80"
     volumes:
       - onlyofficedata:/var/www/onlyoffice/Data
+    # The Docs server fetches document bytes + posts save callbacks to the API
+    # running on the host. On Docker Desktop host.docker.internal resolves
+    # automatically; this mapping makes it resolve on Linux hosts too.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
   pgdata:

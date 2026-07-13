@@ -145,6 +145,23 @@ export interface DocumentVersionSummary {
   uploadedByName: string | null;
   /** Whether text was extracted for search/RAG (the text itself is scope-gated). */
   hasExtractedText: boolean;
+  /**
+   * Whether a uniform PDF rendition exists for in-browser viewing. True when a
+   * rendition was generated (Office/HTML) OR the source is itself viewable
+   * (PDF/image). False means the original is download-only for now.
+   */
+  hasRendition: boolean;
+}
+
+/**
+ * Short-lived, presigned URL for in-browser VIEWING of a version (the PDF
+ * rendition, the source PDF, or a source image). Never the raw office bytes.
+ */
+export interface ViewTicket {
+  url: string;
+  expiresIn: number;
+  /** `application/pdf` for renditions/PDFs, or the image mime for images. */
+  mimeType: string;
 }
 
 /** Row shape for the document library list. */
@@ -184,4 +201,33 @@ export interface DocumentCategoryNode {
   parentId: string | null;
   description: string | null;
   children: DocumentCategoryNode[];
+}
+
+// ---------------------------------------------------------------------------
+// Storage Admin (Phase 3b, PM-0313). All operations are gated by storage.manage
+// and are NON-destructive in v1 (create/list only — no delete surface).
+// ---------------------------------------------------------------------------
+
+/** A bucket as surfaced to the Storage Admin UI. */
+export interface StorageBucket {
+  name: string;
+  createdAt: string | null;
+  /** True for the app's configured default document bucket. */
+  isDefault: boolean;
+}
+
+/** A top-level "folder" (common prefix) within a bucket. */
+export interface StoragePrefix {
+  prefix: string;
+}
+
+/** Read-only view of the effective storage configuration. */
+export interface StorageConfigView {
+  bucket: string;
+  prefixes: {
+    documents: string;
+    renditions: string;
+  };
+  endpoint: string | null;
+  region: string;
 }

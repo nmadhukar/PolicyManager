@@ -15,9 +15,14 @@
   "dependencies": {
     "@policymanager/shared": "*",
     "@tanstack/react-query": "^5.51.0",
+    "@tiptap/pm": "^2.27.2",
+    "@tiptap/react": "^2.27.2",
+    "@tiptap/starter-kit": "^2.27.2",
     "axios": "^1.7.2",
+    "pdfjs-dist": "^4.10.38",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-pdf": "^9.2.1",
     "react-router-dom": "^6.24.0"
   },
   "devDependencies": {

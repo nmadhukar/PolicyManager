@@ -18,8 +18,10 @@ All models live in the `policytracker` schema (never `public`).
   `effectiveDate`, and `currentVersionId` → the version currently surfaced.
 - **`DocumentVersion`** — an **immutable** snapshot of file bytes. Fields:
   `versionNumber` (unique per document), `s3Key`, `s3VersionId`, `renditionS3Key`
-  (reserved for PM-0309), `fileName`, `mimeType`, `sizeBytes`, `checksum`
-  (sha256), `uploadedById`, `changeSummary`, `status`, `extractedText`.
+  (the derived PDF for viewing — populated in Phase 3b, see
+  [viewing-editing-and-storage.md](./viewing-editing-and-storage.md)), `fileName`,
+  `mimeType`, `sizeBytes`, `checksum` (sha256), `uploadedById`, `changeSummary`,
+  `status`, `extractedText`.
 
 The `Document` ⇄ `DocumentVersion` cycle (`currentVersionId` ↔ `documentId`) is
 broken by a nullable FK with `onDelete: NoAction` so Postgres accepts it.
@@ -106,9 +108,13 @@ prevent ordering by arbitrary columns. Swagger is published at `/api/docs`.
   checksum + extracted text), list-with-filters, presigned download, and 401
   without a token.
 
+## Phase 3b — viewing, editing, storage admin
+
+PDF renditions, the in-browser viewer, OnlyOffice/TipTap editing, and the Storage
+Admin UI (PM-0309..PM-0314) are documented in
+[viewing-editing-and-storage.md](./viewing-editing-and-storage.md).
+
 ## Not in this phase (follow-ups)
 
 - `AuditEvent` on document access/state changes — **Phase 4** (Access Control &
   Audit). Not wired here.
-- PDF renditions + in-browser viewer/editor (PM-0309..PM-0312).
-- Storage Admin UI (PM-0313), Gotenberg/OnlyOffice compose (PM-0314).

@@ -7,6 +7,7 @@ import { ForgotPasswordPage } from './pages/ForgotPasswordPage';
 import { LibraryPage } from './pages/LibraryPage';
 import { LoginPage } from './pages/LoginPage';
 import { ResetPasswordPage } from './pages/ResetPasswordPage';
+import { StorageAdminPage } from './pages/StorageAdminPage';
 import { UsersPage } from './pages/UsersPage';
 
 export default function App() {
@@ -52,6 +53,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <UsersPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/storage"
+        element={
+          <ProtectedRoute>
+            <StorageAdminPage />
           </ProtectedRoute>
         }
       />

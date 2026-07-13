@@ -1,17 +1,50 @@
+import { Readable } from 'stream';
 import {
   CopyObjectCommand,
   CreateBucketCommand,
   GetObjectCommand,
   HeadBucketCommand,
+  ListBucketsCommand,
+  ListObjectsV2Command,
   PutBucketVersioningCommand,
   PutObjectCommand,
+  PutPublicAccessBlockCommand,
   S3Client,
   type ServerSideEncryption,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { buildDocumentObjectKey } from './s3-key.util';
+import {
+  buildDocumentObjectKey,
+  buildRenditionObjectKey,
+  normalizeFolderPrefix,
+  validateBucketName,
+} from './s3-key.util';
+
+/** A bucket as surfaced to the Storage Admin UI. */
+export interface BucketInfo {
+  name: string;
+  createdAt: string | null;
+  /** True for the app's configured default document bucket. */
+  isDefault: boolean;
+}
+
+/** A top-level "folder" (common prefix) within a bucket. */
+export interface PrefixInfo {
+  prefix: string;
+}
+
+/** Read-only view of the storage configuration for the Storage Admin UI. */
+export interface StorageConfig {
+  bucket: string;
+  prefixes: {
+    documents: string;
+    renditions: string;
+  };
+  endpoint: string | null;
+  region: string;
+}
 
 /** Parses a string/boolean env flag into a real boolean. */
 function envBool(value: unknown, fallback = false): boolean {
@@ -41,6 +74,9 @@ export class S3Service implements OnModuleInit {
   private readonly client: S3Client;
   private readonly bucket: string;
   private readonly documentsPrefix: string;
+  private readonly renditionsPrefix: string;
+  private readonly endpoint?: string;
+  private readonly region: string;
   private readonly sse?: string;
   private readonly kmsKeyId?: string;
   private readonly autoCreate: boolean;
@@ -48,8 +84,11 @@ export class S3Service implements OnModuleInit {
   constructor(private readonly config: ConfigService) {
     const endpoint = config.get<string>('S3_ENDPOINT') || undefined;
     const region = config.get<string>('S3_REGION') || 'us-east-2';
+    this.endpoint = endpoint;
+    this.region = region;
     this.bucket = config.get<string>('S3_BUCKET') || 'policymanager-docs';
     this.documentsPrefix = config.get<string>('S3_PREFIX_DOCUMENTS') || 'documents/';
+    this.renditionsPrefix = config.get<string>('S3_PREFIX_RENDITIONS') || 'renditions/';
     this.sse = config.get<string>('S3_SSE') || undefined;
     this.kmsKeyId = config.get<string>('S3_KMS_KEY_ID') || undefined;
     this.autoCreate = envBool(config.get('S3_AUTO_CREATE'));
@@ -97,6 +136,30 @@ export class S3Service implements OnModuleInit {
   /** Deterministic key for a document version's source bytes. */
   buildDocumentKey(documentId: string, versionNumber: number, fileName: string): string {
     return buildDocumentObjectKey(this.documentsPrefix, documentId, versionNumber, fileName);
+  }
+
+  /** Deterministic key for a version's derived PDF rendition (never the source). */
+  buildRenditionKey(documentId: string, versionNumber: number): string {
+    return buildRenditionObjectKey(this.renditionsPrefix, documentId, versionNumber);
+  }
+
+  /**
+   * Downloads an object's full bytes into a Buffer. Used for server-to-server
+   * flows (Gotenberg conversion, OnlyOffice content streaming) where bytes must
+   * pass through the API rather than a browser-reachable presigned URL. The
+   * caller MUST have authorized the request first (AGENTS.md §8).
+   */
+  async getObjectBuffer(key: string): Promise<Buffer> {
+    const result = await this.client.send(
+      new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+    );
+    const body = result.Body as Readable | undefined;
+    if (!body) return Buffer.alloc(0);
+    const chunks: Buffer[] = [];
+    for await (const chunk of body) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as ArrayBuffer));
+    }
+    return Buffer.concat(chunks);
   }
 
   /**
@@ -167,6 +230,112 @@ export class S3Service implements OnModuleInit {
         : {}),
     });
     return getSignedUrl(this.client, command, { expiresIn: ttlSeconds });
+  }
+
+  // ---- Storage Admin (AGENTS.md §9; STORAGE_MANAGE-gated in the controller) --
+  //
+  // v1 is deliberately NON-destructive: create + list only. There is no delete
+  // bucket / delete object surface here — that stays out of scope until a
+  // separate ticket approves it.
+
+  /** Read-only snapshot of the effective storage configuration. */
+  getStorageConfig(): StorageConfig {
+    return {
+      bucket: this.bucket,
+      prefixes: { documents: this.documentsPrefix, renditions: this.renditionsPrefix },
+      endpoint: this.endpoint ?? null,
+      region: this.region,
+    };
+  }
+
+  /** Lists all buckets, flagging the app's configured default. */
+  async listBuckets(): Promise<BucketInfo[]> {
+    const result = await this.client.send(new ListBucketsCommand({}));
+    return (result.Buckets ?? []).map((b) => ({
+      name: b.Name ?? '',
+      createdAt: b.CreationDate ? b.CreationDate.toISOString() : null,
+      isDefault: b.Name === this.bucket,
+    }));
+  }
+
+  /**
+   * Creates a bucket, then enables versioning and blocks all public access.
+   * Rejects invalid names before any API call. Private-by-default and versioned
+   * are hard invariants (AGENTS.md §8/§9) — a created bucket is never public.
+   *
+   * `PutPublicAccessBlock` is best-effort: MinIO does not implement it, so a
+   * failure there is logged and does not fail bucket creation (MinIO buckets are
+   * private by default). On real AWS the call succeeds and enforces the block.
+   */
+  async createBucket(name: string): Promise<BucketInfo> {
+    const reason = validateBucketName(name);
+    if (reason) throw new Error(reason);
+
+    await this.client.send(new CreateBucketCommand({ Bucket: name }));
+    await this.client.send(
+      new PutBucketVersioningCommand({
+        Bucket: name,
+        VersioningConfiguration: { Status: 'Enabled' },
+      }),
+    );
+    try {
+      await this.client.send(
+        new PutPublicAccessBlockCommand({
+          Bucket: name,
+          PublicAccessBlockConfiguration: {
+            BlockPublicAcls: true,
+            IgnorePublicAcls: true,
+            BlockPublicPolicy: true,
+            RestrictPublicBuckets: true,
+          },
+        }),
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Public-access-block not applied to "${name}" (private by default): ${(err as Error).message}`,
+      );
+    }
+    return { name, createdAt: new Date().toISOString(), isDefault: name === this.bucket };
+  }
+
+  /**
+   * Lists the immediate "folders" (common prefixes) under `parentPrefix` in a
+   * bucket, using a `/` delimiter so only one level is returned.
+   */
+  async listPrefixes(bucket: string, parentPrefix = ''): Promise<PrefixInfo[]> {
+    const normalizedParent =
+      parentPrefix && !parentPrefix.endsWith('/') ? `${parentPrefix}/` : parentPrefix;
+    const result = await this.client.send(
+      new ListObjectsV2Command({
+        Bucket: bucket,
+        Delimiter: '/',
+        Prefix: normalizedParent || undefined,
+      }),
+    );
+    return (result.CommonPrefixes ?? [])
+      .map((p) => p.Prefix)
+      .filter((p): p is string => !!p)
+      .map((prefix) => ({ prefix }));
+  }
+
+  /**
+   * Creates a zero-byte "folder marker" object at `{prefix}/` so the folder is
+   * visible in listings even while empty. Returns the normalized marker key.
+   * Rejects unsafe/empty prefixes.
+   */
+  async createFolder(bucket: string, prefix: string): Promise<PrefixInfo> {
+    const marker = normalizeFolderPrefix(prefix);
+    if (!marker) throw new Error('A valid folder name is required.');
+    await this.client.send(
+      new PutObjectCommand({
+        Bucket: bucket,
+        Key: marker,
+        Body: Buffer.alloc(0),
+        ...(this.sse ? { ServerSideEncryption: this.sse as ServerSideEncryption } : {}),
+        ...(this.sse === 'aws:kms' && this.kmsKeyId ? { SSEKMSKeyId: this.kmsKeyId } : {}),
+      }),
+    );
+    return { prefix: marker };
   }
 }
 

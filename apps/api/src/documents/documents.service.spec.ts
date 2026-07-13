@@ -17,6 +17,7 @@ const makePrisma = (): any => {
     documentVersion: {
       aggregate: jest.fn(),
       create: jest.fn(),
+      update: jest.fn(),
       findFirst: jest.fn(),
     },
     documentCategory: { findUnique: jest.fn() },
@@ -31,18 +32,41 @@ const makeS3 = () => ({
   buildDocumentKey: jest.fn(
     (id: string, n: number, name: string) => `documents/${id}/v${n}/${name}`,
   ),
+  buildRenditionKey: jest.fn((id: string, n: number) => `renditions/${id}/v${n}/rendition.pdf`),
   putObject: jest.fn().mockResolvedValue({ versionId: 's3-ver-1' }),
   copyObject: jest.fn().mockResolvedValue({ versionId: 's3-copy-ver' }),
+  getObjectBuffer: jest.fn().mockResolvedValue(Buffer.from('bytes')),
   getPresignedDownloadUrl: jest.fn().mockResolvedValue('https://minio.local/signed?x=1'),
 });
 
 const makeExtractor = () => ({ extract: jest.fn().mockResolvedValue('extracted words') });
 
-const build = (p = makePrisma(), s = makeS3(), e = makeExtractor()) => ({
+// Rendition generation is best-effort and independently unit-tested; here it is a
+// no-op stub returning "no rendition" so version-write assertions stay focused.
+const makeRenditions = () => ({
+  generateForVersion: jest
+    .fn()
+    .mockResolvedValue({ renditionS3Key: null, strategy: 'passthrough' }),
+});
+
+const makeOnlyOffice = () => ({
+  buildEditorConfig: jest.fn().mockReturnValue({ token: 'signed' }),
+  downloadEditedFile: jest.fn().mockResolvedValue(Buffer.from('edited-bytes')),
+});
+
+const build = (
+  p = makePrisma(),
+  s = makeS3(),
+  e = makeExtractor(),
+  r = makeRenditions(),
+  o = makeOnlyOffice(),
+) => ({
   prisma: p,
   s3: s,
   extractor: e,
-  svc: new DocumentsService(p as never, s as never, e as never),
+  renditions: r,
+  onlyOffice: o,
+  svc: new DocumentsService(p as never, s as never, e as never, r as never, o as never),
 });
 
 const versionRow = (over: Record<string, unknown> = {}) => ({
@@ -56,6 +80,7 @@ const versionRow = (over: Record<string, unknown> = {}) => ({
   status: 'draft',
   createdAt: new Date('2026-01-01T00:00:00Z'),
   extractedText: 'extracted words',
+  renditionS3Key: null,
   uploadedBy: { name: 'Admin' },
   ...over,
 });
@@ -172,6 +197,322 @@ describe('DocumentsService.getVersionDownloadTicket', () => {
       NotFoundException,
     );
     expect(s3.getPresignedDownloadUrl).not.toHaveBeenCalled();
+  });
+});
+
+describe('DocumentsService.getVersionViewTicket', () => {
+  it('serves the PDF rendition when present (inline, short-lived)', async () => {
+    const { svc, prisma, s3 } = build();
+    prisma.documentVersion.findFirst.mockResolvedValue({
+      s3Key: 'documents/doc-1/v1/policy.docx',
+      renditionS3Key: 'renditions/doc-1/v1/rendition.pdf',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    });
+
+    const ticket = await svc.getVersionViewTicket('doc-1', 'v-1');
+
+    // Scoped to a non-deleted document.
+    expect(prisma.documentVersion.findFirst.mock.calls[0][0].where).toEqual({
+      id: 'v-1',
+      documentId: 'doc-1',
+      document: { deletedAt: null },
+    });
+    // Presigns the rendition key WITHOUT an attachment disposition (inline view).
+    expect(s3.getPresignedDownloadUrl).toHaveBeenCalledWith(
+      'renditions/doc-1/v1/rendition.pdf',
+      300,
+    );
+    expect(ticket).toEqual({
+      url: 'https://minio.local/signed?x=1',
+      expiresIn: 300,
+      mimeType: 'application/pdf',
+    });
+  });
+
+  it('serves a source PDF directly when it needs no rendition', async () => {
+    const { svc, prisma, s3 } = build();
+    prisma.documentVersion.findFirst.mockResolvedValue({
+      s3Key: 'documents/doc-1/v1/policy.pdf',
+      renditionS3Key: null,
+      mimeType: 'application/pdf',
+    });
+    const ticket = await svc.getVersionViewTicket('doc-1', 'v-1');
+    expect(s3.getPresignedDownloadUrl).toHaveBeenCalledWith('documents/doc-1/v1/policy.pdf', 300);
+    expect(ticket.mimeType).toBe('application/pdf');
+  });
+
+  it('serves a source image with its own mime type', async () => {
+    const { svc, prisma } = build();
+    prisma.documentVersion.findFirst.mockResolvedValue({
+      s3Key: 'documents/doc-1/v1/scan.png',
+      renditionS3Key: null,
+      mimeType: 'image/png',
+    });
+    const ticket = await svc.getVersionViewTicket('doc-1', 'v-1');
+    expect(ticket.mimeType).toBe('image/png');
+  });
+
+  it('404s an office source that has no rendition yet (not viewable)', async () => {
+    const { svc, prisma } = build();
+    prisma.documentVersion.findFirst.mockResolvedValue({
+      s3Key: 'documents/doc-1/v1/policy.docx',
+      renditionS3Key: null,
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    });
+    await expect(svc.getVersionViewTicket('doc-1', 'v-1')).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+  });
+
+  it('404s when the version is not under the (non-deleted) document', async () => {
+    const { svc, prisma, s3 } = build();
+    prisma.documentVersion.findFirst.mockResolvedValue(null);
+    await expect(svc.getVersionViewTicket('doc-1', 'ghost')).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    expect(s3.getPresignedDownloadUrl).not.toHaveBeenCalled();
+  });
+});
+
+describe('DocumentsService.getEditorConfig', () => {
+  it('builds a signed config for an editable current version', async () => {
+    const { svc, prisma, onlyOffice } = build();
+    prisma.document.findFirst.mockResolvedValue({
+      currentVersion: { id: 'v-1', fileName: 'policy.docx' },
+    });
+    const cfg = await svc.getEditorConfig('doc-1', { id: 'u-1', name: 'Dr Smith' });
+    expect(onlyOffice.buildEditorConfig).toHaveBeenCalledWith({
+      documentId: 'doc-1',
+      versionId: 'v-1',
+      fileName: 'policy.docx',
+      documentType: 'word',
+      user: { id: 'u-1', name: 'Dr Smith' },
+    });
+    expect(cfg).toEqual({ token: 'signed' });
+  });
+
+  it('400s when the current version is not an editable Office type', async () => {
+    const { svc, prisma, onlyOffice } = build();
+    prisma.document.findFirst.mockResolvedValue({
+      currentVersion: { id: 'v-1', fileName: 'policy.pdf' },
+    });
+    await expect(svc.getEditorConfig('doc-1', { id: 'u', name: 'n' })).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(onlyOffice.buildEditorConfig).not.toHaveBeenCalled();
+  });
+
+  it('400s when the document has no version to edit', async () => {
+    const { svc, prisma } = build();
+    prisma.document.findFirst.mockResolvedValue({ currentVersion: null });
+    await expect(svc.getEditorConfig('doc-1', { id: 'u', name: 'n' })).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+  });
+
+  it('404s for a missing/soft-deleted document', async () => {
+    const { svc, prisma } = build();
+    prisma.document.findFirst.mockResolvedValue(null);
+    await expect(svc.getEditorConfig('gone', { id: 'u', name: 'n' })).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+  });
+});
+
+describe('DocumentsService.applyEditorCallback (save => new version)', () => {
+  it('acks non-save statuses WITHOUT creating a version', async () => {
+    const { svc, prisma, onlyOffice } = build();
+    for (const status of [1, 3, 4, 7]) {
+      const res = await svc.applyEditorCallback('doc-1', 'v-1', { status }, 'u-ed');
+      expect(res).toEqual({ error: 0 });
+    }
+    expect(onlyOffice.downloadEditedFile).not.toHaveBeenCalled();
+    expect(prisma.documentVersion.create).not.toHaveBeenCalled();
+  });
+
+  it('on status 2 downloads the edited bytes and writes a NEW immutable version', async () => {
+    const { svc, prisma, s3, onlyOffice } = build();
+    // source version lookup (name/mime + owner fallback)
+    prisma.documentVersion.findFirst.mockResolvedValue({
+      fileName: 'policy.docx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      document: { ownerId: 'owner-1' },
+    });
+    // writeVersion path:
+    prisma.documentVersion.aggregate.mockResolvedValue({ _max: { versionNumber: 2 } });
+    prisma.documentVersion.create.mockResolvedValue(
+      versionRow({ id: 'v-3', versionNumber: 3, fileName: 'policy.docx' }),
+    );
+    prisma.document.update.mockResolvedValue({});
+
+    const res = await svc.applyEditorCallback(
+      'doc-1',
+      'v-1',
+      { status: 2, url: 'http://docs/cache/out.docx' },
+      'u-editor',
+    );
+
+    expect(onlyOffice.downloadEditedFile).toHaveBeenCalledWith('http://docs/cache/out.docx');
+    // A NEW version object is written (v3), attributed to the editor.
+    const createArg = prisma.documentVersion.create.mock.calls[0][0];
+    expect(createArg.data.versionNumber).toBe(3);
+    expect(createArg.data.changeSummary).toBe('Edited in OnlyOffice');
+    expect(createArg.data.uploadedById).toBe('u-editor');
+    expect(s3.putObject).toHaveBeenCalled(); // edited bytes stored at a fresh key
+    // Document advanced to the new current version.
+    expect(prisma.document.update).toHaveBeenCalledWith({
+      where: { id: 'doc-1' },
+      data: { currentVersion: { connect: { id: 'v-3' } } },
+    });
+    expect(res).toEqual({ error: 0 });
+  });
+
+  it('falls back to the document owner when the token carries no editor id', async () => {
+    const { svc, prisma } = build();
+    prisma.documentVersion.findFirst.mockResolvedValue({
+      fileName: 'policy.docx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      document: { ownerId: 'owner-1' },
+    });
+    prisma.documentVersion.aggregate.mockResolvedValue({ _max: { versionNumber: 1 } });
+    prisma.documentVersion.create.mockResolvedValue(versionRow({ id: 'v-2', versionNumber: 2 }));
+    prisma.document.update.mockResolvedValue({});
+
+    await svc.applyEditorCallback('doc-1', 'v-1', { status: 2, url: 'http://x' }, undefined);
+
+    expect(prisma.documentVersion.create.mock.calls[0][0].data.uploadedById).toBe('owner-1');
+  });
+
+  it('400s a save callback that is missing the document url', async () => {
+    const { svc } = build();
+    await expect(
+      svc.applyEditorCallback('doc-1', 'v-1', { status: 2 }, 'u'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+});
+
+describe('DocumentsService.getVersionSource (OnlyOffice content route)', () => {
+  it('returns the source bytes for a version scoped to a non-deleted document', async () => {
+    const { svc, prisma, s3 } = build();
+    prisma.documentVersion.findFirst.mockResolvedValue({
+      s3Key: 'documents/doc-1/v1/policy.docx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      fileName: 'policy.docx',
+    });
+    s3.getObjectBuffer.mockResolvedValue(Buffer.from('docx-bytes'));
+
+    const result = await svc.getVersionSource('doc-1', 'v-1');
+
+    // Scoped so a version of a trashed document can't be streamed to the editor.
+    expect(prisma.documentVersion.findFirst.mock.calls[0][0].where).toEqual({
+      id: 'v-1',
+      documentId: 'doc-1',
+      document: { deletedAt: null },
+    });
+    expect(s3.getObjectBuffer).toHaveBeenCalledWith('documents/doc-1/v1/policy.docx');
+    expect(result.fileName).toBe('policy.docx');
+    expect(result.buffer.toString()).toBe('docx-bytes');
+  });
+
+  it('404s (no S3 fetch) when the version is not under the document', async () => {
+    const { svc, prisma, s3 } = build();
+    prisma.documentVersion.findFirst.mockResolvedValue(null);
+    await expect(svc.getVersionSource('doc-1', 'ghost')).rejects.toBeInstanceOf(NotFoundException);
+    expect(s3.getObjectBuffer).not.toHaveBeenCalled();
+  });
+});
+
+describe('DocumentsService.getVersionHtml (TipTap load)', () => {
+  it('returns the HTML for a text/html version', async () => {
+    const { svc, prisma, s3 } = build();
+    prisma.documentVersion.findFirst.mockResolvedValue({
+      s3Key: 'documents/doc-1/v1/document.html',
+      mimeType: 'text/html',
+    });
+    s3.getObjectBuffer.mockResolvedValue(Buffer.from('<h1>Hi</h1>'));
+    const result = await svc.getVersionHtml('doc-1', 'v-1');
+    expect(result).toEqual({ html: '<h1>Hi</h1>' });
+  });
+
+  it('400s a non-HTML version (not editable as text)', async () => {
+    const { svc, prisma, s3 } = build();
+    prisma.documentVersion.findFirst.mockResolvedValue({
+      s3Key: 'documents/doc-1/v1/policy.pdf',
+      mimeType: 'application/pdf',
+    });
+    await expect(svc.getVersionHtml('doc-1', 'v-1')).rejects.toBeInstanceOf(BadRequestException);
+    expect(s3.getObjectBuffer).not.toHaveBeenCalled();
+  });
+
+  it('404s when the version is not under the (non-deleted) document', async () => {
+    const { svc, prisma } = build();
+    prisma.documentVersion.findFirst.mockResolvedValue(null);
+    await expect(svc.getVersionHtml('doc-1', 'ghost')).rejects.toBeInstanceOf(NotFoundException);
+  });
+});
+
+describe('DocumentsService.regenerateRendition', () => {
+  it('regenerates + persists the new rendition key on the version', async () => {
+    const { svc, prisma, renditions } = build();
+    prisma.documentVersion.findFirst.mockResolvedValue({
+      versionNumber: 2,
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      fileName: 'policy.docx',
+      s3Key: 'documents/doc-1/v2/policy.docx',
+    });
+    renditions.generateForVersion.mockResolvedValue({
+      renditionS3Key: 'renditions/doc-1/v2/rendition.pdf',
+      strategy: 'office',
+    });
+    prisma.documentVersion.update.mockResolvedValue(
+      versionRow({ id: 'v-2', versionNumber: 2, renditionS3Key: 'renditions/doc-1/v2/rendition.pdf' }),
+    );
+
+    const result = await svc.regenerateRendition('doc-1', 'v-2');
+
+    expect(renditions.generateForVersion).toHaveBeenCalledWith({
+      documentId: 'doc-1',
+      versionNumber: 2,
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      fileName: 'policy.docx',
+      sourceS3Key: 'documents/doc-1/v2/policy.docx',
+    });
+    expect(prisma.documentVersion.update.mock.calls[0][0].data).toEqual({
+      renditionS3Key: 'renditions/doc-1/v2/rendition.pdf',
+    });
+    expect(result.hasRendition).toBe(true);
+  });
+
+  it('404s for a version not under the (non-deleted) document', async () => {
+    const { svc, prisma, renditions } = build();
+    prisma.documentVersion.findFirst.mockResolvedValue(null);
+    await expect(svc.regenerateRendition('doc-1', 'ghost')).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    expect(renditions.generateForVersion).not.toHaveBeenCalled();
+  });
+});
+
+describe('DocumentsService.addHtmlVersion (TipTap save)', () => {
+  it('writes an HTML version (text/html) via the shared version-write path', async () => {
+    const { svc, prisma, s3 } = build();
+    prisma.document.findFirst.mockResolvedValue({ id: 'doc-1' }); // assertDocumentExists
+    prisma.documentVersion.aggregate.mockResolvedValue({ _max: { versionNumber: null } });
+    prisma.documentVersion.create.mockResolvedValue(
+      versionRow({ id: 'v-1', fileName: 'document.html', mimeType: 'text/html' }),
+    );
+    prisma.document.update.mockResolvedValue({});
+
+    await svc.addHtmlVersion('doc-1', '<h1>Hello</h1>', 'First draft', 'u-1');
+
+    // Stored as text/html with the html bytes.
+    const putArgs = s3.putObject.mock.calls[0];
+    expect(putArgs[2]).toBe('text/html');
+    expect(putArgs[1].toString()).toBe('<h1>Hello</h1>');
+    const createArg = prisma.documentVersion.create.mock.calls[0][0];
+    expect(createArg.data.mimeType).toBe('text/html');
+    expect(createArg.data.fileName).toBe('document.html');
+    expect(createArg.data.changeSummary).toBe('First draft');
   });
 });
 

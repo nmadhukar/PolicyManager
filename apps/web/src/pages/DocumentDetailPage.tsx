@@ -1,4 +1,4 @@
-import { FormEvent, useMemo, useRef, useState } from 'react';
+import { FormEvent, Suspense, lazy, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AxiosError } from 'axios';
@@ -15,6 +15,7 @@ import {
   archiveDocument,
   getDocument,
   getDownloadUrl,
+  regenerateRendition,
   restoreVersion,
   softDeleteDocument,
   unarchiveDocument,
@@ -28,6 +29,32 @@ import { AppShell } from '../ui/AppShell';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { EmptyState, ErrorState, ForbiddenState, LoadingState } from '../ui/states';
 import { TagInput } from '../ui/TagInput';
+
+// Heavy viewing/editing surfaces are code-split so the detail page (and its tests)
+// don't pull in pdf.js / OnlyOffice / TipTap until a user actually opens one.
+const DocumentViewer = lazy(() => import('../ui/DocumentViewer'));
+const OnlyOfficeEditor = lazy(() => import('../ui/OnlyOfficeEditor'));
+const TipTapEditor = lazy(() => import('../ui/TipTapEditor'));
+
+/** File extensions OnlyOffice can edit in-browser (mirrors the API's allow-list). */
+const OFFICE_EDITABLE = ['docx', 'doc', 'xlsx', 'xls', 'pptx', 'ppt', 'odt', 'ods', 'odp', 'rtf'];
+
+function fileExtension(fileName: string): string {
+  const idx = fileName.lastIndexOf('.');
+  return idx >= 0 ? fileName.slice(idx + 1).toLowerCase() : '';
+}
+function isOfficeEditable(v: DocumentVersionSummary): boolean {
+  return OFFICE_EDITABLE.includes(fileExtension(v.fileName));
+}
+function isHtmlDoc(v: DocumentVersionSummary): boolean {
+  return v.mimeType.startsWith('text/html') || fileExtension(v.fileName) === 'html';
+}
+
+/** Which full-screen surface is open over the detail page (one at a time). */
+type Overlay =
+  | { kind: 'view'; version: DocumentVersionSummary }
+  | { kind: 'edit-office' }
+  | { kind: 'edit-text'; version?: DocumentVersionSummary };
 
 export function DocumentDetailPage() {
   const { hasPermission } = useAuth();
@@ -465,9 +492,27 @@ function QuickTags({ doc }: { doc: DocumentDetail }) {
 }
 
 function VersionsCard({ doc, canWrite }: { doc: DocumentDetail; canWrite: boolean }) {
+  const queryClient = useQueryClient();
+  const [overlay, setOverlay] = useState<Overlay | null>(null);
+
+  const close = () => setOverlay(null);
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ['document', doc.id] });
+    void queryClient.invalidateQueries({ queryKey: ['documents'] });
+  };
+  const closeAndRefresh = () => {
+    refresh();
+    close();
+  };
+
+  const current = doc.currentVersion;
+  // What editor (if any) applies to the current version.
+  const canEditOffice = !!current && isOfficeEditable(current);
+  const canEditText = !!current && isHtmlDoc(current);
+
   return (
     <div className="card p-5">
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-4 flex items-center justify-between gap-2">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-muted">
           Version history
         </h2>
@@ -476,11 +521,35 @@ function VersionsCard({ doc, canWrite }: { doc: DocumentDetail; canWrite: boolea
         </span>
       </div>
 
+      {canWrite && (
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          {current && canEditOffice && (
+            <button className="btn-secondary !py-1.5 text-sm" onClick={() => setOverlay({ kind: 'edit-office' })}>
+              Edit in OnlyOffice
+            </button>
+          )}
+          {current && canEditText && (
+            <button
+              className="btn-secondary !py-1.5 text-sm"
+              onClick={() => setOverlay({ kind: 'edit-text', version: current })}
+            >
+              Edit text
+            </button>
+          )}
+          <button
+            className="btn-secondary !py-1.5 text-sm"
+            onClick={() => setOverlay({ kind: 'edit-text' })}
+          >
+            New text document
+          </button>
+        </div>
+      )}
+
       {canWrite && <UploadVersion doc={doc} />}
 
       {doc.versions.length === 0 ? (
         <p className="mt-4 text-sm text-ink-muted">
-          No versions uploaded yet.{canWrite ? ' Upload a file above to create version 1.' : ''}
+          No versions yet.{canWrite ? ' Upload a file above, or start a new text document.' : ''}
         </p>
       ) : (
         <div className="mt-4 overflow-x-auto">
@@ -529,9 +598,17 @@ function VersionsCard({ doc, canWrite }: { doc: DocumentDetail; canWrite: boolea
                     </td>
                     <td className="py-2.5 pr-0 text-right align-top">
                       <div className="inline-flex items-center justify-end gap-2">
-                        {canWrite && !isCurrent && (
-                          <RestoreVersionButton doc={doc} version={v} />
+                        {v.hasRendition ? (
+                          <button
+                            className="btn-secondary !px-3 !py-1 text-xs"
+                            onClick={() => setOverlay({ kind: 'view', version: v })}
+                          >
+                            View
+                          </button>
+                        ) : (
+                          canWrite && <RegenerateButton documentId={doc.id} versionId={v.id} />
                         )}
+                        {canWrite && !isCurrent && <RestoreVersionButton doc={doc} version={v} />}
                         <DownloadButton documentId={doc.id} versionId={v.id} />
                       </div>
                     </td>
@@ -542,7 +619,62 @@ function VersionsCard({ doc, canWrite }: { doc: DocumentDetail; canWrite: boolea
           </table>
         </div>
       )}
+
+      {overlay && (
+        <Suspense fallback={<OverlayFallback />}>
+          {overlay.kind === 'view' && (
+            <DocumentViewer documentId={doc.id} version={overlay.version} onClose={close} />
+          )}
+          {overlay.kind === 'edit-office' && (
+            // Close refreshes history — a save-back may have created a new version.
+            <OnlyOfficeEditor documentId={doc.id} onClose={closeAndRefresh} />
+          )}
+          {overlay.kind === 'edit-text' && (
+            <TipTapEditor
+              documentId={doc.id}
+              version={overlay.version}
+              onSaved={closeAndRefresh}
+              onClose={close}
+            />
+          )}
+        </Suspense>
+      )}
     </div>
+  );
+}
+
+/** Neutral full-screen splash while a lazy editor/viewer bundle loads. */
+function OverlayFallback() {
+  return (
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-slate-900/60 text-sm text-white"
+      role="status"
+    >
+      Loading…
+    </div>
+  );
+}
+
+/**
+ * Regenerates a version's PDF preview on demand (e.g. after a transient Gotenberg
+ * outage left it without a rendition). Refreshes history on success so the row
+ * flips to offering "View".
+ */
+function RegenerateButton({ documentId, versionId }: { documentId: string; versionId: string }) {
+  const queryClient = useQueryClient();
+  const mutation = useMutation({
+    mutationFn: () => regenerateRendition(documentId, versionId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['document', documentId] }),
+  });
+  return (
+    <button
+      className="btn-secondary !px-3 !py-1 text-xs"
+      onClick={() => mutation.mutate()}
+      disabled={mutation.isPending}
+      title="Generate a viewable PDF preview for this version"
+    >
+      {mutation.isPending ? '…' : 'Make preview'}
+    </button>
   );
 }
 

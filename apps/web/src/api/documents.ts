@@ -8,6 +8,7 @@ import type {
   Paginated,
   ReviewCadence,
   SortOrder,
+  ViewTicket,
 } from '@policymanager/shared';
 import { http } from './http';
 
@@ -16,6 +17,7 @@ export type {
   DocumentListItem,
   DocumentVersionSummary,
   Paginated,
+  ViewTicket,
 } from '@policymanager/shared';
 
 /** Query parameters for the document library list. */
@@ -161,6 +163,62 @@ export async function restoreVersion(
 ): Promise<DocumentVersionSummary> {
   const { data } = await http.post<DocumentVersionSummary>(
     `/documents/${documentId}/versions/${versionId}/restore`,
+  );
+  return data;
+}
+
+// ---- Phase 3b: viewing + editing ----------------------------------------
+
+/** Short-lived presigned URL for in-browser VIEWING (PDF rendition/PDF/image). */
+export async function getViewUrl(
+  documentId: string,
+  versionId: string,
+): Promise<ViewTicket> {
+  const { data } = await http.get<ViewTicket>(
+    `/documents/${documentId}/versions/${versionId}/view-url`,
+  );
+  return data;
+}
+
+/** Best-effort: (re)generate the PDF rendition for a version. */
+export async function regenerateRendition(
+  documentId: string,
+  versionId: string,
+): Promise<DocumentVersionSummary> {
+  const { data } = await http.post<DocumentVersionSummary>(
+    `/documents/${documentId}/versions/${versionId}/rendition`,
+  );
+  return data;
+}
+
+/** Signed OnlyOffice editor config for the current version (docx/xlsx/pptx). */
+export async function getEditorConfig(documentId: string): Promise<Record<string, unknown>> {
+  const { data } = await http.get<Record<string, unknown>>(
+    `/documents/${documentId}/editor-config`,
+  );
+  return data;
+}
+
+/** Raw HTML of an app-authored (TipTap) text version, for loading into the editor. */
+export async function getVersionHtml(
+  documentId: string,
+  versionId: string,
+): Promise<{ html: string }> {
+  const { data } = await http.get<{ html: string }>(
+    `/documents/${documentId}/versions/${versionId}/html`,
+  );
+  return data;
+}
+
+/** Save an app-authored HTML document as a NEW immutable version (TipTap). */
+export async function saveHtmlVersion(
+  documentId: string,
+  html: string,
+  changeSummary?: string,
+): Promise<DocumentVersionSummary> {
+  const { data } = await http.post<DocumentVersionSummary>(
+    `/documents/${documentId}/versions/html`,
+    { html, changeSummary },
   );
   return data;
 }
