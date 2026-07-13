@@ -12,7 +12,7 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:e2e": "jest --config ./test/jest-e2e.json",
-    "seed": "ts-node prisma/seed.ts"
+    "seed": "ts-node --project tsconfig.json ../../prisma/seed.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.0",
