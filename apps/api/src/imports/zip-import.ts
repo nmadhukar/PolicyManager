@@ -228,14 +228,22 @@ async function expandZipFile(
       }
     }
 
-    const buffer = await entry.async('nodebuffer');
-    if (buffer.length > MAX_IMPORT_FILE_BYTES) {
+    let buffer: Buffer;
+    try {
+      // Stream-decompress with a hard byte cap so a zip bomb cannot expand into
+      // memory even when the declared uncompressed size (checked above) is missing
+      // or spoofed — the bound does not trust ZIP metadata.
+      buffer = await readEntryBounded(entry, MAX_IMPORT_FILE_BYTES);
+    } catch (err) {
       items.push({
         kind: 'error',
         fileName: entryFileName,
         categoryPath: categoryPathFor(normalized.path),
         displayPath: normalized.path,
-        message: 'ZIP entry exceeds the 50 MB per-file import limit.',
+        message:
+          err instanceof ZipEntryTooLargeError
+            ? 'ZIP entry exceeds the 50 MB per-file import limit.'
+            : `ZIP entry could not be read: ${errorMessage(err)}`,
       });
       assertItemLimit(items.length);
       continue;
@@ -323,4 +331,45 @@ function sourceNameFor(files: UploadedFile[]): string | null {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error && err.message ? err.message : 'unknown error';
+}
+
+/** Thrown when a ZIP entry's decompressed output exceeds the per-file cap. */
+class ZipEntryTooLargeError extends Error {}
+
+/**
+ * Reads a ZIP entry's decompressed bytes with a hard cap, aborting as soon as the
+ * output exceeds `maxBytes`. Unlike trusting `_data.uncompressedSize`, this bounds
+ * ACTUAL memory use regardless of what the archive claims — the real zip-bomb
+ * defense, independent of (possibly missing/spoofed) ZIP metadata.
+ */
+async function readEntryBounded(entry: JSZip.JSZipObject, maxBytes: number): Promise<Buffer> {
+  return new Promise<Buffer>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+    const stream = entry.nodeStream('nodebuffer');
+    stream.on('data', (chunk: Buffer) => {
+      if (settled) return;
+      size += chunk.length;
+      if (size > maxBytes) {
+        settled = true;
+        stream.pause();
+        reject(new ZipEntryTooLargeError());
+        return;
+      }
+      chunks.push(chunk);
+    });
+    stream.on('error', (err: unknown) => {
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    });
+    stream.on('end', () => {
+      if (!settled) {
+        settled = true;
+        resolve(Buffer.concat(chunks));
+      }
+    });
+  });
 }

@@ -24,6 +24,21 @@ async function zipFile(entries: Record<string, string>): Promise<UploadedFile> {
 }
 
 describe('prepareBulkImportFiles', () => {
+  it('rejects a ZIP entry whose decompressed size exceeds the 50 MB per-file cap (bomb guard)', async () => {
+    const zip = new JSZip();
+    // ~51 MB of zeros compresses to a few KB but must NOT be decompressed into memory.
+    zip.file('bomb.pdf', Buffer.alloc(51 * 1024 * 1024));
+    const buffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    const prepared = await prepareBulkImportFiles([
+      { originalname: 'bomb.zip', mimetype: 'application/zip', size: buffer.length, buffer },
+    ]);
+    const errors = prepared.items.filter((i) => i.kind === 'error');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ message: expect.stringContaining('50 MB') });
+    // No file item was produced from the oversized entry.
+    expect(prepared.items.some((i) => i.kind === 'file')).toBe(false);
+  });
+
   it('extracts supported ZIP entries and maps folders to category paths', async () => {
     const prepared = await prepareBulkImportFiles([
       await zipFile({
