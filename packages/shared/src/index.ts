@@ -238,6 +238,15 @@ export interface DocumentDetail extends DocumentListItem {
   unresolvedAnnotationCount: number;
 }
 
+/** Result of applying one review cadence/date change to many documents. */
+export interface BulkReviewScheduleResult {
+  matched: number;
+  updated: number;
+  documentIds: string[];
+  reviewCadence: ReviewCadence;
+  nextReviewDate: string | null;
+}
+
 /** Node in the document-category tree. */
 export interface DocumentCategoryNode {
   id: string;

@@ -16,10 +16,13 @@ import {
   type DocumentStatus,
   type SavedSearchItem,
   type ExtractionStatus,
+  type ReviewCadence,
   type SortOrder,
 } from '@policymanager/shared';
 import {
   archiveDocument,
+  bulkUpdateReviewSchedule,
+  type BulkReviewScheduleInput,
   CreateDocumentInput,
   createDocument,
   type DocumentListItem,
@@ -107,6 +110,7 @@ function Library() {
   const [sort, setSort] = useState<DocumentSortField>('createdAt');
   const [order, setOrder] = useState<SortOrder>('desc');
   const [showCreate, setShowCreate] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const debouncedQ = useDebouncedValue(filters.q, 300);
   const debouncedTag = useDebouncedValue(filters.tag, 300);
@@ -145,6 +149,10 @@ function Library() {
     queryFn: () => listDocuments(params),
     placeholderData: keepPreviousData,
   });
+
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [params]);
 
   const categoriesQuery = useQuery({ queryKey: ['category-tree'], queryFn: listCategoryTree });
   const categoryOptions = useMemo(
@@ -205,6 +213,28 @@ function Library() {
   const items = query.data?.items ?? [];
 
   const activeChips = buildActiveChips(filters, categoryOptions, ownerOptions);
+  const bulkSchedulingEnabled = canWrite && view !== 'trash';
+  const toggleSelected = (id: string) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const toggleVisible = () => {
+    const visibleIds = items.map((doc) => doc.id);
+    const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      for (const id of visibleIds) {
+        if (allVisibleSelected) next.delete(id);
+        else next.add(id);
+      }
+      return next;
+    });
+  };
+  const clearSelected = () => setSelectedIds(new Set());
 
   return (
     <div className="space-y-5">
@@ -250,6 +280,15 @@ function Library() {
           setPage(1);
         }}
       />
+
+      {bulkSchedulingEnabled && (
+        <BulkReviewSchedulePanel
+          selectedIds={[...selectedIds]}
+          totalMatching={total}
+          filters={bulkScheduleFilters(params)}
+          onDone={clearSelected}
+        />
+      )}
 
       {activeChips.length > 0 && (
         <div className="flex flex-wrap items-center gap-2" aria-label="Active filters">
@@ -319,9 +358,13 @@ function Library() {
           items={items}
           view={view}
           canWrite={canWrite}
+          bulkSelectable={bulkSchedulingEnabled}
+          selectedIds={selectedIds}
           sort={sort}
           order={order}
           onSort={changeSort}
+          onToggleSelected={toggleSelected}
+          onToggleVisible={toggleVisible}
           isFetching={query.isFetching}
         />
       )}
@@ -524,6 +567,174 @@ function sanitizeSavedFilters(value: Record<string, unknown>): Partial<Filters> 
     if (typeof raw === 'string') next[key] = raw;
   }
   return next;
+}
+
+function bulkScheduleFilters(
+  params: DocumentListParams,
+): NonNullable<BulkReviewScheduleInput['filters']> {
+  const filterKeys: (keyof NonNullable<BulkReviewScheduleInput['filters']>)[] = [
+    'q',
+    'categoryId',
+    'ownerId',
+    'tag',
+    'tags',
+    'status',
+    'accessLevel',
+    'extractionStatus',
+    'reviewBefore',
+    'reviewAfter',
+    'effectiveBefore',
+    'effectiveAfter',
+    'dueState',
+    'includeArchived',
+  ];
+  const rest: Record<string, unknown> = {};
+  for (const key of filterKeys) rest[key] = params[key];
+  return Object.fromEntries(
+    Object.entries(rest).filter(([, value]) => value !== undefined && value !== ''),
+  ) as NonNullable<BulkReviewScheduleInput['filters']>;
+}
+
+function BulkReviewSchedulePanel({
+  selectedIds,
+  totalMatching,
+  filters,
+  onDone,
+}: {
+  selectedIds: string[];
+  totalMatching: number;
+  filters: NonNullable<BulkReviewScheduleInput['filters']>;
+  onDone: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const [reviewCadence, setReviewCadence] = useState<ReviewCadence>('annual');
+  const [nextReviewDate, setNextReviewDate] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [pendingTarget, setPendingTarget] = useState<'selected' | 'filtered' | null>(null);
+  const requiresDate = reviewCadence !== 'none';
+
+  const mutation = useMutation({
+    mutationFn: (input: BulkReviewScheduleInput) => bulkUpdateReviewSchedule(input),
+    onSuccess: (result) => {
+      setPendingTarget(null);
+      setError(null);
+      onDone();
+      void queryClient.invalidateQueries({ queryKey: ['documents'] });
+      toast.success(`Updated ${result.updated} review schedule${result.updated === 1 ? '' : 's'}.`);
+    },
+    onError: (err) => {
+      setPendingTarget(null);
+      toast.error(apiErrorMessage(err, 'Could not update review schedules.'));
+    },
+  });
+
+  const validate = (): boolean => {
+    if (requiresDate && !nextReviewDate) {
+      setError('Next review date is required.');
+      return false;
+    }
+    setError(null);
+    return true;
+  };
+
+  const requestSubmit = (target: 'selected' | 'filtered') => {
+    if (target === 'selected' && selectedIds.length === 0) {
+      setError('Select at least one document.');
+      return;
+    }
+    if (target === 'filtered' && totalMatching === 0) {
+      setError('No matching documents.');
+      return;
+    }
+    if (!validate()) return;
+    setPendingTarget(target);
+  };
+
+  const confirm = () => {
+    if (!pendingTarget) return;
+    mutation.mutate({
+      ...(pendingTarget === 'selected' ? { documentIds: selectedIds } : { filters }),
+      reviewCadence,
+      nextReviewDate: reviewCadence === 'none' ? null : nextReviewDate,
+    });
+  };
+
+  const targetCount = pendingTarget === 'selected' ? selectedIds.length : totalMatching;
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-4">
+      <div className="grid gap-3 lg:grid-cols-[minmax(9rem,1fr)_minmax(9rem,1fr)_auto_auto] lg:items-end">
+        <div>
+          <label htmlFor="bulk-review-cadence" className="label">
+            Bulk review cadence
+          </label>
+          <select
+            id="bulk-review-cadence"
+            className="input"
+            value={reviewCadence}
+            onChange={(e) => setReviewCadence(e.target.value as ReviewCadence)}
+          >
+            {REVIEW_CADENCES.map((cadence) => (
+              <option key={cadence} value={cadence}>
+                {cadence.charAt(0).toUpperCase() + cadence.slice(1)}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label htmlFor="bulk-review-date" className="label">
+            Next review date
+          </label>
+          <input
+            id="bulk-review-date"
+            type="date"
+            className="input"
+            value={nextReviewDate}
+            onChange={(e) => setNextReviewDate(e.target.value)}
+            disabled={!requiresDate}
+          />
+        </div>
+        <button
+          type="button"
+          className="btn-secondary whitespace-nowrap"
+          onClick={() => requestSubmit('selected')}
+          disabled={selectedIds.length === 0 || mutation.isPending}
+        >
+          Schedule selected ({selectedIds.length})
+        </button>
+        <button
+          type="button"
+          className="btn-primary whitespace-nowrap"
+          onClick={() => requestSubmit('filtered')}
+          disabled={totalMatching === 0 || mutation.isPending}
+        >
+          Schedule filtered ({totalMatching})
+        </button>
+      </div>
+      {error && (
+        <p className="mt-2 text-sm text-red-600" role="alert">
+          {error}
+        </p>
+      )}
+      <ConfirmDialog
+        open={pendingTarget !== null}
+        title="Apply review schedule?"
+        body={
+          <>
+            This will update <span className="font-medium text-ink">{targetCount}</span>{' '}
+            document{targetCount === 1 ? '' : 's'} to{' '}
+            <span className="font-medium text-ink">{reviewCadence}</span>
+            {reviewCadence === 'none' ? '.' : ` due ${nextReviewDate}.`}
+          </>
+        }
+        confirmLabel="Apply schedule"
+        busy={mutation.isPending}
+        onConfirm={confirm}
+        onCancel={() => setPendingTarget(null)}
+      />
+    </div>
+  );
 }
 
 function FiltersBar({
@@ -789,17 +1000,25 @@ function DocumentsTable({
   items,
   view,
   canWrite,
+  bulkSelectable,
+  selectedIds,
   sort,
   order,
   onSort,
+  onToggleSelected,
+  onToggleVisible,
   isFetching,
 }: {
   items: DocumentListItem[];
   view: LibraryView;
   canWrite: boolean;
+  bulkSelectable: boolean;
+  selectedIds: Set<string>;
   sort: DocumentSortField;
   order: SortOrder;
   onSort: (field: DocumentSortField) => void;
+  onToggleSelected: (id: string) => void;
+  onToggleVisible: () => void;
   isFetching: boolean;
 }) {
   const navigate = useNavigate();
@@ -807,6 +1026,8 @@ function DocumentsTable({
   // in the trash — the row exposes Restore instead.
   const navigable = view !== 'trash';
   const showActions = canWrite;
+  const visibleIds = items.map((doc) => doc.id);
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
   const arrow = (field: DocumentSortField) =>
     sort === field ? (order === 'asc' ? ' ▲' : ' ▼') : '';
 
@@ -828,6 +1049,17 @@ function DocumentsTable({
       <table className="w-full min-w-[760px] text-left text-sm">
         <thead className="border-b border-slate-200 text-xs uppercase tracking-wide text-ink-muted">
           <tr>
+            {bulkSelectable && (
+              <th scope="col" className="w-10 px-4 py-3">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-600"
+                  aria-label="Select all visible documents"
+                  checked={allVisibleSelected}
+                  onChange={onToggleVisible}
+                />
+              </th>
+            )}
             {SORTABLE.map((s) =>
               s.field === 'nextReviewDate' ? null : header(s.field, s.label),
             )}
@@ -856,6 +1088,18 @@ function DocumentsTable({
               }
               onClick={navigable ? () => navigate(`/library/${doc.id}`) : undefined}
             >
+              {bulkSelectable && (
+                <td className="px-4 py-3 align-top">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-600"
+                    aria-label={`Select ${doc.title}`}
+                    checked={selectedIds.has(doc.id)}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={() => onToggleSelected(doc.id)}
+                  />
+                </td>
+              )}
               <td className="px-4 py-3 align-top">
                 {navigable ? (
                   <button

@@ -1,7 +1,8 @@
 import { FormEvent, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AxiosError } from 'axios';
-import type { DocumentDetail } from '@policymanager/shared';
+import { REVIEW_CADENCES, type DocumentDetail, type ReviewCadence } from '@policymanager/shared';
+import { updateDocument } from '../api/documents';
 import { assignReviewer, listReviewers, removeReviewer } from '../api/reviews';
 import { listUsers } from '../api/users';
 import { apiErrorMessage } from '../lib/apiError';
@@ -13,8 +14,15 @@ import { useToast } from '../ui/Toast';
  * cadence + next review date and lets a manager assign/unassign reviewers who will
  * receive review tasks when the document comes due. The API enforces review.manage.
  */
-export function DocumentReviewersPanel({ doc }: { doc: DocumentDetail }) {
+export function DocumentReviewersPanel({
+  doc,
+  canWrite,
+}: {
+  doc: DocumentDetail;
+  canWrite: boolean;
+}) {
   const queryClient = useQueryClient();
+  const [editingSchedule, setEditingSchedule] = useState(false);
   const reviewersQuery = useQuery({
     queryKey: ['reviewers', doc.id],
     queryFn: () => listReviewers(doc.id),
@@ -28,22 +36,37 @@ export function DocumentReviewersPanel({ doc }: { doc: DocumentDetail }) {
   return (
     <div className="card space-y-4 p-5">
       <div>
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-muted">Review schedule</h2>
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-muted">Review schedule</h2>
+          {canWrite && (
+            <button
+              type="button"
+              className="text-xs font-medium text-brand-600 hover:underline"
+              onClick={() => setEditingSchedule((v) => !v)}
+            >
+              {editingSchedule ? 'Cancel' : 'Edit schedule'}
+            </button>
+          )}
+        </div>
         <p className="mt-1 text-xs text-ink-muted">
           Reviewers are notified when this document comes due for QC review.
         </p>
       </div>
 
-      <dl className="space-y-2 text-sm">
-        <div className="flex justify-between gap-4">
-          <dt className="text-ink-muted">Cadence</dt>
-          <dd className="font-medium text-ink">{doc.reviewCadence}</dd>
-        </div>
-        <div className="flex justify-between gap-4">
-          <dt className="text-ink-muted">Next review</dt>
-          <dd className="font-medium text-ink">{formatDate(doc.nextReviewDate)}</dd>
-        </div>
-      </dl>
+      {editingSchedule ? (
+        <EditScheduleForm doc={doc} onDone={() => setEditingSchedule(false)} />
+      ) : (
+        <dl className="space-y-2 text-sm">
+          <div className="flex justify-between gap-4">
+            <dt className="text-ink-muted">Cadence</dt>
+            <dd className="font-medium text-ink">{doc.reviewCadence}</dd>
+          </div>
+          <div className="flex justify-between gap-4">
+            <dt className="text-ink-muted">Next review</dt>
+            <dd className="font-medium text-ink">{formatDate(doc.nextReviewDate)}</dd>
+          </div>
+        </dl>
+      )}
 
       <div className="border-t border-slate-100 pt-4">
         <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-muted">Reviewers</h3>
@@ -77,6 +100,89 @@ export function DocumentReviewersPanel({ doc }: { doc: DocumentDetail }) {
 
       {!forbidden && <AddReviewerForm documentId={doc.id} onAdded={invalidate} />}
     </div>
+  );
+}
+
+function EditScheduleForm({ doc, onDone }: { doc: DocumentDetail; onDone: () => void }) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const [reviewCadence, setReviewCadence] = useState<ReviewCadence>(doc.reviewCadence);
+  const [nextReviewDate, setNextReviewDate] = useState(
+    doc.nextReviewDate ? doc.nextReviewDate.slice(0, 10) : '',
+  );
+  const [error, setError] = useState<string | null>(null);
+  const requiresDate = reviewCadence !== 'none';
+
+  const mutation = useMutation({
+    mutationFn: () =>
+      updateDocument(doc.id, {
+        reviewCadence,
+        nextReviewDate: reviewCadence === 'none' ? null : nextReviewDate,
+      }),
+    onSuccess: () => {
+      setError(null);
+      void queryClient.invalidateQueries({ queryKey: ['document', doc.id] });
+      void queryClient.invalidateQueries({ queryKey: ['documents'] });
+      onDone();
+    },
+    onError: (err) => toast.error(apiErrorMessage(err, 'Could not update the review schedule.')),
+  });
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (requiresDate && !nextReviewDate) {
+      setError('Next review date is required.');
+      return;
+    }
+    mutation.mutate();
+  };
+
+  return (
+    <form className="space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-3" onSubmit={submit}>
+      {error && (
+        <p className="text-sm text-red-600" role="alert">
+          {error}
+        </p>
+      )}
+      <div>
+        <label htmlFor="review-card-cadence" className="label">
+          Cadence
+        </label>
+        <select
+          id="review-card-cadence"
+          className="input bg-white"
+          value={reviewCadence}
+          onChange={(e) => setReviewCadence(e.target.value as ReviewCadence)}
+        >
+          {REVIEW_CADENCES.map((cadence) => (
+            <option key={cadence} value={cadence}>
+              {cadence.charAt(0).toUpperCase() + cadence.slice(1)}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <label htmlFor="review-card-next-date" className="label">
+          Next review date
+        </label>
+        <input
+          id="review-card-next-date"
+          type="date"
+          className="input bg-white"
+          value={nextReviewDate}
+          onChange={(e) => setNextReviewDate(e.target.value)}
+          disabled={!requiresDate}
+        />
+      </div>
+      <div className="flex justify-end gap-2">
+        <button type="button" className="btn-secondary !py-1.5 text-sm" onClick={onDone}>
+          Cancel
+        </button>
+        <button type="submit" className="btn-primary !py-1.5 text-sm" disabled={mutation.isPending}>
+          {mutation.isPending ? 'Saving...' : 'Save schedule'}
+        </button>
+      </div>
+    </form>
   );
 }
 

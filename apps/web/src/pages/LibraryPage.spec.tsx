@@ -11,6 +11,7 @@ const mockSoftDelete = vi.fn();
 const mockRestore = vi.fn();
 const mockArchive = vi.fn();
 const mockUnarchive = vi.fn();
+const mockBulkUpdateReviewSchedule = vi.fn();
 const mockCreateCategory = vi.fn();
 const mockListSavedSearches = vi.fn();
 
@@ -38,6 +39,7 @@ vi.mock('../api/documents', () => ({
   restoreDocument: (...args: unknown[]) => mockRestore(...args),
   archiveDocument: (...args: unknown[]) => mockArchive(...args),
   unarchiveDocument: (...args: unknown[]) => mockUnarchive(...args),
+  bulkUpdateReviewSchedule: (...args: unknown[]) => mockBulkUpdateReviewSchedule(...args),
 }));
 
 vi.mock('../api/savedSearches', () => ({
@@ -111,6 +113,13 @@ describe('LibraryPage', () => {
     mockRestore.mockReset().mockResolvedValue({});
     mockArchive.mockReset().mockResolvedValue({});
     mockUnarchive.mockReset().mockResolvedValue({});
+    mockBulkUpdateReviewSchedule.mockReset().mockResolvedValue({
+      matched: 1,
+      updated: 1,
+      documentIds: ['doc-1'],
+      reviewCadence: 'annual',
+      nextReviewDate: '2026-10-01T00:00:00.000Z',
+    });
     mockCreateCategory.mockReset().mockResolvedValue({
       id: 'cat-1',
       name: 'Policies',
@@ -234,6 +243,57 @@ describe('LibraryPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
     await waitFor(() => expect(mockArchive).toHaveBeenCalledWith('doc-1'));
+  });
+
+  it('applies a review schedule to selected documents', async () => {
+    mockHasPermission.mockReturnValue(true);
+    mockListDocuments.mockResolvedValue(oneDoc());
+    renderLibrary();
+    await waitFor(() => expect(screen.getByText('Seclusion & Restraint Policy')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText('Select Seclusion & Restraint Policy'));
+    fireEvent.change(screen.getByLabelText('Next review date'), {
+      target: { value: '2026-10-01' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Schedule selected (1)' }));
+
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Apply schedule' }));
+
+    await waitFor(() =>
+      expect(mockBulkUpdateReviewSchedule).toHaveBeenCalledWith({
+        documentIds: ['doc-1'],
+        reviewCadence: 'annual',
+        nextReviewDate: '2026-10-01',
+      }),
+    );
+  });
+
+  it('applies a review schedule to the current filtered result set', async () => {
+    mockHasPermission.mockReturnValue(true);
+    mockListDocuments.mockResolvedValue(oneDoc());
+    renderLibrary();
+    await waitFor(() => expect(screen.getByText('Seclusion & Restraint Policy')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'published' } });
+    await waitFor(() =>
+      expect(mockListDocuments).toHaveBeenCalledWith(expect.objectContaining({ status: 'published' })),
+    );
+    fireEvent.change(screen.getByLabelText('Next review date'), {
+      target: { value: '2027-01-15' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Schedule filtered (1)' }));
+
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Apply schedule' }));
+
+    await waitFor(() =>
+      expect(mockBulkUpdateReviewSchedule).toHaveBeenCalledWith({
+        filters: expect.objectContaining({ status: 'published' }),
+        reviewCadence: 'annual',
+        nextReviewDate: '2027-01-15',
+      }),
+    );
   });
 
   it('surfaces an error toast when a row action fails (no silent failure)', async () => {

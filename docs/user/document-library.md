@@ -72,6 +72,32 @@ Approval and review screens show a warning when the current version still has
 open annotations. The warning does not block sign-off; it gives the signer the
 current issue count before they approve or complete the review.
 
+## Review scheduling
+
+Users with review management access see the **Review Schedule** panel on the
+document page.
+
+For one document:
+
+1. Open the document.
+2. In **Review Schedule**, click **Edit schedule**.
+3. Choose **Quarterly**, **Annual**, **Custom**, or **None**.
+4. Set the **Next review date** when the cadence is not **None**.
+5. Click **Save schedule**.
+
+For many documents:
+
+1. Open **Library**.
+2. Narrow the list with filters such as **Category**, **Tag**, **Owner**,
+   **Status**, or the due-date quick filters.
+3. Either select individual rows, or leave rows unselected and use the filtered
+   result set.
+4. In **Bulk review cadence**, choose the cadence and next review date.
+5. Click **Schedule selected** or **Schedule filtered**, then confirm.
+
+The next review sweep creates reviewer tasks when a scheduled document comes due.
+If no reviewer is assigned, the review falls to the document owner.
+
 ## Editing details & tags
 
 With *document.write* you can:
@@ -87,5 +113,4 @@ With *document.write* you can:
 
 Documents move through: **Draft → In review → Approved → Published**, and can be
 **Archived** or **Retired**. The status shows as a colored badge on the row and
-the document page. Review scheduling, approvals, and acknowledgements arrive in
-later phases.
+the document page.

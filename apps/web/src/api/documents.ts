@@ -1,5 +1,6 @@
 import type {
   AccessLevel,
+  BulkReviewScheduleResult,
   DocumentDetail,
   DocumentListItem,
   DocumentSortField,
@@ -81,6 +82,13 @@ export interface UpdateDocumentInput {
   effectiveDate?: string | null;
 }
 
+export interface BulkReviewScheduleInput {
+  documentIds?: string[];
+  filters?: Omit<DocumentListParams, 'page' | 'pageSize' | 'sort' | 'order' | 'deleted'>;
+  reviewCadence: ReviewCadence;
+  nextReviewDate?: string | null;
+}
+
 export interface DownloadTicket {
   url: string;
   expiresIn: number;
@@ -120,6 +128,16 @@ export async function updateDocument(
   patch: UpdateDocumentInput,
 ): Promise<DocumentDetail> {
   const { data } = await http.patch<DocumentDetail>(`/documents/${id}`, patch);
+  return data;
+}
+
+export async function bulkUpdateReviewSchedule(
+  input: BulkReviewScheduleInput,
+): Promise<BulkReviewScheduleResult> {
+  const { data } = await http.post<BulkReviewScheduleResult>(
+    '/documents/bulk-review-schedule',
+    input,
+  );
   return data;
 }
 

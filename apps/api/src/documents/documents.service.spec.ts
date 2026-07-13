@@ -22,6 +22,7 @@ const makePrisma = (): any => {
       findFirst: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
     },
     documentVersion: {
       aggregate: jest.fn(),
@@ -959,6 +960,125 @@ describe('DocumentsService.update', () => {
       ForbiddenException,
     );
     expect(prisma.document.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('DocumentsService.bulkUpdateReviewSchedule', () => {
+  it('updates selected documents only after edit access is validated for all targets', async () => {
+    const { svc, prisma, access, audit } = build();
+    prisma.document.findMany.mockResolvedValue([
+      accessDoc({ id: 'doc-1' }),
+      accessDoc({ id: 'doc-2' }),
+    ]);
+    prisma.document.updateMany.mockResolvedValue({ count: 2 });
+
+    const result = await svc.bulkUpdateReviewSchedule(
+      {
+        documentIds: ['doc-1', 'doc-2'],
+        reviewCadence: 'quarterly',
+        nextReviewDate: '2026-10-01',
+      },
+      actor,
+      reqCtx,
+    );
+
+    expect(access.canAccess).toHaveBeenCalledWith(actor, accessDoc({ id: 'doc-1' }), 'edit');
+    expect(access.canAccess).toHaveBeenCalledWith(actor, accessDoc({ id: 'doc-2' }), 'edit');
+    const updateArg = prisma.document.updateMany.mock.calls[0][0];
+    expect(updateArg.where).toEqual({ id: { in: ['doc-1', 'doc-2'] }, deletedAt: null });
+    expect(updateArg.data.reviewCadence).toBe('quarterly');
+    expect(updateArg.data.nextReviewDate.toISOString()).toBe('2026-10-01T00:00:00.000Z');
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'document.updated',
+        documentId: 'doc-1',
+        metadata: expect.objectContaining({ bulk: true, reviewCadence: 'quarterly' }),
+      }),
+    );
+    expect(result).toMatchObject({
+      matched: 2,
+      updated: 2,
+      documentIds: ['doc-1', 'doc-2'],
+      reviewCadence: 'quarterly',
+      nextReviewDate: '2026-10-01T00:00:00.000Z',
+    });
+  });
+
+  it('targets every document matching the provided library filters', async () => {
+    const { svc, prisma, access } = build();
+    access.buildListWhere.mockResolvedValue({ accessLevel: { not: 'confidential' } });
+    prisma.document.findMany.mockResolvedValue([accessDoc({ id: 'doc-9' })]);
+    prisma.document.updateMany.mockResolvedValue({ count: 1 });
+
+    await svc.bulkUpdateReviewSchedule(
+      {
+        filters: { categoryId: 'cat-1', tag: 'CARF', status: 'published' },
+        reviewCadence: 'annual',
+        nextReviewDate: '2027-01-15',
+      },
+      actor,
+      reqCtx,
+    );
+
+    expect(prisma.document.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            expect.objectContaining({
+              categoryId: 'cat-1',
+              tags: { has: 'CARF' },
+              status: 'published',
+              deletedAt: null,
+            }),
+            { accessLevel: { not: 'confidential' } },
+          ],
+        },
+        select: expect.any(Object),
+        take: 501,
+      }),
+    );
+    expect(prisma.document.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: { in: ['doc-9'] }, deletedAt: null } }),
+    );
+  });
+
+  it('rejects quarterly/annual/custom bulk schedules without a next review date', async () => {
+    const { svc, prisma } = build();
+    await expect(
+      svc.bulkUpdateReviewSchedule(
+        { documentIds: ['doc-1'], reviewCadence: 'annual' },
+        actor,
+        reqCtx,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.document.findMany).not.toHaveBeenCalled();
+    expect(prisma.document.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('does not partially update when a selected target fails edit authorization', async () => {
+    const { svc, prisma, access, audit } = build();
+    prisma.document.findMany.mockResolvedValue([
+      accessDoc({ id: 'doc-1' }),
+      accessDoc({ id: 'doc-secret', accessLevel: 'confidential' }),
+    ]);
+    access.canAccess.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+
+    await expect(
+      svc.bulkUpdateReviewSchedule(
+        {
+          documentIds: ['doc-1', 'doc-secret'],
+          reviewCadence: 'annual',
+          nextReviewDate: '2027-01-15',
+        },
+        actor,
+        reqCtx,
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+
+    expect(prisma.document.updateMany).not.toHaveBeenCalled();
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'access.denied', documentId: 'doc-secret' }),
+    );
   });
 });
 

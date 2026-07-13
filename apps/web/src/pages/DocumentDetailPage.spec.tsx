@@ -10,6 +10,7 @@ const mockArchive = vi.fn();
 const mockUnarchive = vi.fn();
 const mockSoftDelete = vi.fn();
 const mockRestoreVersion = vi.fn();
+const mockUpdateDocument = vi.fn();
 const mockNavigate = vi.fn();
 
 vi.mock('../auth/AuthContext', () => ({
@@ -42,7 +43,7 @@ vi.mock('../api/documents', () => ({
   restoreVersion: (...args: unknown[]) => mockRestoreVersion(...args),
   regenerateRendition: vi.fn(),
   getDownloadUrl: vi.fn(),
-  updateDocument: vi.fn(),
+  updateDocument: (...args: unknown[]) => mockUpdateDocument(...args),
   uploadVersion: vi.fn(),
   UPLOAD_ACCEPT: '.pdf,.docx',
 }));
@@ -154,6 +155,7 @@ describe('DocumentDetailPage', () => {
     mockUnarchive.mockReset().mockResolvedValue({});
     mockSoftDelete.mockReset().mockResolvedValue({});
     mockRestoreVersion.mockReset().mockResolvedValue({});
+    mockUpdateDocument.mockReset().mockResolvedValue({});
     mockNavigate.mockReset();
   });
 
@@ -222,5 +224,26 @@ describe('DocumentDetailPage', () => {
     expect(screen.queryByRole('button', { name: 'Archive' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Restore' })).not.toBeInTheDocument();
+  });
+
+  it('updates the review schedule from the Review Schedule panel', async () => {
+    mockHasPermission.mockReturnValue(true);
+    mockGetDocument.mockResolvedValue(detail({ reviewCadence: 'none', nextReviewDate: null }));
+    renderDetail();
+    await waitFor(() => expect(screen.getByText('Review schedule')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit schedule' }));
+    fireEvent.change(screen.getByLabelText('Cadence'), { target: { value: 'quarterly' } });
+    fireEvent.change(screen.getByLabelText('Next review date'), {
+      target: { value: '2026-10-01' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save schedule' }));
+
+    await waitFor(() =>
+      expect(mockUpdateDocument).toHaveBeenCalledWith('doc-1', {
+        reviewCadence: 'quarterly',
+        nextReviewDate: '2026-10-01',
+      }),
+    );
   });
 });

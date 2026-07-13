@@ -12,10 +12,12 @@ import {
   AUDIT_ACTIONS,
   type AccessAction,
   type AuthUser,
+  type BulkReviewScheduleResult,
   type DocumentDetail,
   type DocumentListItem,
   type DocumentVersionSummary,
   type Paginated,
+  type ReviewCadence,
   type ViewTicket,
 } from '@policymanager/shared';
 import { PrismaService } from '../prisma/prisma.service';
@@ -27,6 +29,7 @@ import { buildDocumentListQuery, type ListDocumentsQuery } from './document-quer
 import type { CreateDocumentDto } from './dto/create-document.dto';
 import type { CreateVersionDto } from './dto/create-version.dto';
 import type { UpdateDocumentDto } from './dto/update-document.dto';
+import type { BulkReviewScheduleDto } from './dto/bulk-review-schedule.dto';
 import {
   OnlyOfficeService,
   callbackWantsSave,
@@ -103,6 +106,7 @@ const accessSelect = {
 /** Ceiling on ranked full-text candidates considered for a single search query.
  *  Relevance-ordered, so anything past this is not something a user pages to. */
 const RANKED_SEARCH_CAP = 200;
+const MAX_BULK_REVIEW_SCHEDULE_TARGETS = 500;
 
 @Injectable()
 export class DocumentsService {
@@ -352,6 +356,63 @@ export class DocumentsService {
       await this.notifications?.notifyApprovalRequested(id, user);
     }
     return this.loadDetail(id);
+  }
+
+  /**
+   * Applies one review schedule to either explicit library selections or every
+   * active document matching the current filters. Each target is edit-authorized
+   * before any row is updated, preventing partial bulk changes on mixed-access
+   * selections.
+   */
+  async bulkUpdateReviewSchedule(
+    dto: BulkReviewScheduleDto,
+    user: AuthUser,
+    ctx: RequestContext = {},
+  ): Promise<BulkReviewScheduleResult> {
+    const schedule = this.reviewSchedulePatch(dto.reviewCadence, dto.nextReviewDate);
+    const targets = await this.resolveBulkReviewScheduleTargets(dto, user, ctx);
+    const ids = targets.map((doc) => doc.id);
+
+    if (ids.length === 0) {
+      return {
+        matched: 0,
+        updated: 0,
+        documentIds: [],
+        reviewCadence: dto.reviewCadence,
+        nextReviewDate: schedule.nextReviewDate ? schedule.nextReviewDate.toISOString() : null,
+      };
+    }
+
+    const result = await this.prisma.document.updateMany({
+      where: { id: { in: ids }, deletedAt: null },
+      data: schedule,
+    });
+
+    await Promise.all(
+      ids.map((documentId) =>
+        this.audit.record({
+          action: AUDIT_ACTIONS.DOCUMENT_UPDATED,
+          actorUserId: user.id,
+          documentId,
+          targetType: 'document',
+          ...ctx,
+          metadata: {
+            bulk: true,
+            fields: ['reviewCadence', 'nextReviewDate'],
+            reviewCadence: dto.reviewCadence,
+            nextReviewDate: schedule.nextReviewDate ? schedule.nextReviewDate.toISOString() : null,
+          },
+        }),
+      ),
+    );
+
+    return {
+      matched: ids.length,
+      updated: result.count,
+      documentIds: ids,
+      reviewCadence: dto.reviewCadence,
+      nextReviewDate: schedule.nextReviewDate ? schedule.nextReviewDate.toISOString() : null,
+    };
   }
 
   /**
@@ -1081,6 +1142,88 @@ export class DocumentsService {
   }
 
   // ---- Helpers -------------------------------------------------------------
+
+  private reviewSchedulePatch(
+    reviewCadence: ReviewCadence,
+    nextReviewDate: string | null | undefined,
+  ): { reviewCadence: ReviewCadence; nextReviewDate: Date | null } {
+    if (reviewCadence === 'none') {
+      return { reviewCadence, nextReviewDate: null };
+    }
+    if (!nextReviewDate) {
+      throw new BadRequestException('A next review date is required for this cadence');
+    }
+    const parsed = new Date(nextReviewDate);
+    if (Number.isNaN(parsed.getTime())) {
+      throw new BadRequestException('Invalid next review date');
+    }
+    return { reviewCadence, nextReviewDate: parsed };
+  }
+
+  private async resolveBulkReviewScheduleTargets(
+    dto: BulkReviewScheduleDto,
+    user: AuthUser,
+    ctx: RequestContext,
+  ): Promise<AccessDocument[]> {
+    const uniqueIds = Array.from(new Set(dto.documentIds ?? []));
+    const hasSelectedIds = uniqueIds.length > 0;
+    const hasFilters = dto.filters != null;
+    if (hasSelectedIds === hasFilters) {
+      throw new BadRequestException('Choose either documentIds or filters as the bulk target');
+    }
+
+    const targets = hasSelectedIds
+      ? await this.resolveSelectedReviewScheduleTargets(uniqueIds)
+      : await this.resolveFilteredReviewScheduleTargets(dto.filters ?? {}, user);
+
+    if (targets.length > MAX_BULK_REVIEW_SCHEDULE_TARGETS) {
+      throw new BadRequestException(
+        `Bulk review scheduling is limited to ${MAX_BULK_REVIEW_SCHEDULE_TARGETS} documents at a time`,
+      );
+    }
+
+    for (const target of targets) {
+      await this.enforce(user, target, 'edit', ctx);
+    }
+    return targets;
+  }
+
+  private async resolveSelectedReviewScheduleTargets(ids: string[]): Promise<AccessDocument[]> {
+    const rows = await this.prisma.document.findMany({
+      where: { id: { in: ids }, deletedAt: null },
+      select: accessSelect,
+    });
+    if (rows.length !== ids.length) {
+      throw new NotFoundException('One or more selected documents were not found');
+    }
+    return rows;
+  }
+
+  private async resolveFilteredReviewScheduleTargets(
+    filters: ListDocumentsQuery,
+    user: AuthUser,
+  ): Promise<AccessDocument[]> {
+    const built = buildDocumentListQuery({
+      ...filters,
+      deleted: false,
+      page: 1,
+      pageSize: MAX_BULK_REVIEW_SCHEDULE_TARGETS,
+    });
+    const accessWhere = await this.access.buildListWhere(user);
+    const and: Prisma.DocumentWhereInput[] = [built.where, accessWhere];
+
+    if (built.term) {
+      const rankedIds = await this.rankedSearchIds(built.term);
+      if (rankedIds.length === 0) return [];
+      and.push({ id: { in: rankedIds } });
+    }
+
+    return this.prisma.document.findMany({
+      where: { AND: and },
+      select: accessSelect,
+      take: MAX_BULK_REVIEW_SCHEDULE_TARGETS + 1,
+    });
+  }
 
   /**
    * Access check + access.denied audit in one place. On denial writes an
