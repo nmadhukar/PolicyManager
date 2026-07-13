@@ -297,6 +297,12 @@ model DocumentVersion {
   extractionStatus ExtractionStatus @default(pending)
   extractionError  String?          @db.Text
   ocrApplied       Boolean          @default(false)
+  // Bounded-retry bookkeeping for the async extraction worker. `extractionAttempts`
+  // caps how many times a `failed` row is retried; `extractionStartedAt` timestamps
+  // the `processing` claim so a crashed worker's orphaned rows can be reclaimed once
+  // they go stale (there is no @updatedAt on this immutable model).
+  extractionAttempts  Int            @default(0)
+  extractionStartedAt DateTime?
   searchVector     Unsupported("tsvector")?
   createdAt      DateTime       @default(now())
 

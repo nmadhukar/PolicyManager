@@ -1,4 +1,4 @@
-import { buildPublicSearchWhere, buildPublicVisibilityWhere } from './public-document-query';
+import { buildPublicVisibilityWhere } from './public-document-query';
 
 /**
  * The visibility builder is the public API's data-leak boundary (AGENTS.md §8).
@@ -59,25 +59,6 @@ describe('public-document-query', () => {
     it('ignores an invalid updatedSince', () => {
       const where = buildPublicVisibilityWhere(allAccess, { updatedSince: 'not-a-date' });
       expect(where.AND).toBeUndefined();
-    });
-  });
-
-  describe('buildPublicSearchWhere', () => {
-    it('matches title OR current-version extracted text, under the floor', () => {
-      const where = buildPublicSearchWhere(allAccess, 'restraint');
-      expect(where.status).toBe('published');
-      expect(where.accessLevel).toEqual({ not: 'confidential' });
-      expect(where.AND).toContainEqual({
-        OR: [
-          { title: { contains: 'restraint', mode: 'insensitive' } },
-          { currentVersion: { is: { extractedText: { contains: 'restraint', mode: 'insensitive' } } } },
-        ],
-      });
-    });
-
-    it('still honours the client allow-list', () => {
-      const where = buildPublicSearchWhere({ allowedCategoryIds: ['cat-a'] }, 'x');
-      expect(where.AND).toContainEqual({ categoryId: { in: ['cat-a'] } });
     });
   });
 });

@@ -82,25 +82,7 @@ export function buildPublicVisibilityWhere(
   return where;
 }
 
-/**
- * Builds the where-clause for keyword search. Same visibility floor + allow-list,
- * but the term matches the document title OR the CURRENT version's extracted text
- * (the RAG-ready field). Shaped so a future pgvector backend can swap the match
- * predicate without changing the floor.
- */
-export function buildPublicSearchWhere(
-  client: VisibilityClient,
-  q: string,
-): Prisma.DocumentWhereInput {
-  const where = visibilityFloor();
-  const and = scopeAndFilters(client, {}); // allow-list only; term handled below
-  const term = q.trim();
-  and.push({
-    OR: [
-      { title: { contains: term, mode: 'insensitive' } },
-      { currentVersion: { is: { extractedText: { contains: term, mode: 'insensitive' } } } },
-    ],
-  });
-  where.AND = and;
-  return where;
-}
+// Keyword search runs as ranked full-text SQL in `PublicDocumentsService`
+// (`publicSearchWhereSql` / `publicSearchVectorSql`), which applies the same
+// visibility floor + allow-list. There is no Prisma-builder equivalent by design —
+// the floor lives in exactly one place for search.
