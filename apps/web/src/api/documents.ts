@@ -5,12 +5,22 @@ import type {
   DocumentSortField,
   DocumentStatus,
   DocumentVersionSummary,
+  ExtractionStatus,
   Paginated,
   ReviewCadence,
   SortOrder,
   ViewTicket,
 } from '@policymanager/shared';
 import { http } from './http';
+
+/** Result envelope of a text/OCR extraction run (single doc or full reindex). */
+export interface ExtractionBatchResult {
+  queued?: number;
+  processed: number;
+  done: number;
+  skipped: number;
+  failed: number;
+}
 
 export type {
   DocumentDetail,
@@ -28,6 +38,8 @@ export interface DocumentListParams {
   tag?: string;
   status?: DocumentStatus;
   accessLevel?: AccessLevel;
+  /** Filter to documents whose current version has this extraction status. */
+  extractionStatus?: ExtractionStatus;
   reviewBefore?: string;
   reviewAfter?: string;
   /** Trash view: only soft-deleted documents (requires document.write). */
@@ -200,6 +212,14 @@ export async function regenerateRendition(
 ): Promise<DocumentVersionSummary> {
   const { data } = await http.post<DocumentVersionSummary>(
     `/documents/${documentId}/versions/${versionId}/rendition`,
+  );
+  return data;
+}
+
+/** Re-run text/OCR extraction for one document (recover a failed/stuck scan). */
+export async function retryExtraction(documentId: string): Promise<ExtractionBatchResult> {
+  const { data } = await http.post<ExtractionBatchResult>(
+    `/documents/${documentId}/extraction/retry`,
   );
   return data;
 }

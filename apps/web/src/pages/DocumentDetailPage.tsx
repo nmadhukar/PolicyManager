@@ -19,6 +19,7 @@ import {
   getDownloadUrl,
   regenerateRendition,
   restoreVersion,
+  retryExtraction,
   softDeleteDocument,
   unarchiveDocument,
   updateDocument,
@@ -653,6 +654,11 @@ function VersionsCard({ doc, canWrite }: { doc: DocumentDetail; canWrite: boolea
                         ) : (
                           canWrite && <RegenerateButton documentId={doc.id} versionId={v.id} />
                         )}
+                        {canWrite &&
+                          isCurrent &&
+                          (v.extractionStatus === 'failed' || v.extractionStatus === 'skipped') && (
+                            <RetryExtractionButton documentId={doc.id} />
+                          )}
                         {canWrite && !isCurrent && <RestoreVersionButton doc={doc} version={v} />}
                         <DownloadButton documentId={doc.id} versionId={v.id} />
                       </div>
@@ -705,6 +711,33 @@ function OverlayFallback() {
  * outage left it without a rendition). Refreshes history on success so the row
  * flips to offering "View".
  */
+/** Re-runs text/OCR extraction for the whole document (recover a failed/stuck scan). */
+function RetryExtractionButton({ documentId }: { documentId: string }) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const mutation = useMutation({
+    mutationFn: () => retryExtraction(documentId),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ['document', documentId] });
+      void queryClient.invalidateQueries({ queryKey: ['documents'] });
+      toast.success(
+        `Re-extraction ran: ${result.done} done, ${result.skipped} skipped, ${result.failed} failed.`,
+      );
+    },
+    onError: (err) => toast.error(apiErrorMessage(err, 'Could not re-run extraction.')),
+  });
+  return (
+    <button
+      className="btn-secondary !px-3 !py-1 text-xs"
+      onClick={() => mutation.mutate()}
+      disabled={mutation.isPending}
+      title="Re-run text/OCR extraction for this document"
+    >
+      {mutation.isPending ? '…' : 'Re-extract'}
+    </button>
+  );
+}
+
 function RegenerateButton({ documentId, versionId }: { documentId: string; versionId: string }) {
   const queryClient = useQueryClient();
   const toast = useToast();

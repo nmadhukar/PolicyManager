@@ -3,9 +3,11 @@ import {
   ACCESS_LEVELS,
   DOCUMENT_SORT_FIELDS,
   DOCUMENT_STATUSES,
+  EXTRACTION_STATUSES,
   type AccessLevel,
   type DocumentSortField,
   type DocumentStatus,
+  type ExtractionStatus,
   type SortOrder,
 } from '@policymanager/shared';
 import { Transform, Type } from 'class-transformer';
@@ -49,6 +51,14 @@ export class ListDocumentsQueryDto {
   @IsOptional()
   @IsIn(ACCESS_LEVELS as unknown as string[])
   accessLevel?: AccessLevel;
+
+  @ApiPropertyOptional({
+    enum: EXTRACTION_STATUSES as unknown as string[],
+    description: 'Filter to documents whose current version has this extraction status.',
+  })
+  @IsOptional()
+  @IsIn(EXTRACTION_STATUSES as unknown as string[])
+  extractionStatus?: ExtractionStatus;
 
   @ApiPropertyOptional({ description: 'nextReviewDate <= this date (ISO).' })
   @IsOptional()

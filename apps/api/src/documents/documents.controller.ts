@@ -88,6 +88,20 @@ export class DocumentsController {
     return this.documents.get(id, user, ctx);
   }
 
+  @Post(':id/extraction/retry')
+  @HttpCode(200)
+  @RequirePermission(PERMISSIONS.DOCUMENT_WRITE)
+  @ApiOperation({
+    summary: 'Re-run text/OCR extraction for a single document (recover a failed/stuck scan).',
+  })
+  retryExtraction(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthUser,
+    @ReqContext() ctx: RequestContext,
+  ) {
+    return this.documents.retryExtraction(id, user, ctx);
+  }
+
   @Post()
   @RequirePermission(PERMISSIONS.DOCUMENT_WRITE)
   @ApiOperation({ summary: 'Create a document (title required; owner = caller).' })

@@ -26,29 +26,24 @@ describe('buildDocumentListQuery', () => {
     expect(q.take).toBe(10);
   });
 
-  it('builds a case-insensitive OR search across metadata and current-version text', () => {
-    const q = buildDocumentListQuery({ q: 'seclusion' });
-    expect(q.where.AND).toEqual([
-      {
-        OR: [
-          { title: { contains: 'seclusion', mode: 'insensitive' } },
-          { documentNumber: { contains: 'seclusion', mode: 'insensitive' } },
-          { description: { contains: 'seclusion', mode: 'insensitive' } },
-          {
-            currentVersion: {
-              is: { extractedText: { contains: 'seclusion', mode: 'insensitive' } },
-            },
-          },
-        ],
-      },
-    ]);
+  it('exposes the trimmed term for full-text ranking, NOT as an ILIKE where clause', () => {
+    const q = buildDocumentListQuery({ q: '  seclusion  ' });
+    // The term is resolved against the tsvector index by the service (ranked), so it
+    // must not appear as a substring filter in the Prisma where.
+    expect(q.term).toBe('seclusion');
+    expect(q.where.AND).toBeUndefined();
+    expect(q.where.currentVersion).toBeUndefined();
   });
 
   it('ignores a blank/whitespace-only search term', () => {
-    expect(buildDocumentListQuery({ q: '   ' }).where).toEqual({
-      deletedAt: null,
-      status: { not: 'archived' },
-    });
+    const q = buildDocumentListQuery({ q: '   ' });
+    expect(q.term).toBeUndefined();
+    expect(q.where).toEqual({ deletedAt: null, status: { not: 'archived' } });
+  });
+
+  it('filters by the current version extraction status', () => {
+    const q = buildDocumentListQuery({ extractionStatus: 'failed' });
+    expect(q.where.currentVersion).toEqual({ is: { extractionStatus: 'failed' } });
   });
 
   it('applies scalar filters directly', () => {

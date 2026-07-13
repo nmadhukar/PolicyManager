@@ -147,6 +147,22 @@ describe('DocumentExtractionService', () => {
     expect(result.queued).toBe(3);
   });
 
+  it('retryDocument re-queues a document\'s non-done versions and processes them now', async () => {
+    const prisma = makePrisma();
+    prisma.documentVersion.updateMany
+      .mockResolvedValueOnce({ count: 2 }) // requeue
+      .mockResolvedValue({ count: 1 }); // per-version claim
+    prisma.documentVersion.findMany.mockResolvedValue([{ id: 'v-1' }]);
+    const svc = new DocumentExtractionService(prisma, makeS3() as never, makeText() as never, makeAudit() as never);
+
+    const result = await svc.retryDocument('doc-1');
+
+    const requeue = prisma.documentVersion.updateMany.mock.calls[0][0];
+    expect(requeue.where).toEqual({ documentId: 'doc-1', extractionStatus: { not: 'done' } });
+    expect(requeue.data).toMatchObject({ extractionStatus: 'pending', extractionAttempts: 0 });
+    expect(result).toMatchObject({ queued: 2, processed: 1, done: 1 });
+  });
+
   it('caps concurrent eager extractions; overflow is left for the poller', () => {
     const prisma = makePrisma();
     // Hold the claim open so eagerActive never drains during the test.

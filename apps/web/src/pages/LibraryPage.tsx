@@ -5,10 +5,13 @@ import { AxiosError } from 'axios';
 import {
   ACCESS_LEVELS,
   DOCUMENT_STATUSES,
+  EXTRACTION_STATUSES,
+  EXTRACTION_STATUS_LABELS,
   PERMISSIONS,
   REVIEW_CADENCES,
   type DocumentSortField,
   type DocumentStatus,
+  type ExtractionStatus,
   type SortOrder,
 } from '@policymanager/shared';
 import {
@@ -45,6 +48,7 @@ interface Filters {
   tag: string;
   status: string;
   accessLevel: string;
+  extractionStatus: string;
   reviewAfter: string;
   reviewBefore: string;
 }
@@ -56,6 +60,7 @@ const EMPTY_FILTERS: Filters = {
   tag: '',
   status: '',
   accessLevel: '',
+  extractionStatus: '',
   reviewAfter: '',
   reviewBefore: '',
 };
@@ -98,6 +103,8 @@ function Library() {
       status:
         view === 'archived' ? 'archived' : (filters.status as DocumentStatus) || undefined,
       accessLevel: (filters.accessLevel as DocumentListParams['accessLevel']) || undefined,
+      extractionStatus:
+        (filters.extractionStatus as DocumentListParams['extractionStatus']) || undefined,
       reviewAfter: filters.reviewAfter || undefined,
       reviewBefore: filters.reviewBefore || undefined,
       // Trash view is the only place soft-deleted rows appear (server also
@@ -327,6 +334,13 @@ function buildActiveChips(
   if (filters.accessLevel) {
     chips.push({ key: 'accessLevel', label: 'Access', value: filters.accessLevel });
   }
+  if (filters.extractionStatus) {
+    chips.push({
+      key: 'extractionStatus',
+      label: 'Extraction',
+      value: EXTRACTION_STATUS_LABELS[filters.extractionStatus as ExtractionStatus],
+    });
+  }
   if (filters.reviewAfter) {
     chips.push({ key: 'reviewAfter', label: 'Review after', value: filters.reviewAfter });
   }
@@ -431,6 +445,24 @@ function FiltersBar({
             {ACCESS_LEVELS.map((a) => (
               <option key={a} value={a}>
                 {a.charAt(0).toUpperCase() + a.slice(1)}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label htmlFor="lib-extraction" className="label">
+            Extraction
+          </label>
+          <select
+            id="lib-extraction"
+            className="input"
+            value={filters.extractionStatus}
+            onChange={(e) => onChange({ extractionStatus: e.target.value })}
+          >
+            <option value="">Any extraction</option>
+            {EXTRACTION_STATUSES.map((s) => (
+              <option key={s} value={s}>
+                {EXTRACTION_STATUS_LABELS[s]}
               </option>
             ))}
           </select>

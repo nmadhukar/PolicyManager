@@ -112,14 +112,45 @@ export class DocumentExtractionService {
       take: limit,
       select: { id: true },
     });
+    return this.processIds(rows.map((r) => r.id));
+  }
+
+  /**
+   * Targeted retry for a single document: re-queue its non-`done` versions (fresh
+   * retry budget) and process them now. Used by the "re-extract" admin action so an
+   * operator can recover one stuck/failed document without a full-corpus reindex.
+   */
+  async retryDocument(documentId: string): Promise<ExtractionBatchResult> {
+    const requeued = await this.prisma.documentVersion.updateMany({
+      where: { documentId, extractionStatus: { not: 'done' } },
+      data: {
+        extractionStatus: 'pending',
+        extractionError: null,
+        ocrApplied: false,
+        extractionAttempts: 0,
+        extractionStartedAt: null,
+      },
+    });
+    const rows = await this.prisma.documentVersion.findMany({
+      where: { documentId, extractionStatus: 'pending' },
+      orderBy: { versionNumber: 'desc' },
+      take: MANUAL_BATCH_LIMIT,
+      select: { id: true },
+    });
+    const batch = await this.processIds(rows.map((r) => r.id));
+    return { queued: requeued.count, ...batch };
+  }
+
+  /** Sequentially process a set of version ids, tallying terminal states. */
+  private async processIds(ids: string[]): Promise<ExtractionBatchResult> {
     const result: ExtractionBatchResult = { processed: 0, done: 0, skipped: 0, failed: 0 };
-    for (const row of rows) {
-      const status = await this.processVersion(row.id);
+    for (const id of ids) {
+      const status = await this.processVersion(id);
       if (!status) continue;
       result.processed += 1;
       if (status === 'done') result.done += 1;
-      if (status === 'skipped') result.skipped += 1;
-      if (status === 'failed') result.failed += 1;
+      else if (status === 'skipped') result.skipped += 1;
+      else if (status === 'failed') result.failed += 1;
     }
     return result;
   }

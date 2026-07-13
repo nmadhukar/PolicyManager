@@ -3,6 +3,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -98,8 +99,14 @@ const accessSelect = {
   categoryId: true,
 } satisfies Prisma.DocumentSelect;
 
+/** Ceiling on ranked full-text candidates considered for a single search query.
+ *  Relevance-ordered, so anything past this is not something a user pages to. */
+const RANKED_SEARCH_CAP = 200;
+
 @Injectable()
 export class DocumentsService {
+  private readonly logger = new Logger(DocumentsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly s3: S3Service,
@@ -120,6 +127,33 @@ export class DocumentsService {
   async list(query: ListDocumentsQuery, user: AuthUser): Promise<Paginated<DocumentListItem>> {
     const built = buildDocumentListQuery(query);
     const accessWhere = await this.access.buildListWhere(user);
+
+    // Free-text search: rank candidates by the full-text `searchVector` (GIN), then
+    // hydrate + filter through the SAME Prisma pipeline so ACL/soft-delete/archive/
+    // filters still decide visibility (the ranked ids only widen the candidate set).
+    if (built.term) {
+      const rankedIds = await this.rankedSearchIds(built.term);
+      if (rankedIds.length === 0) {
+        return { items: [], total: 0, page: built.page, pageSize: built.pageSize };
+      }
+      const where: Prisma.DocumentWhereInput = {
+        AND: [built.where, accessWhere, { id: { in: rankedIds } }],
+      };
+      const rows = await this.prisma.document.findMany({
+        where,
+        include: this.listInclude(),
+      });
+      const rank = new Map(rankedIds.map((id, i) => [id, i]));
+      rows.sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
+      const page = rows.slice(built.skip, built.skip + built.take);
+      return {
+        items: page.map((r) => this.toListItem(r)),
+        total: rows.length,
+        page: built.page,
+        pageSize: built.pageSize,
+      };
+    }
+
     const where: Prisma.DocumentWhereInput = { AND: [built.where, accessWhere] };
     const [rows, total] = await this.prisma.$transaction([
       this.prisma.document.findMany({
@@ -137,6 +171,41 @@ export class DocumentsService {
       page: built.page,
       pageSize: built.pageSize,
     };
+  }
+
+  /**
+   * Relevance-ordered document ids matching `term`, via the full-text `searchVector`
+   * (title/number/description weighted above the version's extracted text) with an
+   * ILIKE fallback for short/partial tokens tsquery would miss. Access control is
+   * NOT applied here — the caller re-filters through Prisma; these ids only bound and
+   * order the candidate set. Capped at {@link RANKED_SEARCH_CAP}.
+   */
+  private async rankedSearchIds(term: string): Promise<string[]> {
+    const like = `%${term}%`;
+    const vector = Prisma.sql`(
+      setweight(to_tsvector('english', coalesce(d."title", '')), 'A') ||
+      setweight(to_tsvector('english', coalesce(d."documentNumber", '')), 'B') ||
+      setweight(to_tsvector('english', coalesce(d."description", '')), 'B') ||
+      coalesce(v."searchVector", to_tsvector('english', ''))
+    )`;
+    const query = Prisma.sql`plainto_tsquery('english', ${term})`;
+    const rows = await this.prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT d."id"
+      FROM "policytracker"."Document" d
+      LEFT JOIN "policytracker"."DocumentVersion" v ON v."id" = d."currentVersionId"
+      WHERE ${vector} @@ ${query}
+        OR d."title" ILIKE ${like}
+        OR d."documentNumber" ILIKE ${like}
+        OR d."description" ILIKE ${like}
+      ORDER BY ts_rank_cd(${vector}, ${query}) DESC, d."updatedAt" DESC
+      LIMIT ${RANKED_SEARCH_CAP}
+    `);
+    if (rows.length === RANKED_SEARCH_CAP) {
+      this.logger.warn(
+        `Search for "${term}" hit the ${RANKED_SEARCH_CAP}-candidate cap; lower-ranked matches are not shown.`,
+      );
+    }
+    return rows.map((r) => r.id);
   }
 
   /**
@@ -443,6 +512,26 @@ export class DocumentsService {
 
   async reindexExtraction(user: AuthUser, ctx: RequestContext = {}) {
     return this.extraction.reindexAll(user, ctx);
+  }
+
+  /**
+   * Targeted re-extraction for one document (recover a stuck/failed scan without a
+   * full-corpus reindex). Enforces the same confidential `edit` access its sibling
+   * write paths do — not just the controller's coarse `document.write` — and audits.
+   */
+  async retryExtraction(id: string, user: AuthUser, ctx: RequestContext = {}) {
+    const doc = await this.loadAccessDoc(id);
+    await this.enforce(user, doc, 'edit', ctx);
+    const result = await this.extraction.retryDocument(id);
+    await this.audit.record({
+      action: AUDIT_ACTIONS.EXTRACTION_REINDEXED,
+      actorUserId: user.id,
+      documentId: id,
+      targetType: 'document',
+      ...ctx,
+      metadata: { scope: 'document', ...result },
+    });
+    return result;
   }
 
   /**

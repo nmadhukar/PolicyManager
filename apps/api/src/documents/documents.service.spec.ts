@@ -36,6 +36,8 @@ const makePrisma = (): any => {
     acknowledgmentAssignment: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
     // C1/D6: the version-write path row-locks the document with a raw query.
     $executeRaw: jest.fn().mockResolvedValue(1),
+    // Ranked full-text search issues a raw query for candidate ids; default: none.
+    $queryRaw: jest.fn().mockResolvedValue([]),
     $transaction: jest.fn((arg: unknown) =>
       typeof arg === 'function' ? (arg as (tx: unknown) => unknown)(prisma) : Promise.all(arg as unknown[]),
     ),
@@ -79,6 +81,9 @@ const makeAudit = () => ({ record: jest.fn().mockResolvedValue('ae-1') });
 const makeExtraction = () => ({
   startVersion: jest.fn(),
   reindexAll: jest.fn().mockResolvedValue({ queued: 0, processed: 0, done: 0, skipped: 0, failed: 0 }),
+  retryDocument: jest
+    .fn()
+    .mockResolvedValue({ queued: 1, processed: 1, done: 1, skipped: 0, failed: 0 }),
 });
 
 const build = (
@@ -832,6 +837,67 @@ describe('DocumentsService.list', () => {
     expect(findArg.orderBy).toEqual({ title: 'asc' });
     // The access clause is ANDed with the built base where.
     expect(findArg.where.AND).toEqual([expect.any(Object), { some: 'access-clause' }]);
+  });
+
+  it('ranks a free-text search via the full-text index and orders results by rank', async () => {
+    const { svc, prisma } = build();
+    prisma.$queryRaw.mockResolvedValue([{ id: 'd2' }, { id: 'd1' }]); // rank order
+    prisma.document.findMany.mockResolvedValue([
+      fullDocRow({ id: 'd1' }),
+      fullDocRow({ id: 'd2' }),
+    ]);
+
+    const result = await svc.list({ q: 'seclusion', page: 1, pageSize: 20 }, actor);
+
+    expect(prisma.$queryRaw).toHaveBeenCalled();
+    expect(result.total).toBe(2);
+    // Rows are re-ordered to match the ranked-id order, not the DB return order.
+    expect(result.items.map((i: { id: string }) => i.id)).toEqual(['d2', 'd1']);
+    // The ranked-id set is ANDed with the base + access clauses (ACL still applies).
+    const findArg = prisma.document.findMany.mock.calls[0][0];
+    expect(findArg.where.AND).toEqual(
+      expect.arrayContaining([{ id: { in: ['d2', 'd1'] } }]),
+    );
+    // Ranked path paginates in memory — it does not issue a separate count().
+    expect(prisma.document.count).not.toHaveBeenCalled();
+  });
+
+  it('short-circuits to an empty page when the search matches nothing', async () => {
+    const { svc, prisma } = build();
+    prisma.$queryRaw.mockResolvedValue([]);
+
+    const result = await svc.list({ q: 'nomatch' }, actor);
+
+    expect(result).toMatchObject({ total: 0, items: [] });
+    expect(prisma.document.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('DocumentsService.retryExtraction', () => {
+  it('enforces edit access, retries the document, and audits', async () => {
+    const { svc, prisma, access, audit, extraction } = build();
+    prisma.document.findFirst.mockResolvedValue(accessDoc()); // loadAccessDoc
+
+    const result = await svc.retryExtraction('doc-1', actor, reqCtx);
+
+    expect(access.canAccess).toHaveBeenCalled();
+    expect(extraction.retryDocument).toHaveBeenCalledWith('doc-1');
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        documentId: 'doc-1',
+        metadata: expect.objectContaining({ scope: 'document' }),
+      }),
+    );
+    expect(result).toMatchObject({ queued: 1 });
+  });
+
+  it('denies retry when the caller lacks edit access', async () => {
+    const { svc, prisma, access, extraction } = build();
+    prisma.document.findFirst.mockResolvedValue(accessDoc());
+    access.canAccess.mockResolvedValue(false);
+
+    await expect(svc.retryExtraction('doc-1', actor, reqCtx)).rejects.toBeTruthy();
+    expect(extraction.retryDocument).not.toHaveBeenCalled();
   });
 });
 

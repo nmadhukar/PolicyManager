@@ -2,6 +2,7 @@ import type { Prisma } from '@prisma/client';
 import {
   DOCUMENT_SORT_FIELDS,
   type DocumentSortField,
+  type ExtractionStatus,
   type SortOrder,
 } from '@policymanager/shared';
 
@@ -13,6 +14,8 @@ export interface ListDocumentsQuery {
   tag?: string;
   status?: string;
   accessLevel?: string;
+  /** Filter to documents whose CURRENT version has this extraction status. */
+  extractionStatus?: ExtractionStatus;
   reviewBefore?: string;
   reviewAfter?: string;
   /**
@@ -36,6 +39,12 @@ export interface BuiltDocumentQuery {
   take: number;
   page: number;
   pageSize: number;
+  /**
+   * The trimmed free-text term, if any. Matching/ranking is NOT expressed in
+   * `where` (Prisma cannot rank by `ts_rank`); the service resolves it against the
+   * full-text `searchVector` (GIN) and orders results by relevance.
+   */
+  term?: string;
 }
 
 const DEFAULT_PAGE_SIZE = 20;
@@ -65,25 +74,20 @@ export function buildDocumentListQuery(query: ListDocumentsQuery): BuiltDocument
 
   const where: Prisma.DocumentWhereInput = {};
 
-  const term = query.q?.trim();
-  if (term) {
-    where.AND = [
-      {
-        OR: [
-          { title: { contains: term, mode: 'insensitive' } },
-          { documentNumber: { contains: term, mode: 'insensitive' } },
-          { description: { contains: term, mode: 'insensitive' } },
-          { currentVersion: { is: { extractedText: { contains: term, mode: 'insensitive' } } } },
-        ],
-      },
-    ];
-  }
+  // The term is resolved by the service against the full-text index (ranked); it is
+  // deliberately NOT added to `where` here (no ILIKE substring scan on the large
+  // extractedText column, and Prisma cannot order by ts_rank).
+  const term = query.q?.trim() || undefined;
 
   if (query.categoryId) where.categoryId = query.categoryId;
   if (query.ownerId) where.ownerId = query.ownerId;
   if (query.tag) where.tags = { has: query.tag };
   if (query.accessLevel) {
     where.accessLevel = query.accessLevel as Prisma.DocumentWhereInput['accessLevel'];
+  }
+  if (query.extractionStatus) {
+    // A document's searchability is a property of its CURRENT version's extraction.
+    where.currentVersion = { is: { extractionStatus: query.extractionStatus } };
   }
 
   // Soft-delete + archive scoping (AGENTS.md §9). Documents are never hard-deleted;
@@ -128,5 +132,6 @@ export function buildDocumentListQuery(query: ListDocumentsQuery): BuiltDocument
     take: pageSize,
     page,
     pageSize,
+    term,
   };
 }
