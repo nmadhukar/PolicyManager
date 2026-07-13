@@ -33,6 +33,12 @@ model User {
   passwordHash String?
   status       UserStatus @default(active)
   mfaSecret    String?
+  // Forces a password change on next login (temp passwords / admin resets).
+  mustChangePassword Boolean @default(false)
+  // Brute-force lockout counters. `lockedUntil` in the future blocks login;
+  // an explicit admin lock sets it far in the future (distinct from `status`).
+  failedLoginAttempts Int       @default(0)
+  lockedUntil         DateTime?
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
@@ -108,6 +114,21 @@ model RefreshToken {
   tokenHash String    @unique
   expiresAt DateTime
   revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@schema("policytracker")
+}
+
+/// Single-use, short-lived token backing self-service password reset. The RAW
+/// token is emailed to the user and NEVER persisted — only its SHA-256 digest is
+/// stored (like RefreshToken), so a DB read cannot reconstruct a usable link.
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
   createdAt DateTime  @default(now())
 
   @@index([userId])

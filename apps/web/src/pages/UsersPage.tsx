@@ -1,19 +1,25 @@
-import { FormEvent, useState } from 'react';
+import { FormEvent, useId, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AxiosError } from 'axios';
 import { PERMISSIONS } from '@policymanager/shared';
 import {
+  AdminResetResult,
+  adminResetPassword,
   assignRoles,
   createUser,
   CreateUserInput,
+  isLocked,
   listRoles,
   listUsers,
   RoleView,
+  setUserLock,
   setUserStatus,
   UserView,
 } from '../api/users';
 import { useAuth } from '../auth/AuthContext';
 import { AppShell } from '../ui/AppShell';
+import { ConfirmDialog } from '../ui/ConfirmDialog';
+import { Modal } from '../ui/Modal';
 import { EmptyState, ErrorState, ForbiddenState, LoadingState } from '../ui/states';
 
 export function UsersPage() {
@@ -245,12 +251,17 @@ function CreateUserPanel({ roles, onDone }: { roles: RoleView[]; onDone: () => v
   );
 }
 
+type RowDialog = 'disable' | 'lock' | 'reset' | null;
+
 function UserRow({ user, roles }: { user: UserView; roles: RoleView[] }) {
   const queryClient = useQueryClient();
+  const { user: me } = useAuth();
   const [editing, setEditing] = useState(false);
   const [selected, setSelected] = useState<string[]>(user.roles);
+  const [dialog, setDialog] = useState<RowDialog>(null);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['users'] });
+  const closeDialog = () => setDialog(null);
 
   const roleMutation = useMutation({
     mutationFn: (next: string[]) => assignRoles(user.id, next),
@@ -262,10 +273,24 @@ function UserRow({ user, roles }: { user: UserView; roles: RoleView[] }) {
 
   const statusMutation = useMutation({
     mutationFn: (enable: boolean) => setUserStatus(user.id, enable),
-    onSuccess: () => void invalidate(),
+    onSuccess: () => {
+      closeDialog();
+      void invalidate();
+    },
+  });
+
+  const lockMutation = useMutation({
+    mutationFn: (lock: boolean) => setUserLock(user.id, lock),
+    onSuccess: () => {
+      closeDialog();
+      void invalidate();
+    },
   });
 
   const disabled = user.status === 'disabled';
+  const locked = isLocked(user);
+  // Self-lockout guard: never let an admin disable or lock their own account.
+  const isSelf = me?.id === user.id;
 
   return (
     <tr className={disabled ? 'bg-slate-50/60' : undefined}>
@@ -349,27 +374,225 @@ function UserRow({ user, roles }: { user: UserView; roles: RoleView[] }) {
         )}
       </td>
       <td className="px-4 py-3 align-top">
-        <span
-          className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${
-            disabled ? 'bg-slate-200 text-ink-soft' : 'bg-green-100 text-green-700'
-          }`}
-        >
+        <div className="flex flex-wrap items-center gap-1.5">
           <span
-            aria-hidden
-            className={`h-1.5 w-1.5 rounded-full ${disabled ? 'bg-slate-500' : 'bg-green-500'}`}
-          />
-          {disabled ? 'Disabled' : 'Active'}
-        </span>
+            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${
+              disabled ? 'bg-slate-200 text-ink-soft' : 'bg-green-100 text-green-700'
+            }`}
+          >
+            <span
+              aria-hidden
+              className={`h-1.5 w-1.5 rounded-full ${disabled ? 'bg-slate-500' : 'bg-green-500'}`}
+            />
+            {disabled ? 'Disabled' : 'Active'}
+          </span>
+          {locked && (
+            <span className="inline-flex items-center rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-800">
+              Locked
+            </span>
+          )}
+          {user.mustChangePassword && (
+            <span
+              className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-ink-muted"
+              title="Must set a new password at next sign-in"
+            >
+              Temp password
+            </span>
+          )}
+        </div>
       </td>
-      <td className="px-4 py-3 text-right align-top">
-        <button
-          className="btn-secondary !px-3 !py-1 text-xs"
-          onClick={() => statusMutation.mutate(disabled)}
-          disabled={statusMutation.isPending}
-        >
-          {statusMutation.isPending ? '…' : disabled ? 'Enable' : 'Disable'}
-        </button>
+      <td className="px-4 py-3 align-top">
+        <div className="flex flex-wrap justify-end gap-2">
+          <button
+            className="btn-secondary !px-3 !py-1 text-xs"
+            onClick={() => setDialog('reset')}
+          >
+            Reset password
+          </button>
+
+          {locked ? (
+            <button
+              className="btn-secondary !px-3 !py-1 text-xs"
+              onClick={() => lockMutation.mutate(false)}
+              disabled={lockMutation.isPending}
+            >
+              {lockMutation.isPending ? '…' : 'Unlock'}
+            </button>
+          ) : (
+            <button
+              className="btn-secondary !px-3 !py-1 text-xs"
+              onClick={() => setDialog('lock')}
+              disabled={isSelf}
+              title={isSelf ? 'You cannot lock your own account' : undefined}
+            >
+              Lock
+            </button>
+          )}
+
+          {disabled ? (
+            <button
+              className="btn-secondary !px-3 !py-1 text-xs"
+              onClick={() => statusMutation.mutate(true)}
+              disabled={statusMutation.isPending}
+            >
+              {statusMutation.isPending ? '…' : 'Enable'}
+            </button>
+          ) : (
+            <button
+              className="btn-secondary !px-3 !py-1 text-xs"
+              onClick={() => setDialog('disable')}
+              disabled={isSelf}
+              title={isSelf ? 'You cannot disable your own account' : undefined}
+            >
+              Disable
+            </button>
+          )}
+        </div>
+
+        {/* Dialogs render a fixed overlay (or null); only one is open at a time. */}
+        <ConfirmDialog
+          open={dialog === 'disable'}
+          title="Disable this user?"
+          body={
+            <>
+              <span className="font-medium text-ink">{user.name}</span> will be signed out and
+              unable to sign in until re-enabled.
+            </>
+          }
+          confirmLabel="Disable user"
+          tone="danger"
+          busy={statusMutation.isPending}
+          onConfirm={() => statusMutation.mutate(false)}
+          onCancel={closeDialog}
+        />
+        <ConfirmDialog
+          open={dialog === 'lock'}
+          title="Lock this user out?"
+          body={
+            <>
+              <span className="font-medium text-ink">{user.name}</span> will be blocked from signing
+              in (existing sessions are revoked) until you unlock the account. This is separate from
+              enabling/disabling.
+            </>
+          }
+          confirmLabel="Lock account"
+          tone="danger"
+          busy={lockMutation.isPending}
+          onConfirm={() => lockMutation.mutate(true)}
+          onCancel={closeDialog}
+        />
+        <ResetPasswordDialog
+          open={dialog === 'reset'}
+          user={user}
+          onClose={() => {
+            closeDialog();
+            void invalidate();
+          }}
+        />
       </td>
     </tr>
+  );
+}
+
+/**
+ * Admin password-reset dialog. Offers a one-time temporary password (revealed
+ * once) or an emailed self-service link. Never displays an existing password.
+ */
+function ResetPasswordDialog({
+  open,
+  user,
+  onClose,
+}: {
+  open: boolean;
+  user: UserView;
+  onClose: () => void;
+}) {
+  const titleId = useId();
+  const [result, setResult] = useState<AdminResetResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const mutation = useMutation({
+    mutationFn: (mode: 'temp' | 'email') => adminResetPassword(user.id, mode),
+    onSuccess: (data) => {
+      setResult(data);
+      setError(null);
+    },
+    onError: () => setError('Unable to reset this password right now. Please try again.'),
+  });
+
+  const close = () => {
+    setResult(null);
+    setError(null);
+    onClose();
+  };
+
+  if (!open) return null;
+
+  return (
+    <Modal open={open} onClose={close} titleId={titleId}>
+      <h2 id={titleId} className="text-base font-semibold text-ink">
+        Reset password for {user.name}
+      </h2>
+
+      {error && (
+        <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+          {error}
+        </div>
+      )}
+
+      {result?.mode === 'temp' && result.temporaryPassword ? (
+        <div className="mt-3 space-y-3">
+          <p className="text-sm text-ink-soft">
+            Share this temporary password securely. It will not be shown again, and the user must
+            change it at next sign-in.
+          </p>
+          <code className="block rounded-lg border border-brand-200 bg-brand-50 px-3 py-2 font-mono text-sm text-ink">
+            {result.temporaryPassword}
+          </code>
+          <div className="flex justify-end">
+            <button className="btn-primary" onClick={close}>
+              Done
+            </button>
+          </div>
+        </div>
+      ) : result?.mode === 'email' ? (
+        <div className="mt-3 space-y-3">
+          <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800" role="status">
+            A password reset link has been emailed to {user.email}.
+          </div>
+          <div className="flex justify-end">
+            <button className="btn-primary" onClick={close}>
+              Done
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-3 space-y-4">
+          <p className="text-sm text-ink-soft">
+            Choose how to reset this user&apos;s password. Existing sessions will be revoked either
+            way.
+          </p>
+          <div className="flex flex-col gap-2">
+            <button
+              className="btn-primary"
+              onClick={() => mutation.mutate('temp')}
+              disabled={mutation.isPending}
+            >
+              {mutation.isPending ? 'Working…' : 'Set a temporary password'}
+            </button>
+            <button
+              className="btn-secondary"
+              onClick={() => mutation.mutate('email')}
+              disabled={mutation.isPending}
+            >
+              {mutation.isPending ? 'Working…' : 'Email a reset link'}
+            </button>
+            <button className="btn-secondary" onClick={close} disabled={mutation.isPending}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </Modal>
   );
 }

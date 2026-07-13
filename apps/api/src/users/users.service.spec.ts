@@ -9,6 +9,8 @@ describe('UsersService', () => {
     name: 'Jane',
     title: null,
     status: 'active',
+    mustChangePassword: false,
+    lockedUntil: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     roles: [{ role: { name: 'Manager' } }],
@@ -27,7 +29,12 @@ describe('UsersService', () => {
     $transaction: jest.fn((ops: unknown[]) => Promise.all(ops)),
   });
 
-  const build = (prisma: ReturnType<typeof makePrisma>) => new UsersService(prisma as never);
+  const makeAuth = () => ({ issuePasswordReset: jest.fn().mockResolvedValue(undefined) });
+
+  const build = (
+    prisma: ReturnType<typeof makePrisma>,
+    auth: ReturnType<typeof makeAuth> = makeAuth(),
+  ) => new UsersService(prisma as never, auth as never);
 
   describe('create', () => {
     it('hashes the password, links local identity, and NEVER returns the hash', async () => {
@@ -127,6 +134,94 @@ describe('UsersService', () => {
 
       await build(prisma).setStatus('u1', 'active');
       expect(prisma.refreshToken.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('blocks an admin from disabling their OWN account (self-lockout guard)', async () => {
+      const prisma = makePrisma();
+      prisma.user.findUnique.mockResolvedValue({ id: 'u1' });
+      await expect(
+        build(prisma).setStatus('u1', 'disabled', 'u1'),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('lockUser / unlockUser', () => {
+    it('locks a user, revoking their refresh tokens', async () => {
+      const prisma = makePrisma();
+      prisma.user.findUnique.mockResolvedValue({ id: 'u1' });
+      prisma.user.update.mockResolvedValue({ ...baseUserRow, lockedUntil: new Date('9999-12-31') });
+
+      await build(prisma).lockUser('u1', 'admin-2');
+
+      expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith({
+        where: { userId: 'u1', revokedAt: null },
+        data: { revokedAt: expect.any(Date) },
+      });
+      const data = prisma.user.update.mock.calls[0][0].data;
+      expect(data.lockedUntil).toBeInstanceOf(Date);
+      expect(data.lockedUntil.getTime()).toBeGreaterThan(Date.now());
+    });
+
+    it('blocks an admin from locking their OWN account', async () => {
+      const prisma = makePrisma();
+      prisma.user.findUnique.mockResolvedValue({ id: 'u1' });
+      await expect(build(prisma).lockUser('u1', 'u1')).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('unlock clears lockedUntil and resets the failure counter', async () => {
+      const prisma = makePrisma();
+      prisma.user.findUnique.mockResolvedValue({ id: 'u1' });
+      prisma.user.update.mockResolvedValue({ ...baseUserRow });
+
+      await build(prisma).unlockUser('u1');
+
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: 'u1' },
+        data: { lockedUntil: null, failedLoginAttempts: 0 },
+        select: expect.anything(),
+      });
+    });
+  });
+
+  describe('adminResetPassword', () => {
+    it('temp mode: sets a fresh hash + mustChangePassword, revokes tokens, returns the temp once', async () => {
+      const prisma = makePrisma();
+      prisma.user.findUnique.mockResolvedValue({ id: 'u1', email: 'jane@x.com', name: 'Jane' });
+      prisma.user.update.mockResolvedValue({});
+
+      const result = await build(prisma).adminResetPassword('u1', 'temp');
+
+      expect(result.mode).toBe('temp');
+      expect(result.temporaryPassword).toBeDefined();
+      const data = prisma.user.update.mock.calls[0][0].data;
+      expect(data.passwordHash).toMatch(/^\$argon2/);
+      expect(data.mustChangePassword).toBe(true);
+      await expect(argon2.verify(data.passwordHash, result.temporaryPassword!)).resolves.toBe(true);
+      expect(prisma.refreshToken.updateMany).toHaveBeenCalled();
+    });
+
+    it('email mode: delegates to AuthService.issuePasswordReset and discloses no password', async () => {
+      const prisma = makePrisma();
+      const auth = makeAuth();
+      const user = { id: 'u1', email: 'jane@x.com', name: 'Jane' };
+      prisma.user.findUnique.mockResolvedValue(user);
+
+      const result = await build(prisma, auth).adminResetPassword('u1', 'email');
+
+      expect(result).toEqual({ mode: 'email', emailed: true });
+      expect(auth.issuePasswordReset).toHaveBeenCalledWith(user);
+      expect(prisma.user.update).not.toHaveBeenCalled(); // no password set locally
+      expect(prisma.refreshToken.updateMany).toHaveBeenCalled();
+    });
+
+    it('404s for an unknown user', async () => {
+      const prisma = makePrisma();
+      prisma.user.findUnique.mockResolvedValue(null);
+      await expect(build(prisma).adminResetPassword('ghost', 'temp')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
     });
   });
 });

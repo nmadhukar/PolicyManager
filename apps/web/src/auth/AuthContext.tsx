@@ -8,7 +8,7 @@ import {
   useState,
 } from 'react';
 import type { AuthUser, PermissionKey } from '@policymanager/shared';
-import { apiLogin, apiLogout } from '../api/auth';
+import { apiChangePassword, apiLogin, apiLogout } from '../api/auth';
 import {
   clearSession,
   requestRefresh,
@@ -23,6 +23,12 @@ export interface AuthContextValue {
   status: AuthStatus;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  /**
+   * Changes the current user's password and persists the fresh session the API
+   * returns (all prior sessions are revoked server-side). Clears the
+   * must-change-password gate on success.
+   */
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
   hasPermission: (key: PermissionKey) => boolean;
 }
 
@@ -77,14 +83,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearAuth();
   }, [clearAuth]);
 
+  const changePassword = useCallback(async (currentPassword: string, newPassword: string) => {
+    const result = await apiChangePassword(currentPassword, newPassword);
+    // Persist the fresh tokens so the session survives the server-side revocation.
+    storeSession(result);
+    setUser(result.user);
+    setStatus('authenticated');
+  }, []);
+
   const hasPermission = useCallback(
     (key: PermissionKey) => !!user?.permissions.includes(key),
     [user],
   );
 
   const value = useMemo<AuthContextValue>(
-    () => ({ user, status, login, logout, hasPermission }),
-    [user, status, login, logout, hasPermission],
+    () => ({ user, status, login, logout, changePassword, hasPermission }),
+    [user, status, login, logout, changePassword, hasPermission],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

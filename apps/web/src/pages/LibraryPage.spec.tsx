@@ -9,7 +9,14 @@ const mockListDocuments = vi.fn();
 
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
-    user: { id: 'u1', email: 'a@b.com', name: 'Admin User', roles: ['Admin'], permissions: [] },
+    user: {
+      id: 'u1',
+      email: 'a@b.com',
+      name: 'Admin User',
+      roles: ['Admin'],
+      permissions: [],
+      mustChangePassword: false,
+    },
     status: 'authenticated',
     login: vi.fn(),
     logout: vi.fn(),

@@ -3,9 +3,16 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { AuthUser } from '@policymanager/shared';
 import { AuthService } from './auth.service';
 import { CurrentUser } from './decorators/current-user.decorator';
+import { ChangePasswordDto } from './dto/change-password.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshDto } from './dto/refresh.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
+
+/** Neutral message returned by forgot-password regardless of account existence. */
+const FORGOT_PASSWORD_MESSAGE =
+  'If an account exists for that email, a password reset link has been sent.';
 
 @ApiTags('auth')
 @Controller('auth')
@@ -31,6 +38,33 @@ export class AuthController {
   @ApiOperation({ summary: 'Revoke a refresh token.' })
   async logout(@Body() dto: RefreshDto): Promise<void> {
     await this.auth.logout(dto.refreshToken);
+  }
+
+  @Post('forgot-password')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Request a password reset link. Always returns 200 (no account enumeration).',
+  })
+  async forgotPassword(@Body() dto: ForgotPasswordDto) {
+    await this.auth.forgotPassword(dto.email);
+    return { message: FORGOT_PASSWORD_MESSAGE };
+  }
+
+  @Post('reset-password')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Complete a password reset using an emailed token.' })
+  async resetPassword(@Body() dto: ResetPasswordDto) {
+    await this.auth.resetPassword(dto.token, dto.newPassword);
+    return { message: 'Your password has been reset. You can now sign in.' };
+  }
+
+  @Post('change-password')
+  @HttpCode(200)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Change the authenticated user\'s password (verifies the current one).' })
+  changePassword(@CurrentUser() user: AuthUser, @Body() dto: ChangePasswordDto) {
+    return this.auth.changePassword(user.id, dto.currentPassword, dto.newPassword);
   }
 
   @Get('me')

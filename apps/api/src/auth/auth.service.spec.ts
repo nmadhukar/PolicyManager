@@ -1,4 +1,4 @@
-import { UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as argon2 from 'argon2';
@@ -32,6 +32,9 @@ describe('AuthService', () => {
     name: 'Admin',
     status: 'active',
     passwordHash: undefined as string | undefined,
+    mustChangePassword: false,
+    failedLoginAttempts: 0,
+    lockedUntil: null as Date | null,
     roles: [
       {
         role: {
@@ -48,17 +51,31 @@ describe('AuthService', () => {
   });
 
   const makePrisma = () => ({
-    user: { findUnique: jest.fn() },
+    user: { findUnique: jest.fn(), update: jest.fn() },
     refreshToken: {
       create: jest.fn(),
       findUnique: jest.fn(),
       update: jest.fn(),
       updateMany: jest.fn(),
     },
+    passwordResetToken: {
+      create: jest.fn(),
+      findUnique: jest.fn(),
+      update: jest.fn(),
+    },
+    $transaction: jest.fn((ops: unknown[]) => Promise.all(ops)),
   });
 
-  const build = (prisma: ReturnType<typeof makePrisma>) =>
-    new AuthService(prisma as never, jwt, config);
+  const makeMail = () => ({
+    send: jest.fn().mockResolvedValue(true),
+    sendPasswordReset: jest.fn().mockResolvedValue(true),
+    sendAccountLocked: jest.fn().mockResolvedValue(true),
+  });
+
+  const build = (
+    prisma: ReturnType<typeof makePrisma>,
+    mail: ReturnType<typeof makeMail> = makeMail(),
+  ) => new AuthService(prisma as never, jwt, config, mail as never);
 
   describe('ttlToMs', () => {
     it.each([
@@ -139,6 +156,7 @@ describe('AuthService', () => {
         name: 'A',
         roles: ['Admin'],
         permissions: ['user.manage'],
+        mustChangePassword: false,
       };
 
       const tokens = await build(prisma).issueTokens(authUser);
@@ -239,6 +257,266 @@ describe('AuthService', () => {
       prisma.user.findUnique.mockResolvedValue(makeUserRecord());
       const user = await build(prisma).getAuthUser('user-1');
       expect(user?.permissions.sort()).toEqual(['document.read', 'user.manage']);
+    });
+
+    it('surfaces mustChangePassword', async () => {
+      const prisma = makePrisma();
+      prisma.user.findUnique.mockResolvedValue(makeUserRecord({ mustChangePassword: true }));
+      const user = await build(prisma).getAuthUser('user-1');
+      expect(user?.mustChangePassword).toBe(true);
+    });
+  });
+
+  describe('brute-force lockout', () => {
+    it('rejects a currently-locked account WITHOUT verifying the password', async () => {
+      const prisma = makePrisma();
+      prisma.user.findUnique.mockResolvedValue(
+        makeUserRecord({ passwordHash: await argon2.hash('secret'), lockedUntil: new Date(Date.now() + 60_000) }),
+      );
+
+      // A WRONG password on a locked account: if we short-circuit on the lock we
+      // never reach registerFailedAttempt, so the counter is NOT touched. If we
+      // (wrongly) verified first, the wrong password would trigger user.update.
+      await expect(
+        build(prisma).validateCredentials('admin@policymanager.local', 'WRONG'),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('increments the counter on a wrong password (below threshold, no email)', async () => {
+      const prisma = makePrisma();
+      const mail = makeMail();
+      prisma.user.findUnique.mockResolvedValue(
+        makeUserRecord({ passwordHash: await argon2.hash('secret'), failedLoginAttempts: 2 }),
+      );
+
+      await expect(
+        build(prisma, mail).validateCredentials('admin@policymanager.local', 'WRONG'),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: 'user-1' },
+        data: { failedLoginAttempts: 3, lockedUntil: null },
+      });
+      expect(mail.sendAccountLocked).not.toHaveBeenCalled();
+    });
+
+    it('locks and emails when the 5th attempt fails', async () => {
+      const prisma = makePrisma();
+      const mail = makeMail();
+      prisma.user.findUnique.mockResolvedValue(
+        makeUserRecord({ passwordHash: await argon2.hash('secret'), failedLoginAttempts: 4 }),
+      );
+
+      await expect(
+        build(prisma, mail).validateCredentials('admin@policymanager.local', 'WRONG'),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+
+      const data = prisma.user.update.mock.calls[0][0].data;
+      expect(data.failedLoginAttempts).toBe(5);
+      expect(data.lockedUntil).toBeInstanceOf(Date);
+      expect(data.lockedUntil.getTime()).toBeGreaterThan(Date.now());
+      expect(mail.sendAccountLocked).toHaveBeenCalledWith('admin@policymanager.local', 'Admin');
+    });
+
+    it('resets counters on a successful login', async () => {
+      const prisma = makePrisma();
+      prisma.user.findUnique.mockResolvedValue(
+        makeUserRecord({ passwordHash: await argon2.hash('secret'), failedLoginAttempts: 3 }),
+      );
+
+      await build(prisma).validateCredentials('admin@policymanager.local', 'secret');
+
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: 'user-1' },
+        data: { failedLoginAttempts: 0, lockedUntil: null },
+      });
+    });
+
+    it('uses the SAME uniform message for unknown, wrong, disabled and locked', async () => {
+      const messageOf = async (fn: () => Promise<unknown>): Promise<string> => {
+        try {
+          await fn();
+          return '(no error thrown)';
+        } catch (e) {
+          return (e as Error).message;
+        }
+      };
+
+      const prisma = makePrisma();
+      prisma.user.findUnique.mockResolvedValueOnce(null); // unknown
+      const m1 = await messageOf(() =>
+        build(prisma).validateCredentials('ghost@x.com', 'x'),
+      );
+      prisma.user.findUnique.mockResolvedValueOnce(
+        makeUserRecord({ passwordHash: await argon2.hash('secret'), lockedUntil: new Date(Date.now() + 60_000) }),
+      ); // locked
+      const m2 = await messageOf(() =>
+        build(prisma).validateCredentials('admin@policymanager.local', 'secret'),
+      );
+
+      expect(m1).toBe(m2);
+      expect(m1).toBe(AuthService.INVALID_LOGIN);
+    });
+  });
+
+  describe('forgotPassword (no enumeration)', () => {
+    it('creates a reset token and emails an active local user', async () => {
+      const prisma = makePrisma();
+      const mail = makeMail();
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'user-1',
+        email: 'jane@x.com',
+        name: 'Jane',
+        status: 'active',
+        passwordHash: 'hash',
+      });
+      prisma.passwordResetToken.create.mockResolvedValue({});
+
+      await build(prisma, mail).forgotPassword('JANE@x.com');
+
+      expect(prisma.passwordResetToken.create).toHaveBeenCalledTimes(1);
+      const created = prisma.passwordResetToken.create.mock.calls[0][0].data;
+      expect(created.userId).toBe('user-1');
+      expect(created.tokenHash).toHaveLength(64); // sha256, never the raw token
+      expect(created.expiresAt.getTime()).toBeGreaterThan(Date.now());
+      // The emailed URL carries the RAW token (which is not what we stored).
+      const [, , url] = mail.sendPasswordReset.mock.calls[0];
+      expect(url).toContain('/reset-password?token=');
+      expect(url).not.toContain(created.tokenHash);
+    });
+
+    it('does nothing (but does NOT throw) for an unknown email', async () => {
+      const prisma = makePrisma();
+      const mail = makeMail();
+      prisma.user.findUnique.mockResolvedValue(null);
+
+      await expect(build(prisma, mail).forgotPassword('ghost@x.com')).resolves.toBeUndefined();
+      expect(prisma.passwordResetToken.create).not.toHaveBeenCalled();
+      expect(mail.sendPasswordReset).not.toHaveBeenCalled();
+    });
+
+    it('does nothing for a disabled account', async () => {
+      const prisma = makePrisma();
+      const mail = makeMail();
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'u', email: 'x@x.com', name: 'X', status: 'disabled', passwordHash: 'h',
+      });
+      await build(prisma, mail).forgotPassword('x@x.com');
+      expect(prisma.passwordResetToken.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('resetPassword', () => {
+    const validToken = {
+      id: 'prt-1',
+      userId: 'user-1',
+      usedAt: null as Date | null,
+      expiresAt: new Date(Date.now() + 60_000),
+    };
+
+    it('rejects an unknown/expired/used token with 400', async () => {
+      const prisma = makePrisma();
+      prisma.passwordResetToken.findUnique.mockResolvedValue(null);
+      await expect(build(prisma).resetPassword('raw', 'Str0ngPass')).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+
+      prisma.passwordResetToken.findUnique.mockResolvedValue({ ...validToken, usedAt: new Date() });
+      await expect(build(prisma).resetPassword('raw', 'Str0ngPass')).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+
+      prisma.passwordResetToken.findUnique.mockResolvedValue({
+        ...validToken,
+        expiresAt: new Date(Date.now() - 1),
+      });
+      await expect(build(prisma).resetPassword('raw', 'Str0ngPass')).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+    });
+
+    it('rejects a weak password WITHOUT consuming the token', async () => {
+      const prisma = makePrisma();
+      prisma.passwordResetToken.findUnique.mockResolvedValue(validToken);
+      await expect(build(prisma).resetPassword('raw', 'short')).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('sets the hash, marks the token used, clears lockout, and revokes refresh tokens', async () => {
+      const prisma = makePrisma();
+      prisma.passwordResetToken.findUnique.mockResolvedValue(validToken);
+
+      await build(prisma).resetPassword('raw', 'Str0ngPass');
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      const userUpdate = prisma.user.update.mock.calls[0][0];
+      expect(userUpdate.where).toEqual({ id: 'user-1' });
+      expect(userUpdate.data.passwordHash).toMatch(/^\$argon2/);
+      expect(userUpdate.data).toMatchObject({
+        mustChangePassword: false,
+        failedLoginAttempts: 0,
+        lockedUntil: null,
+      });
+      expect(prisma.passwordResetToken.update).toHaveBeenCalledWith({
+        where: { id: 'prt-1' },
+        data: { usedAt: expect.any(Date) },
+      });
+      expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith({
+        where: { userId: 'user-1', revokedAt: null },
+        data: { revokedAt: expect.any(Date) },
+      });
+    });
+  });
+
+  describe('changePassword', () => {
+    it('rejects a wrong current password with 400 (not 401)', async () => {
+      const prisma = makePrisma();
+      prisma.user.findUnique.mockResolvedValue(
+        makeUserRecord({ passwordHash: await argon2.hash('correct') }),
+      );
+      await expect(
+        build(prisma).changePassword('user-1', 'WRONG', 'Str0ngPass'),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('rejects a weak new password with 400', async () => {
+      const prisma = makePrisma();
+      prisma.user.findUnique.mockResolvedValue(
+        makeUserRecord({ passwordHash: await argon2.hash('correct') }),
+      );
+      await expect(
+        build(prisma).changePassword('user-1', 'correct', 'short'),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('sets the new hash, revokes old tokens, and returns a FRESH session', async () => {
+      const prisma = makePrisma();
+      prisma.user.findUnique.mockResolvedValue(
+        makeUserRecord({ passwordHash: await argon2.hash('correct'), mustChangePassword: true }),
+      );
+      prisma.refreshToken.create.mockResolvedValue({});
+
+      const result = await build(prisma).changePassword('user-1', 'correct', 'Str0ngPass');
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      const userUpdate = prisma.user.update.mock.calls[0][0];
+      expect(userUpdate.data.passwordHash).toMatch(/^\$argon2/);
+      expect(userUpdate.data.mustChangePassword).toBe(false);
+      // All prior sessions revoked...
+      expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith({
+        where: { userId: 'user-1', revokedAt: null },
+        data: { revokedAt: expect.any(Date) },
+      });
+      // ...and a brand-new pair minted for the current session.
+      expect(prisma.refreshToken.create).toHaveBeenCalledTimes(1);
+      expect(result.accessToken).toEqual(expect.any(String));
+      expect(result.refreshToken).toEqual(expect.any(String));
+      expect(result.user.mustChangePassword).toBe(false);
+      expect(result.user.id).toBe('user-1');
     });
   });
 });

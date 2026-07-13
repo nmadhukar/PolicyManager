@@ -18,10 +18,11 @@ describe('PermissionsGuard', () => {
 
   const staff: AuthUser = {
     id: 's', email: 's@x.com', name: 'Staff', roles: ['Staff'], permissions: ['document.read'],
+    mustChangePassword: false,
   };
   const admin: AuthUser = {
     id: 'a', email: 'a@x.com', name: 'Admin', roles: ['Admin'],
-    permissions: ['document.read', 'user.manage'],
+    permissions: ['document.read', 'user.manage'], mustChangePassword: false,
   };
 
   it('allows when no permissions are required (auth-only route)', () => {

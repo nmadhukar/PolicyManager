@@ -29,7 +29,62 @@ export interface AuthUser {
   name: string;
   roles: string[];
   permissions: string[];
+  /** When true, the UI must force a password change before any other action. */
+  mustChangePassword: boolean;
 }
+
+/**
+ * Password policy shared by the API (authoritative enforcement) and the web UI
+ * (inline hints). Keeping the rule set in one place avoids drift between the two.
+ */
+export const PASSWORD_MIN_LENGTH = 8;
+
+/** Trivially weak passwords rejected regardless of length. */
+const TRIVIAL_PASSWORDS = new Set([
+  'password',
+  'password1',
+  'passw0rd',
+  '12345678',
+  '123456789',
+  'qwertyui',
+  'iloveyou',
+  'changeme',
+  'letmein1',
+  'admin123',
+]);
+
+/**
+ * Returns a list of human-readable policy violations for `password`.
+ * An empty array means the password is acceptable. Pure + deterministic so it is
+ * unit-testable and can run identically on the server and (for hints) the client.
+ */
+export function validatePassword(password: string): string[] {
+  const errors: string[] = [];
+  const pw = password ?? '';
+  if (pw.length < PASSWORD_MIN_LENGTH) {
+    errors.push(`Use at least ${PASSWORD_MIN_LENGTH} characters.`);
+  }
+  if (pw.length > 200) {
+    errors.push('Use no more than 200 characters.');
+  }
+  if (/^(.)\1*$/.test(pw) && pw.length > 0) {
+    errors.push('Do not use a single repeated character.');
+  }
+  if (TRIVIAL_PASSWORDS.has(pw.toLowerCase())) {
+    errors.push('This password is too common. Choose something less guessable.');
+  }
+  if (!/[a-zA-Z]/.test(pw) || !/[0-9]/.test(pw)) {
+    errors.push('Include at least one letter and one number.');
+  }
+  return errors;
+}
+
+/** Static, display-ready policy hints for the UI. */
+export const PASSWORD_POLICY_HINTS: readonly string[] = [
+  `At least ${PASSWORD_MIN_LENGTH} characters`,
+  'At least one letter and one number',
+  'Not a common or trivial password',
+] as const;
 
 export type AccessLevel = 'public' | 'restricted' | 'confidential';
 export type DocumentStatus =

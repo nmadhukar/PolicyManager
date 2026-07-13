@@ -1,5 +1,5 @@
 import { ReactNode } from 'react';
-import { NavLink } from 'react-router-dom';
+import { Link, NavLink } from 'react-router-dom';
 import { PERMISSIONS } from '@policymanager/shared';
 import { useAuth } from '../auth/AuthContext';
 
@@ -85,6 +85,12 @@ export function AppShell({ children }: { children: ReactNode }) {
                 </div>
               </div>
             )}
+            <Link
+              to="/change-password"
+              className="hidden text-sm font-medium text-ink-soft hover:text-brand-600 sm:inline"
+            >
+              Change password
+            </Link>
             <button className="btn-secondary" onClick={() => void logout()}>
               Sign out
             </button>

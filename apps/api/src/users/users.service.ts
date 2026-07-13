@@ -7,12 +7,15 @@ import {
 } from '@nestjs/common';
 import * as argon2 from 'argon2';
 import { PrismaService } from '../prisma/prisma.service';
+import { AuthService } from '../auth/auth.service';
 import { AssignRolesDto } from './dto/assign-roles.dto';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 
 /**
  * Public-facing user shape. NEVER includes passwordHash / mfaSecret (AGENTS.md §8).
+ * `lockedUntil` (credential lockout) is intentionally distinct from `status`
+ * (enabled/disabled) so the admin UI can present and act on them separately.
  */
 export interface UserView {
   id: string;
@@ -21,6 +24,8 @@ export interface UserView {
   title: string | null;
   status: string;
   roles: string[];
+  mustChangePassword: boolean;
+  lockedUntil: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -31,9 +36,27 @@ export interface CreatedUser {
   temporaryPassword: string;
 }
 
+/** Outcome of an admin-initiated password reset. */
+export interface AdminResetResult {
+  mode: 'temp' | 'email';
+  /** Present only for `temp` mode — shown to the admin exactly once. */
+  temporaryPassword?: string;
+  /** Present only for `email` mode. */
+  emailed?: boolean;
+}
+
+/**
+ * Far-future sentinel used for an EXPLICIT admin lock, distinguishing it from a
+ * time-boxed brute-force lock (which sets a near-future `lockedUntil`).
+ */
+const ADMIN_LOCK_UNTIL = new Date('9999-12-31T23:59:59.000Z');
+
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly auth: AuthService,
+  ) {}
 
   private static userSelect() {
     return {
@@ -42,6 +65,8 @@ export class UsersService {
       name: true,
       title: true,
       status: true,
+      mustChangePassword: true,
+      lockedUntil: true,
       createdAt: true,
       updatedAt: true,
       roles: { include: { role: true } },
@@ -54,6 +79,8 @@ export class UsersService {
     name: string;
     title: string | null;
     status: string;
+    mustChangePassword: boolean;
+    lockedUntil: Date | null;
     createdAt: Date;
     updatedAt: Date;
     roles: { role: { name: string } }[];
@@ -64,6 +91,8 @@ export class UsersService {
       name: user.name,
       title: user.title,
       status: user.status,
+      mustChangePassword: user.mustChangePassword,
+      lockedUntil: user.lockedUntil,
       roles: user.roles.map((r) => r.role.name),
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
@@ -114,6 +143,8 @@ export class UsersService {
         name: dto.name,
         title: dto.title,
         passwordHash,
+        // New accounts start with a temp password they must change on first login.
+        mustChangePassword: true,
         identities: { create: { provider: 'local', subject: email, email } },
         roles: { create: roleIds.map((r) => ({ roleId: r.id })) },
       },
@@ -133,9 +164,20 @@ export class UsersService {
     return this.toView(user);
   }
 
-  async setStatus(id: string, status: 'active' | 'disabled'): Promise<UserView> {
+  /**
+   * Enables/disables an account (distinct from lock). Guards against an admin
+   * disabling their own account (self-lockout). Disabling revokes live refresh
+   * tokens so access cannot be silently renewed.
+   */
+  async setStatus(
+    id: string,
+    status: 'active' | 'disabled',
+    actingUserId?: string,
+  ): Promise<UserView> {
     await this.ensureExists(id);
-    // Revoke live refresh tokens when disabling so access cannot be silently renewed.
+    if (status === 'disabled' && actingUserId && actingUserId === id) {
+      throw new BadRequestException('You cannot disable your own account.');
+    }
     if (status === 'disabled') {
       await this.prisma.refreshToken.updateMany({
         where: { userId: id, revokedAt: null },
@@ -150,6 +192,69 @@ export class UsersService {
     return this.toView(user);
   }
 
+  /**
+   * Admin-initiated credential lockout (distinct from disable). Sets a far-future
+   * `lockedUntil` and revokes live refresh tokens. An admin cannot lock themselves.
+   */
+  async lockUser(id: string, actingUserId: string): Promise<UserView> {
+    await this.ensureExists(id);
+    if (actingUserId === id) {
+      throw new BadRequestException('You cannot lock your own account.');
+    }
+    await this.prisma.refreshToken.updateMany({
+      where: { userId: id, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    const user = await this.prisma.user.update({
+      where: { id },
+      data: { lockedUntil: ADMIN_LOCK_UNTIL },
+      select: UsersService.userSelect(),
+    });
+    return this.toView(user);
+  }
+
+  /** Clears any lock (explicit or brute-force) and resets the failure counter. */
+  async unlockUser(id: string): Promise<UserView> {
+    await this.ensureExists(id);
+    const user = await this.prisma.user.update({
+      where: { id },
+      data: { lockedUntil: null, failedLoginAttempts: 0 },
+      select: UsersService.userSelect(),
+    });
+    return this.toView(user);
+  }
+
+  /**
+   * Admin password reset. Two modes:
+   *  - `temp`: set a fresh temporary password (returned to the admin ONCE) and
+   *    force a change on next login;
+   *  - `email`: send the user a self-service reset link (no password disclosed).
+   * Both revoke live refresh tokens for the target user.
+   */
+  async adminResetPassword(id: string, mode: 'temp' | 'email'): Promise<AdminResetResult> {
+    const user = await this.prisma.user.findUnique({
+      where: { id },
+      select: { id: true, email: true, name: true },
+    });
+    if (!user) throw new NotFoundException('User not found');
+
+    if (mode === 'email') {
+      await this.auth.issuePasswordReset(user);
+      await this.revokeRefreshTokens(id);
+      return { mode: 'email', emailed: true };
+    }
+
+    // temp mode
+    const temporaryPassword = UsersService.generateTempPassword();
+    const passwordHash = await argon2.hash(temporaryPassword);
+    await this.prisma.user.update({
+      where: { id },
+      data: { passwordHash, mustChangePassword: true, failedLoginAttempts: 0, lockedUntil: null },
+    });
+    await this.revokeRefreshTokens(id);
+    return { mode: 'temp', temporaryPassword };
+  }
+
   /** Replaces the user's full role set with the provided names. */
   async assignRoles(id: string, dto: AssignRolesDto): Promise<UserView> {
     await this.ensureExists(id);
@@ -162,6 +267,13 @@ export class UsersService {
       }),
     ]);
     return this.get(id);
+  }
+
+  private async revokeRefreshTokens(userId: string): Promise<void> {
+    await this.prisma.refreshToken.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
   }
 
   private async ensureExists(id: string): Promise<void> {

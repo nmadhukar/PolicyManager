@@ -23,6 +23,9 @@
   .btn-secondary {
     @apply btn border border-slate-300 bg-white text-ink-soft hover:bg-slate-50;
   }
+  .btn-danger {
+    @apply btn bg-red-600 text-white hover:bg-red-700;
+  }
   .card {
     @apply rounded-xl border border-slate-200 bg-white shadow-card;
   }
