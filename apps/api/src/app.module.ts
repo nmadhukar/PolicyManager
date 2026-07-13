@@ -8,6 +8,7 @@ import { UsersModule } from './users/users.module';
 import { StorageModule } from './storage/storage.module';
 import { StorageAdminModule } from './storage-admin/storage-admin.module';
 import { DocumentsModule } from './documents/documents.module';
+import { AuditModule } from './audit/audit.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { DocumentsModule } from './documents/documents.module';
     HealthModule,
     MailModule,
     AuthModule,
+    AuditModule,
     UsersModule,
     StorageModule,
     StorageAdminModule,

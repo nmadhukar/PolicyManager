@@ -1,19 +1,26 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import type {
-  DocumentDetail,
-  DocumentListItem,
-  DocumentVersionSummary,
-  Paginated,
-  ViewTicket,
+import {
+  AUDIT_ACTIONS,
+  type AccessAction,
+  type AuthUser,
+  type DocumentDetail,
+  type DocumentListItem,
+  type DocumentVersionSummary,
+  type Paginated,
+  type ViewTicket,
 } from '@policymanager/shared';
 import { PrismaService } from '../prisma/prisma.service';
 import { S3Service } from '../storage/s3.service';
+import { AuditService } from '../audit/audit.service';
+import type { RequestContext } from '../audit/request-context';
+import { DocumentAccessService, type AccessDocument } from './document-access.service';
 import { buildDocumentListQuery, type ListDocumentsQuery } from './document-query';
 import type { CreateDocumentDto } from './dto/create-document.dto';
 import type { CreateVersionDto } from './dto/create-version.dto';
@@ -71,6 +78,14 @@ const versionSummarySelect = {
   uploadedBy: { select: { name: true } },
 } satisfies Prisma.DocumentVersionSelect;
 
+/** Access-relevant document fields joined onto a version lookup. */
+const accessSelect = {
+  id: true,
+  ownerId: true,
+  accessLevel: true,
+  categoryId: true,
+} satisfies Prisma.DocumentSelect;
+
 @Injectable()
 export class DocumentsService {
   constructor(
@@ -79,22 +94,30 @@ export class DocumentsService {
     private readonly textExtraction: TextExtractionService,
     private readonly renditions: RenditionService,
     private readonly onlyOffice: OnlyOfficeService,
+    private readonly access: DocumentAccessService,
+    private readonly audit: AuditService,
   ) {}
 
   // ---- Reads ---------------------------------------------------------------
 
-  /** Paginated, filtered, sorted document library (AGENTS.md §10c list screen). */
-  async list(query: ListDocumentsQuery): Promise<Paginated<DocumentListItem>> {
+  /**
+   * Paginated, filtered, sorted document library (AGENTS.md §10c list screen).
+   * Confidential documents the caller has no grant for are filtered out
+   * server-side (AGENTS.md §8) — UI hiding is never the boundary.
+   */
+  async list(query: ListDocumentsQuery, user: AuthUser): Promise<Paginated<DocumentListItem>> {
     const built = buildDocumentListQuery(query);
+    const accessWhere = await this.access.buildListWhere(user);
+    const where: Prisma.DocumentWhereInput = { AND: [built.where, accessWhere] };
     const [rows, total] = await this.prisma.$transaction([
       this.prisma.document.findMany({
-        where: built.where,
+        where,
         orderBy: built.orderBy,
         skip: built.skip,
         take: built.take,
         include: this.listInclude(),
       }),
-      this.prisma.document.count({ where: built.where }),
+      this.prisma.document.count({ where }),
     ]);
     return {
       items: rows.map((r) => this.toListItem(r)),
@@ -106,17 +129,21 @@ export class DocumentsService {
 
   /**
    * Full detail incl. the complete, newest-first version history. Excludes
-   * soft-deleted documents — a trashed doc reads as 404 via the normal route
-   * (AGENTS.md §9).
+   * soft-deleted documents (reads as 404) and enforces VIEW access — a
+   * confidential document the caller cannot see returns 403 + access.denied audit
+   * (AGENTS.md §8/§9).
    */
-  async get(id: string): Promise<DocumentDetail> {
-    return this.loadDetail(id, { includeDeleted: false });
+  async get(id: string, user: AuthUser, ctx: RequestContext = {}): Promise<DocumentDetail> {
+    const detail = await this.loadDetail(id, { includeDeleted: false });
+    await this.enforce(user, this.accessDocOf(detail), 'view', ctx);
+    return detail;
   }
 
   /**
    * Loads a document's full detail. `includeDeleted` is used only by the internal
    * state-change methods (soft-delete/restore/archive) that have already
    * validated the delete state and need to return the (possibly deleted) row.
+   * Does NOT enforce access — callers that expose it to a user must (see `get`).
    */
   private async loadDetail(
     id: string,
@@ -143,7 +170,11 @@ export class DocumentsService {
   // ---- Writes --------------------------------------------------------------
 
   /** Creates a document owned by the caller. Bytes are added via a version. */
-  async create(dto: CreateDocumentDto, ownerId: string): Promise<DocumentDetail> {
+  async create(
+    dto: CreateDocumentDto,
+    user: AuthUser,
+    ctx: RequestContext = {},
+  ): Promise<DocumentDetail> {
     if (dto.categoryId) await this.assertCategoryExists(dto.categoryId);
     try {
       const doc = await this.prisma.document.create({
@@ -157,18 +188,33 @@ export class DocumentsService {
           reviewCadence: dto.reviewCadence,
           nextReviewDate: dto.nextReviewDate ? new Date(dto.nextReviewDate) : undefined,
           effectiveDate: dto.effectiveDate ? new Date(dto.effectiveDate) : undefined,
-          ownerId,
+          ownerId: user.id,
         },
       });
-      return this.get(doc.id);
+      await this.audit.record({
+        action: AUDIT_ACTIONS.DOCUMENT_CREATED,
+        actorUserId: user.id,
+        documentId: doc.id,
+        targetType: 'document',
+        ...ctx,
+        metadata: { title: dto.title },
+      });
+      // Internal reload (no re-enforcement — the creator owns the new document).
+      return this.loadDetail(doc.id);
     } catch (err) {
       throw this.mapWriteError(err);
     }
   }
 
   /** Partial metadata update. `tags` replaces the full set; dates accept null. */
-  async update(id: string, dto: UpdateDocumentDto): Promise<DocumentDetail> {
-    await this.assertDocumentExists(id);
+  async update(
+    id: string,
+    dto: UpdateDocumentDto,
+    user: AuthUser,
+    ctx: RequestContext = {},
+  ): Promise<DocumentDetail> {
+    const current = await this.loadAccessDoc(id);
+    await this.enforce(user, current, 'edit', ctx);
     if (dto.categoryId) await this.assertCategoryExists(dto.categoryId);
 
     const data: Prisma.DocumentUpdateInput = {};
@@ -196,44 +242,82 @@ export class DocumentsService {
     } catch (err) {
       throw this.mapWriteError(err);
     }
-    return this.get(id);
+    await this.audit.record({
+      action: AUDIT_ACTIONS.DOCUMENT_UPDATED,
+      actorUserId: user.id,
+      documentId: id,
+      targetType: 'document',
+      ...ctx,
+      metadata: { fields: Object.keys(data) },
+    });
+    return this.loadDetail(id);
   }
 
   /**
    * Immutable version upload: stores new bytes at a fresh, deterministic key,
    * extracts text best-effort, records the version, and points the document at
-   * it. Prior version bytes are NEVER overwritten (AGENTS.md §9).
+   * it. Prior version bytes are NEVER overwritten (AGENTS.md §9). Requires EDIT
+   * access to the document (RBAC + confidential ACL).
    */
   async addVersion(
     documentId: string,
     file: UploadedFile,
     dto: CreateVersionDto,
-    uploadedById: string,
+    user: AuthUser,
+    ctx: RequestContext = {},
   ): Promise<DocumentVersionSummary> {
-    await this.assertDocumentExists(documentId);
+    const doc = await this.loadAccessDoc(documentId);
+    await this.enforce(user, doc, 'edit', ctx);
     if (!file || !file.buffer) throw new BadRequestException('A file is required');
-    return this.writeVersion(documentId, file, dto.changeSummary, uploadedById);
+    const version = await this.writeVersion(documentId, file, dto.changeSummary, user.id);
+    await this.audit.record({
+      action: AUDIT_ACTIONS.VERSION_UPLOADED,
+      actorUserId: user.id,
+      documentId,
+      versionId: version.id,
+      targetType: 'version',
+      ...ctx,
+      metadata: { versionNumber: version.versionNumber, fileName: version.fileName },
+    });
+    return version;
   }
 
   /**
    * Saves an app-authored (TipTap) HTML document as a NEW immutable version
    * (fileName `.html`, mime `text/html`) and generates a PDF rendition via the
-   * Gotenberg Chromium route. Save == new version (AGENTS.md §10a).
+   * Gotenberg Chromium route. Save == new version (AGENTS.md §10a). Requires EDIT.
    */
   async addHtmlVersion(
     documentId: string,
     html: string,
     changeSummary: string | undefined,
-    uploadedById: string,
+    user: AuthUser,
+    ctx: RequestContext = {},
   ): Promise<DocumentVersionSummary> {
-    await this.assertDocumentExists(documentId);
+    const doc = await this.loadAccessDoc(documentId);
+    await this.enforce(user, doc, 'edit', ctx);
     if (typeof html !== 'string') throw new BadRequestException('html is required');
     const file: VersionBytes = {
       originalname: 'document.html',
       mimetype: 'text/html',
       buffer: Buffer.from(html, 'utf8'),
     };
-    return this.writeVersion(documentId, file, changeSummary ?? 'Edited text document', uploadedById);
+    const version = await this.writeVersion(
+      documentId,
+      file,
+      changeSummary ?? 'Edited text document',
+      user.id,
+    );
+    await this.audit.record({
+      action: AUDIT_ACTIONS.VERSION_UPLOADED,
+      actorUserId: user.id,
+      documentId,
+      versionId: version.id,
+      targetType: 'version',
+      ...ctx,
+      metadata: { versionNumber: version.versionNumber, source: 'tiptap' },
+    });
+    return version;
   }
 
   /**
@@ -241,6 +325,8 @@ export class DocumentsService {
    * OnlyOffice save-backs. Stores bytes at a fresh deterministic key, extracts
    * text (best-effort), generates a PDF rendition (best-effort), records the
    * version row, and points the document at it. Never overwrites prior bytes.
+   * Audit is emitted by the CALLERS (upload/tiptap/edit) so each gets its own
+   * action label.
    */
   private async writeVersion(
     documentId: string,
@@ -342,18 +428,24 @@ export class DocumentsService {
   }
 
   /**
-   * Authorizes (document.read enforced by the guard) then returns a SHORT-LIVED
-   * presigned URL for in-browser VIEWING: the PDF rendition when present, the
-   * source when it is itself a PDF, or the source image. Office/text sources
-   * without a rendition yet are not viewable — a rendition must be (re)generated
-   * first. The URL is inline (no attachment disposition). Bucket stays private.
+   * Authorizes VIEW access then returns a SHORT-LIVED presigned URL for
+   * in-browser VIEWING: the PDF rendition when present, the source when it is
+   * itself a PDF, or the source image. Office/text sources without a rendition
+   * yet are not viewable. The URL is inline (no attachment disposition). Bucket
+   * stays private. Issuing a ticket is audited as `document.viewed`.
    */
-  async getVersionViewTicket(documentId: string, versionId: string): Promise<ViewTicket> {
+  async getVersionViewTicket(
+    documentId: string,
+    versionId: string,
+    user: AuthUser,
+    ctx: RequestContext = {},
+  ): Promise<ViewTicket> {
     const version = await this.prisma.documentVersion.findFirst({
       where: { id: versionId, documentId, document: { deletedAt: null } },
-      select: { s3Key: true, renditionS3Key: true, mimeType: true },
+      select: { s3Key: true, renditionS3Key: true, mimeType: true, document: { select: accessSelect } },
     });
     if (!version) throw new NotFoundException('Version not found');
+    await this.enforce(user, version.document, 'view', ctx, versionId);
 
     let key: string;
     let mimeType: string;
@@ -373,19 +465,34 @@ export class DocumentsService {
     }
 
     const url = await this.s3.getPresignedDownloadUrl(key, VIEW_TTL_SECONDS);
+    await this.audit.record({
+      action: AUDIT_ACTIONS.DOCUMENT_VIEWED,
+      actorUserId: user.id,
+      documentId,
+      versionId,
+      targetType: 'version',
+      ...ctx,
+    });
     return { url, expiresIn: VIEW_TTL_SECONDS, mimeType };
   }
 
   /**
    * Returns the raw HTML of an app-authored (text/html) version for the TipTap
-   * editor to load. Scoped to non-deleted documents; rejects non-HTML versions.
+   * editor to load. Scoped to non-deleted documents; enforces VIEW access;
+   * rejects non-HTML versions.
    */
-  async getVersionHtml(documentId: string, versionId: string): Promise<{ html: string }> {
+  async getVersionHtml(
+    documentId: string,
+    versionId: string,
+    user: AuthUser,
+    ctx: RequestContext = {},
+  ): Promise<{ html: string }> {
     const version = await this.prisma.documentVersion.findFirst({
       where: { id: versionId, documentId, document: { deletedAt: null } },
-      select: { s3Key: true, mimeType: true },
+      select: { s3Key: true, mimeType: true, document: { select: accessSelect } },
     });
     if (!version) throw new NotFoundException('Version not found');
+    await this.enforce(user, version.document, 'view', ctx, versionId);
     if (!version.mimeType.startsWith('text/html')) {
       throw new BadRequestException('This version is not an editable text document');
     }
@@ -394,24 +501,39 @@ export class DocumentsService {
   }
 
   /**
-   * Authorizes (document.read already enforced by the guard; the version must
-   * belong to the document) then returns a SHORT-LIVED presigned URL. The bucket
-   * stays private — bytes never stream through the API (AGENTS.md §8).
+   * Authorizes DOWNLOAD access then returns a SHORT-LIVED presigned URL. The
+   * bucket stays private — bytes never stream through the API (AGENTS.md §8).
+   * Issuing a ticket is audited as `document.downloaded`.
    */
-  async getVersionDownloadTicket(documentId: string, versionId: string): Promise<DownloadTicket> {
+  async getVersionDownloadTicket(
+    documentId: string,
+    versionId: string,
+    user: AuthUser,
+    ctx: RequestContext = {},
+  ): Promise<DownloadTicket> {
     const version = await this.prisma.documentVersion.findFirst({
       // The parent-document join enforces soft-delete: a version of a trashed
       // document is not downloadable via the normal route (reads as 404).
       where: { id: versionId, documentId, document: { deletedAt: null } },
-      select: { s3Key: true, fileName: true },
+      select: { s3Key: true, fileName: true, document: { select: accessSelect } },
     });
     if (!version) throw new NotFoundException('Version not found');
+    await this.enforce(user, version.document, 'download', ctx, versionId);
 
     const url = await this.s3.getPresignedDownloadUrl(
       version.s3Key,
       DOWNLOAD_TTL_SECONDS,
       version.fileName,
     );
+    await this.audit.record({
+      action: AUDIT_ACTIONS.DOCUMENT_DOWNLOADED,
+      actorUserId: user.id,
+      documentId,
+      versionId,
+      targetType: 'version',
+      ...ctx,
+      metadata: { fileName: version.fileName },
+    });
     return { url, expiresIn: DOWNLOAD_TTL_SECONDS, fileName: version.fileName };
   }
 
@@ -420,18 +542,20 @@ export class DocumentsService {
   /**
    * Builds the signed OnlyOffice editor config for a document's CURRENT version.
    * Rejects documents with no version, or whose current version is not an
-   * editable Office type (docx/xlsx/pptx…). `document.write` is enforced by the
-   * controller guard; this is the document/version resolution + config signing.
+   * editable Office type (docx/xlsx/pptx…). Enforces EDIT access (RBAC +
+   * confidential ACL) beyond the controller's `document.write` guard.
    */
   async getEditorConfig(
     documentId: string,
-    user: { id: string; name: string },
+    user: AuthUser,
+    ctx: RequestContext = {},
   ): Promise<Record<string, unknown>> {
     const doc = await this.prisma.document.findFirst({
       where: { id: documentId, deletedAt: null },
-      select: { currentVersion: { select: { id: true, fileName: true } } },
+      select: { ...accessSelect, currentVersion: { select: { id: true, fileName: true } } },
     });
     if (!doc) throw new NotFoundException('Document not found');
+    await this.enforce(user, doc, 'edit', ctx);
     if (!doc.currentVersion) {
       throw new BadRequestException('Upload a version before editing');
     }
@@ -444,7 +568,7 @@ export class DocumentsService {
       versionId: doc.currentVersion.id,
       fileName: doc.currentVersion.fileName,
       documentType,
-      user,
+      user: { id: user.id, name: user.name },
     });
   }
 
@@ -476,7 +600,9 @@ export class DocumentsService {
    * BRAND-NEW immutable version (increment, changeSummary "Edited in OnlyOffice"),
    * advancing `currentVersionId` and regenerating the rendition. It NEVER
    * overwrites the edited version's bytes (AGENTS.md §10a). Non-save statuses are
-   * acked with no version created. Always returns OnlyOffice's `{ error: 0 }`.
+   * acked with no version created. A successful save is audited as
+   * `document.edited` (source=system — the Docs server calls this). Always returns
+   * OnlyOffice's `{ error: 0 }`.
    */
   async applyEditorCallback(
     documentId: string,
@@ -507,7 +633,16 @@ export class DocumentsService {
       buffer,
     };
     const uploadedById = editorUserId ?? source.document.ownerId;
-    await this.writeVersion(documentId, file, 'Edited in OnlyOffice', uploadedById);
+    const version = await this.writeVersion(documentId, file, 'Edited in OnlyOffice', uploadedById);
+    await this.audit.record({
+      action: AUDIT_ACTIONS.DOCUMENT_EDITED,
+      actorUserId: editorUserId ?? source.document.ownerId,
+      documentId,
+      versionId: version.id,
+      targetType: 'version',
+      source: 'system',
+      metadata: { versionNumber: version.versionNumber, editor: 'onlyoffice' },
+    });
     return { error: 0 };
   }
 
@@ -517,39 +652,53 @@ export class DocumentsService {
    * Soft-deletes a document: stamps `deletedAt`/`deletedById` so it drops out of
    * default lists and reads, WITHOUT removing the row, its versions, or any S3
    * bytes. Fully reversible via {@link restore}. 404 if already deleted/missing.
-   *
-   * TODO(Phase 4 audit): emit a `document.deleted` audit event (actor, doc id).
+   * Requires EDIT access; emits a `document.deleted` audit event.
    */
-  async softDelete(id: string, deletedById: string): Promise<DocumentDetail> {
+  async softDelete(id: string, user: AuthUser, ctx: RequestContext = {}): Promise<DocumentDetail> {
     const doc = await this.prisma.document.findFirst({
       where: { id, deletedAt: null },
-      select: { id: true },
+      select: accessSelect,
     });
     if (!doc) throw new NotFoundException('Document not found');
+    await this.enforce(user, doc, 'edit', ctx);
 
     await this.prisma.document.update({
       where: { id },
-      data: { deletedAt: new Date(), deletedBy: { connect: { id: deletedById } } },
+      data: { deletedAt: new Date(), deletedBy: { connect: { id: user.id } } },
+    });
+    await this.audit.record({
+      action: AUDIT_ACTIONS.DOCUMENT_DELETED,
+      actorUserId: user.id,
+      documentId: id,
+      targetType: 'document',
+      ...ctx,
     });
     return this.loadDetail(id, { includeDeleted: true });
   }
 
   /**
    * Restores a soft-deleted document by clearing `deletedAt`/`deletedById`.
-   * 404 if the document is not currently in the trash.
-   *
-   * TODO(Phase 4 audit): emit a `document.restored` audit event.
+   * 404 if the document is not currently in the trash. Requires EDIT access;
+   * emits a `document.restored` audit event.
    */
-  async restore(id: string): Promise<DocumentDetail> {
+  async restore(id: string, user: AuthUser, ctx: RequestContext = {}): Promise<DocumentDetail> {
     const doc = await this.prisma.document.findFirst({
       where: { id, deletedAt: { not: null } },
-      select: { id: true },
+      select: accessSelect,
     });
     if (!doc) throw new NotFoundException('Document not found');
+    await this.enforce(user, doc, 'edit', ctx);
 
     await this.prisma.document.update({
       where: { id },
       data: { deletedAt: null, deletedById: null },
+    });
+    await this.audit.record({
+      action: AUDIT_ACTIONS.DOCUMENT_RESTORED,
+      actorUserId: user.id,
+      documentId: id,
+      targetType: 'document',
+      ...ctx,
     });
     return this.loadDetail(id);
   }
@@ -558,21 +707,28 @@ export class DocumentsService {
    * Archives a document (status -> archived), stashing the prior status so the
    * change is reversible. Archived documents stay fully readable/downloadable but
    * are kept out of active lists. No-op if already archived. 404 if
-   * missing/soft-deleted (restore it first).
-   *
-   * TODO(Phase 4 audit): emit a `document.archived` audit event.
+   * missing/soft-deleted (restore it first). Requires EDIT; emits
+   * `document.archived`.
    */
-  async archive(id: string): Promise<DocumentDetail> {
+  async archive(id: string, user: AuthUser, ctx: RequestContext = {}): Promise<DocumentDetail> {
     const doc = await this.prisma.document.findFirst({
       where: { id, deletedAt: null },
-      select: { id: true, status: true },
+      select: { ...accessSelect, status: true },
     });
     if (!doc) throw new NotFoundException('Document not found');
+    await this.enforce(user, doc, 'edit', ctx);
 
     if (doc.status !== 'archived') {
       await this.prisma.document.update({
         where: { id },
         data: { status: 'archived', preArchiveStatus: doc.status },
+      });
+      await this.audit.record({
+        action: AUDIT_ACTIONS.DOCUMENT_ARCHIVED,
+        actorUserId: user.id,
+        documentId: id,
+        targetType: 'document',
+        ...ctx,
       });
     }
     return this.loadDetail(id);
@@ -581,21 +737,28 @@ export class DocumentsService {
   /**
    * Unarchives a document, restoring the status held before it was archived
    * (falling back to `draft` when none was stashed) and clearing the stash.
-   * No-op if the document is not archived. 404 if missing/soft-deleted.
-   *
-   * TODO(Phase 4 audit): emit a `document.unarchived` audit event.
+   * No-op if the document is not archived. 404 if missing/soft-deleted. Requires
+   * EDIT; emits `document.unarchived`.
    */
-  async unarchive(id: string): Promise<DocumentDetail> {
+  async unarchive(id: string, user: AuthUser, ctx: RequestContext = {}): Promise<DocumentDetail> {
     const doc = await this.prisma.document.findFirst({
       where: { id, deletedAt: null },
-      select: { id: true, status: true, preArchiveStatus: true },
+      select: { ...accessSelect, status: true, preArchiveStatus: true },
     });
     if (!doc) throw new NotFoundException('Document not found');
+    await this.enforce(user, doc, 'edit', ctx);
 
     if (doc.status === 'archived') {
       await this.prisma.document.update({
         where: { id },
         data: { status: doc.preArchiveStatus ?? 'draft', preArchiveStatus: null },
+      });
+      await this.audit.record({
+        action: AUDIT_ACTIONS.DOCUMENT_UNARCHIVED,
+        actorUserId: user.id,
+        documentId: id,
+        targetType: 'document',
+        ...ctx,
       });
     }
     return this.loadDetail(id);
@@ -606,23 +769,23 @@ export class DocumentsService {
    * immutable bytes are COPIED (never moved/deleted) to a fresh, version-scoped
    * S3 key, and a brand-new DocumentVersion row is appended and made current.
    * History is strictly preserved — the version count only ever grows and no
-   * prior row/object is mutated (AGENTS.md §9).
+   * prior row/object is mutated (AGENTS.md §9). Requires EDIT; emits
+   * `version.restored`.
    *
    * Because the bytes are identical, the checksum is carried forward unchanged.
-   *
-   * TODO(Phase 4 audit): emit a `document.version_restored` audit event
-   * (source version -> new version).
    */
   async restoreVersion(
     documentId: string,
     versionId: string,
-    restoredById: string,
+    user: AuthUser,
+    ctx: RequestContext = {},
   ): Promise<DocumentVersionSummary> {
     const doc = await this.prisma.document.findFirst({
       where: { id: documentId, deletedAt: null },
-      select: { id: true },
+      select: accessSelect,
     });
     if (!doc) throw new NotFoundException('Document not found');
+    await this.enforce(user, doc, 'edit', ctx);
 
     const source = await this.prisma.documentVersion.findFirst({
       where: { id: versionId, documentId },
@@ -679,7 +842,7 @@ export class DocumentsService {
           mimeType: source.mimeType,
           sizeBytes: source.sizeBytes,
           checksum: source.checksum,
-          uploadedById: restoredById,
+          uploadedById: user.id,
           changeSummary: `Restored from v${source.versionNumber}`,
           extractedText: source.extractedText ?? undefined,
         },
@@ -692,10 +855,64 @@ export class DocumentsService {
       return version;
     });
 
+    await this.audit.record({
+      action: AUDIT_ACTIONS.VERSION_RESTORED,
+      actorUserId: user.id,
+      documentId,
+      versionId: created.id,
+      targetType: 'version',
+      ...ctx,
+      metadata: { fromVersion: source.versionNumber, newVersion: created.versionNumber },
+    });
     return this.toVersionSummary(created);
   }
 
   // ---- Helpers -------------------------------------------------------------
+
+  /**
+   * Access check + access.denied audit in one place. On denial writes an
+   * `access.denied` event (with the attempted action) then throws 403 — the
+   * uniform enforcement point for confidential documents (AGENTS.md §8).
+   */
+  private async enforce(
+    user: AuthUser,
+    doc: AccessDocument,
+    action: AccessAction,
+    ctx: RequestContext,
+    versionId?: string,
+  ): Promise<void> {
+    if (await this.access.canAccess(user, doc, action)) return;
+    await this.audit.record({
+      action: AUDIT_ACTIONS.ACCESS_DENIED,
+      actorUserId: user.id,
+      documentId: doc.id,
+      versionId,
+      targetType: 'document',
+      ...ctx,
+      metadata: { attemptedAction: action, accessLevel: doc.accessLevel },
+    });
+    throw new ForbiddenException('You do not have access to this document');
+  }
+
+  /** Loads the access-relevant fields of an ACTIVE document (404 if gone). */
+  private async loadAccessDoc(id: string): Promise<AccessDocument> {
+    const doc = await this.prisma.document.findFirst({
+      where: { id, deletedAt: null },
+      select: accessSelect,
+    });
+    if (!doc) throw new NotFoundException('Document not found');
+    return doc;
+  }
+
+  /** Projects a loaded DocumentDetail onto the access-decision shape. */
+  private accessDocOf(detail: DocumentDetail): AccessDocument {
+    return {
+      id: detail.id,
+      ownerId: detail.ownerId,
+      accessLevel: detail.accessLevel,
+      categoryId: detail.categoryId,
+    };
+  }
 
   private listInclude() {
     return {
@@ -704,19 +921,6 @@ export class DocumentsService {
       deletedBy: { select: { name: true } },
       currentVersion: { select: versionSummarySelect },
     } satisfies Prisma.DocumentInclude;
-  }
-
-  /**
-   * Guards write operations (metadata update, new version) to ACTIVE documents:
-   * a soft-deleted document reads as 404 here, so it can't be edited or grown
-   * until restored (AGENTS.md §9).
-   */
-  private async assertDocumentExists(id: string): Promise<void> {
-    const found = await this.prisma.document.findFirst({
-      where: { id, deletedAt: null },
-      select: { id: true },
-    });
-    if (!found) throw new NotFoundException('Document not found');
   }
 
   private async assertCategoryExists(id: string): Promise<void> {

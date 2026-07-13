@@ -28,6 +28,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { ReqContext, type RequestContext } from '../audit/request-context';
 import { DocumentsService, type UploadedFile } from './documents.service';
 import { CreateDocumentDto } from './dto/create-document.dto';
 import { CreateHtmlVersionDto } from './dto/create-html-version.dto';
@@ -41,7 +42,8 @@ const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MB
 /**
  * Document CRUD + immutable versioning. Read routes require `document.read`;
  * create/update/upload require `document.write`. Authorization is enforced
- * server-side by JwtAuthGuard + PermissionsGuard (AGENTS.md §8).
+ * server-side by JwtAuthGuard + PermissionsGuard, PLUS per-document access
+ * control (confidential ACLs) and audit inside the service (AGENTS.md §8).
  */
 @ApiTags('documents')
 @ApiBearerAuth()
@@ -55,7 +57,8 @@ export class DocumentsController {
   @ApiOperation({
     summary: 'List documents (paginated, filterable, sortable).',
     description:
-      'Excludes soft-deleted and archived documents by default. `includeArchived=true` ' +
+      'Excludes soft-deleted and archived documents by default, and hides ' +
+      'confidential documents the caller has no grant for. `includeArchived=true` ' +
       'surfaces archived; `deleted=true` is the trash view (only soft-deleted) and ' +
       'additionally requires document.write.',
   })
@@ -65,28 +68,37 @@ export class DocumentsController {
     if (query.deleted && !user.permissions.includes(PERMISSIONS.DOCUMENT_WRITE)) {
       throw new ForbiddenException('Viewing deleted documents requires document.write');
     }
-    return this.documents.list(query);
+    return this.documents.list(query, user);
   }
 
   @Get(':id')
   @RequirePermission(PERMISSIONS.DOCUMENT_READ)
   @ApiOperation({ summary: 'Get a document with its full version history.' })
-  get(@Param('id') id: string) {
-    return this.documents.get(id);
+  get(@Param('id') id: string, @CurrentUser() user: AuthUser, @ReqContext() ctx: RequestContext) {
+    return this.documents.get(id, user, ctx);
   }
 
   @Post()
   @RequirePermission(PERMISSIONS.DOCUMENT_WRITE)
   @ApiOperation({ summary: 'Create a document (title required; owner = caller).' })
-  create(@Body() dto: CreateDocumentDto, @CurrentUser() user: AuthUser) {
-    return this.documents.create(dto, user.id);
+  create(
+    @Body() dto: CreateDocumentDto,
+    @CurrentUser() user: AuthUser,
+    @ReqContext() ctx: RequestContext,
+  ) {
+    return this.documents.create(dto, user, ctx);
   }
 
   @Patch(':id')
   @RequirePermission(PERMISSIONS.DOCUMENT_WRITE)
   @ApiOperation({ summary: 'Update document metadata (tags, category, status, cadence…).' })
-  update(@Param('id') id: string, @Body() dto: UpdateDocumentDto) {
-    return this.documents.update(id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateDocumentDto,
+    @CurrentUser() user: AuthUser,
+    @ReqContext() ctx: RequestContext,
+  ) {
+    return this.documents.update(id, dto, user, ctx);
   }
 
   @Post(':id/versions')
@@ -109,16 +121,22 @@ export class DocumentsController {
     @UploadedFileDecorator() file: UploadedFile | undefined,
     @Body() dto: CreateVersionDto,
     @CurrentUser() user: AuthUser,
+    @ReqContext() ctx: RequestContext,
   ) {
     if (!file) throw new BadRequestException('A file is required');
-    return this.documents.addVersion(id, file, dto, user.id);
+    return this.documents.addVersion(id, file, dto, user, ctx);
   }
 
   @Get(':id/versions/:versionId/download')
   @RequirePermission(PERMISSIONS.DOCUMENT_READ)
   @ApiOperation({ summary: 'Get a short-lived presigned download URL for a version.' })
-  download(@Param('id') id: string, @Param('versionId') versionId: string) {
-    return this.documents.getVersionDownloadTicket(id, versionId);
+  download(
+    @Param('id') id: string,
+    @Param('versionId') versionId: string,
+    @CurrentUser() user: AuthUser,
+    @ReqContext() ctx: RequestContext,
+  ) {
+    return this.documents.getVersionDownloadTicket(id, versionId, user, ctx);
   }
 
   @Get(':id/versions/:versionId/view-url')
@@ -126,8 +144,13 @@ export class DocumentsController {
   @ApiOperation({
     summary: 'Get a short-lived presigned URL for in-browser viewing (PDF rendition/PDF/image).',
   })
-  viewUrl(@Param('id') id: string, @Param('versionId') versionId: string) {
-    return this.documents.getVersionViewTicket(id, versionId);
+  viewUrl(
+    @Param('id') id: string,
+    @Param('versionId') versionId: string,
+    @CurrentUser() user: AuthUser,
+    @ReqContext() ctx: RequestContext,
+  ) {
+    return this.documents.getVersionViewTicket(id, versionId, user, ctx);
   }
 
   @Post(':id/versions/:versionId/rendition')
@@ -141,8 +164,13 @@ export class DocumentsController {
   @Get(':id/versions/:versionId/html')
   @RequirePermission(PERMISSIONS.DOCUMENT_READ)
   @ApiOperation({ summary: 'Get the raw HTML of an app-authored (TipTap) text version.' })
-  versionHtml(@Param('id') id: string, @Param('versionId') versionId: string) {
-    return this.documents.getVersionHtml(id, versionId);
+  versionHtml(
+    @Param('id') id: string,
+    @Param('versionId') versionId: string,
+    @CurrentUser() user: AuthUser,
+    @ReqContext() ctx: RequestContext,
+  ) {
+    return this.documents.getVersionHtml(id, versionId, user, ctx);
   }
 
   @Post(':id/versions/html')
@@ -154,8 +182,9 @@ export class DocumentsController {
     @Param('id') id: string,
     @Body() dto: CreateHtmlVersionDto,
     @CurrentUser() user: AuthUser,
+    @ReqContext() ctx: RequestContext,
   ) {
-    return this.documents.addHtmlVersion(id, dto.html, dto.changeSummary, user.id);
+    return this.documents.addHtmlVersion(id, dto.html, dto.changeSummary, user, ctx);
   }
 
   @Get(':id/editor-config')
@@ -163,8 +192,12 @@ export class DocumentsController {
   @ApiOperation({
     summary: 'Get a signed OnlyOffice editor config for the current version (docx/xlsx/pptx).',
   })
-  editorConfig(@Param('id') id: string, @CurrentUser() user: AuthUser) {
-    return this.documents.getEditorConfig(id, { id: user.id, name: user.name });
+  editorConfig(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthUser,
+    @ReqContext() ctx: RequestContext,
+  ) {
+    return this.documents.getEditorConfig(id, user, ctx);
   }
 
   @Post(':id/versions/:versionId/restore')
@@ -176,8 +209,9 @@ export class DocumentsController {
     @Param('id') id: string,
     @Param('versionId') versionId: string,
     @CurrentUser() user: AuthUser,
+    @ReqContext() ctx: RequestContext,
   ) {
-    return this.documents.restoreVersion(id, versionId, user.id);
+    return this.documents.restoreVersion(id, versionId, user, ctx);
   }
 
   @Delete(':id')
@@ -185,31 +219,47 @@ export class DocumentsController {
   @ApiOperation({
     summary: 'Soft-delete a document (moves it to the trash; never destroys bytes).',
   })
-  softDelete(@Param('id') id: string, @CurrentUser() user: AuthUser) {
-    return this.documents.softDelete(id, user.id);
+  softDelete(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthUser,
+    @ReqContext() ctx: RequestContext,
+  ) {
+    return this.documents.softDelete(id, user, ctx);
   }
 
   @Post(':id/restore')
   @HttpCode(200)
   @RequirePermission(PERMISSIONS.DOCUMENT_WRITE)
   @ApiOperation({ summary: 'Restore a soft-deleted document from the trash.' })
-  restore(@Param('id') id: string) {
-    return this.documents.restore(id);
+  restore(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthUser,
+    @ReqContext() ctx: RequestContext,
+  ) {
+    return this.documents.restore(id, user, ctx);
   }
 
   @Post(':id/archive')
   @HttpCode(200)
   @RequirePermission(PERMISSIONS.DOCUMENT_WRITE)
   @ApiOperation({ summary: 'Archive a document (keeps it accessible but out of active lists).' })
-  archive(@Param('id') id: string) {
-    return this.documents.archive(id);
+  archive(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthUser,
+    @ReqContext() ctx: RequestContext,
+  ) {
+    return this.documents.archive(id, user, ctx);
   }
 
   @Post(':id/unarchive')
   @HttpCode(200)
   @RequirePermission(PERMISSIONS.DOCUMENT_WRITE)
   @ApiOperation({ summary: 'Unarchive a document, restoring its prior status.' })
-  unarchive(@Param('id') id: string) {
-    return this.documents.unarchive(id);
+  unarchive(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthUser,
+    @ReqContext() ctx: RequestContext,
+  ) {
+    return this.documents.unarchive(id, user, ctx);
   }
 }

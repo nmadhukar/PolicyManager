@@ -1,6 +1,9 @@
 import { Body, Controller, Get, HttpCode, Post, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { AUDIT_ACTIONS } from '@policymanager/shared';
 import type { AuthUser } from '@policymanager/shared';
+import { AuditService } from '../audit/audit.service';
+import { ReqContext, type RequestContext } from '../audit/request-context';
 import { AuthService } from './auth.service';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { ChangePasswordDto } from './dto/change-password.dto';
@@ -17,13 +20,35 @@ const FORGOT_PASSWORD_MESSAGE =
 @ApiTags('auth')
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly auth: AuthService) {}
+  constructor(
+    private readonly auth: AuthService,
+    private readonly audit: AuditService,
+  ) {}
 
   @Post('login')
   @HttpCode(200)
   @ApiOperation({ summary: 'Local email + password login. Returns access + refresh tokens.' })
-  login(@Body() dto: LoginDto) {
-    return this.auth.login(dto.email, dto.password);
+  async login(@Body() dto: LoginDto, @ReqContext() ctx: RequestContext) {
+    try {
+      const result = await this.auth.login(dto.email, dto.password);
+      // Audit is best-effort and out of the critical path (AGENTS.md §8).
+      await this.audit.record({
+        action: AUDIT_ACTIONS.USER_LOGIN,
+        actorUserId: result.user.id,
+        targetType: 'user',
+        ...ctx,
+      });
+      return result;
+    } catch (err) {
+      // Record the failure WITHOUT confirming the account exists (email in meta).
+      await this.audit.record({
+        action: AUDIT_ACTIONS.USER_LOGIN_FAILED,
+        targetType: 'user',
+        ...ctx,
+        metadata: { email: dto.email },
+      });
+      throw err;
+    }
   }
 
   @Post('refresh')
@@ -53,8 +78,14 @@ export class AuthController {
   @Post('reset-password')
   @HttpCode(200)
   @ApiOperation({ summary: 'Complete a password reset using an emailed token.' })
-  async resetPassword(@Body() dto: ResetPasswordDto) {
-    await this.auth.resetPassword(dto.token, dto.newPassword);
+  async resetPassword(@Body() dto: ResetPasswordDto, @ReqContext() ctx: RequestContext) {
+    const { userId } = await this.auth.resetPassword(dto.token, dto.newPassword);
+    await this.audit.record({
+      action: AUDIT_ACTIONS.USER_PASSWORD_RESET,
+      actorUserId: userId,
+      targetType: 'user',
+      ...ctx,
+    });
     return { message: 'Your password has been reset. You can now sign in.' };
   }
 

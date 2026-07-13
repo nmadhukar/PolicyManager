@@ -33,6 +33,7 @@ const PERMISSION_DESCRIPTIONS: Record<string, string> = {
   [PERMISSIONS.STORAGE_MANAGE]: 'Administer object storage buckets and prefixes.',
   [PERMISSIONS.SMTP_MANAGE]: 'Configure SMTP and notification settings.',
   [PERMISSIONS.API_MANAGE]: 'Manage public API clients and keys.',
+  [PERMISSIONS.AUDIT_READ]: 'Read the immutable audit trail (compliance evidence).',
 };
 
 /**
@@ -46,6 +47,7 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
     PERMISSIONS.DOCUMENT_WRITE,
     PERMISSIONS.DOCUMENT_APPROVE,
     PERMISSIONS.REVIEW_MANAGE,
+    PERMISSIONS.AUDIT_READ,
   ],
   [ROLES.MANAGER]: [
     PERMISSIONS.DOCUMENT_READ,
@@ -53,7 +55,8 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
     PERMISSIONS.REVIEW_MANAGE,
   ],
   [ROLES.STAFF]: [PERMISSIONS.DOCUMENT_READ],
-  [ROLES.AUDITOR]: [PERMISSIONS.DOCUMENT_READ],
+  // Auditor is a read-only compliance role: read documents + read the audit trail.
+  [ROLES.AUDITOR]: [PERMISSIONS.DOCUMENT_READ, PERMISSIONS.AUDIT_READ],
 };
 
 const ROLE_DESCRIPTIONS: Record<string, string> = {

@@ -23,6 +23,7 @@ import {
   uploadVersion,
 } from '../api/documents';
 import { flattenCategories, listCategoryTree } from '../api/categories';
+import { DocumentAclPanel } from './DocumentAclPanel';
 import { useAuth } from '../auth/AuthContext';
 import { formatBytes, formatDate, statusBadgeClasses, statusLabel } from '../lib/format';
 import { AppShell } from '../ui/AppShell';
@@ -137,6 +138,7 @@ function Detail({ id }: { id: string }) {
         <div className="space-y-6">
           <MetadataCard doc={doc} canWrite={canWrite} />
           {canWrite && <QuickTags doc={doc} />}
+          {canWrite && <DocumentAclPanel doc={doc} />}
         </div>
       </div>
     </div>

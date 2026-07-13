@@ -47,6 +47,8 @@ model User {
   ownedDocuments   Document[]        @relation("DocumentOwner")
   deletedDocuments Document[]        @relation("DocumentDeleter")
   uploadedVersions DocumentVersion[] @relation("VersionUploader")
+  createdAcls      DocumentAcl[]     @relation("AclCreatedBy")
+  auditEvents      AuditEvent[]      @relation("AuditActor")
 
   @@schema("policytracker")
 }
@@ -180,6 +182,7 @@ model DocumentCategory {
   parent    DocumentCategory?  @relation("CategoryTree", fields: [parentId], references: [id])
   children  DocumentCategory[] @relation("CategoryTree")
   documents Document[]
+  acls      DocumentAcl[]      @relation("CategoryAcl")
 
   @@index([parentId])
   @@schema("policytracker")
@@ -219,6 +222,8 @@ model Document {
   // referential-action loop that Postgres would otherwise reject.
   currentVersion DocumentVersion?  @relation("CurrentVersion", fields: [currentVersionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   versions       DocumentVersion[] @relation("DocumentVersions")
+  acls           DocumentAcl[]     @relation("DocumentAclDoc")
+  auditEvents    AuditEvent[]      @relation("AuditDoc")
 
   @@index([title])
   @@index([categoryId])
@@ -254,5 +259,94 @@ model DocumentVersion {
 
   @@unique([documentId, versionNumber])
   @@index([documentId])
+  @@schema("policytracker")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4 — Access Control & Audit
+// ---------------------------------------------------------------------------
+
+/// Whether an ACL grant targets a Role (all its members) or a single User.
+enum AclPrincipalType {
+  role
+  user
+
+  @@schema("policytracker")
+}
+
+/// The capability an ACL grant confers. `view`/`download` unlock read access to a
+/// confidential document; `edit`/`approve` additionally gate those write actions.
+enum AclPermission {
+  view
+  download
+  edit
+  approve
+
+  @@schema("policytracker")
+}
+
+/// Where an audited action originated: the web app, the public API (Phase 7), or
+/// an internal/server-to-server process (e.g. the OnlyOffice save callback).
+enum AuditSource {
+  web
+  api
+  system
+
+  @@schema("policytracker")
+}
+
+/// A single access-control grant. Attached to EITHER a document OR a category
+/// (exactly one of `documentId`/`categoryId` is set — enforced in the service);
+/// a category grant cascades to every document in that category. `principalId`
+/// is polymorphic (a roleId when principalType=role, a userId when =user) so it
+/// intentionally has no FK. Confidential documents are visible/accessible ONLY to
+/// the owner, an Admin, or a principal named by one of these grants.
+model DocumentAcl {
+  id            String           @id @default(uuid())
+  documentId    String?
+  categoryId    String?
+  principalType AclPrincipalType
+  principalId   String
+  permission    AclPermission
+  createdById   String
+  createdAt     DateTime         @default(now())
+
+  document  Document?         @relation("DocumentAclDoc", fields: [documentId], references: [id], onDelete: Cascade)
+  category  DocumentCategory? @relation("CategoryAcl", fields: [categoryId], references: [id], onDelete: Cascade)
+  createdBy User              @relation("AclCreatedBy", fields: [createdById], references: [id])
+
+  @@index([documentId])
+  @@index([categoryId])
+  @@index([principalType, principalId])
+  @@schema("policytracker")
+}
+
+/// Immutable audit record of a security-relevant action (view/download/change/
+/// access-denied/login…). Written best-effort out of the request path and NEVER
+/// updated or deleted through app routes (AGENTS.md §8). Actor/document are
+/// optional relations (SetNull on the — never-taken — hard delete) so an audit
+/// row always survives as evidence. `apiClientId` is reserved for the Phase 7
+/// public API and has no FK yet.
+model AuditEvent {
+  id          String      @id @default(uuid())
+  actorUserId String?
+  apiClientId String?
+  action      String
+  targetType  String?
+  documentId  String?
+  versionId   String?
+  source      AuditSource @default(web)
+  ipAddress   String?
+  userAgent   String?
+  metadata    Json?
+  createdAt   DateTime    @default(now())
+
+  actor    User?     @relation("AuditActor", fields: [actorUserId], references: [id])
+  document Document? @relation("AuditDoc", fields: [documentId], references: [id])
+
+  @@index([documentId])
+  @@index([actorUserId])
+  @@index([createdAt])
+  @@index([action])
   @@schema("policytracker")
 }

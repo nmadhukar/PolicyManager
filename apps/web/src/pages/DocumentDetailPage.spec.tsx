@@ -51,6 +51,18 @@ vi.mock('../api/categories', () => ({
   flattenCategories: () => [],
 }));
 
+// The ACL panel (rendered for write users) pulls these; stub them to no-ops so
+// these detail-page tests stay focused on lifecycle actions.
+vi.mock('../api/acl', () => ({
+  listAcl: vi.fn().mockResolvedValue([]),
+  addAcl: vi.fn(),
+  removeAcl: vi.fn(),
+}));
+vi.mock('../api/users', () => ({
+  listRoles: vi.fn().mockResolvedValue([]),
+  listUsers: vi.fn().mockResolvedValue([]),
+}));
+
 function version(over: Record<string, unknown> = {}) {
   return {
     id: 'v-1',

@@ -13,6 +13,7 @@ interface NavItem {
 const NAV: NavItem[] = [
   { label: 'Dashboard', to: '/', icon: '▚' },
   { label: 'Library', to: '/library', icon: '▤', requires: PERMISSIONS.DOCUMENT_READ },
+  { label: 'Audit Log', to: '/admin/audit', icon: '▧', requires: PERMISSIONS.AUDIT_READ },
   { label: 'Users', to: '/admin/users', icon: '⚙', requires: PERMISSIONS.USER_MANAGE },
   { label: 'Storage', to: '/admin/storage', icon: '▦', requires: PERMISSIONS.STORAGE_MANAGE },
 ];

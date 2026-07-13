@@ -251,9 +251,10 @@ export class AuthService {
    * Consumes a reset token and sets a new password. Validates the token
    * (exists, unused, unexpired), enforces the policy, then atomically: sets the
    * argon2 hash, marks the token used, clears lockout + must-change, and revokes
-   * every existing refresh token (a reset ends all sessions).
+   * every existing refresh token (a reset ends all sessions). Returns the id of
+   * the user whose password was reset so the caller can audit the event.
    */
-  async resetPassword(rawToken: string, newPassword: string): Promise<void> {
+  async resetPassword(rawToken: string, newPassword: string): Promise<{ userId: string }> {
     const tokenHash = AuthService.hashRefreshToken(rawToken);
     const record = await this.prisma.passwordResetToken.findUnique({ where: { tokenHash } });
 
@@ -284,6 +285,7 @@ export class AuthService {
         data: { revokedAt: new Date() },
       }),
     ]);
+    return { userId: record.userId };
   }
 
   /**

@@ -9,6 +9,8 @@ export const PERMISSIONS = {
   STORAGE_MANAGE: 'storage.manage',
   SMTP_MANAGE: 'smtp.manage',
   API_MANAGE: 'api.manage',
+  /** Read the immutable audit trail (Admin, Compliance Officer, Auditor). */
+  AUDIT_READ: 'audit.read',
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -230,4 +232,110 @@ export interface StorageConfigView {
   };
   endpoint: string | null;
   region: string;
+}
+
+// ---------------------------------------------------------------------------
+// Access Control & Audit (Phase 4, PM-0401..PM-0407)
+// ---------------------------------------------------------------------------
+
+/** Whether an ACL grant targets a role (all its members) or a single user. */
+export type AclPrincipalType = 'role' | 'user';
+export const ACL_PRINCIPAL_TYPES: readonly AclPrincipalType[] = ['role', 'user'] as const;
+
+/** The capability an ACL grant confers. */
+export type AclPermission = 'view' | 'download' | 'edit' | 'approve';
+export const ACL_PERMISSIONS: readonly AclPermission[] = [
+  'view',
+  'download',
+  'edit',
+  'approve',
+] as const;
+
+/** The action a caller is attempting against a document, for authorization. */
+export type AccessAction = 'view' | 'download' | 'edit' | 'approve';
+
+/**
+ * One access-control grant on a document (or a category, cascading to its docs).
+ * `principalId` is a roleId when `principalType='role'`, else a userId;
+ * `principalName` is the resolved display name for the UI.
+ */
+export interface AclGrant {
+  id: string;
+  documentId: string | null;
+  categoryId: string | null;
+  principalType: AclPrincipalType;
+  principalId: string;
+  principalName: string | null;
+  permission: AclPermission;
+  createdAt: string;
+  createdByName: string | null;
+}
+
+/** Where an audited action originated. */
+export type AuditSource = 'web' | 'api' | 'system';
+export const AUDIT_SOURCES: readonly AuditSource[] = ['web', 'api', 'system'] as const;
+
+/**
+ * Canonical audit action strings, shared by the API (authoritative writer) and
+ * the web (filter dropdown + labels) so the two never drift.
+ */
+export const AUDIT_ACTIONS = {
+  DOCUMENT_CREATED: 'document.created',
+  DOCUMENT_UPDATED: 'document.updated',
+  DOCUMENT_VIEWED: 'document.viewed',
+  DOCUMENT_DOWNLOADED: 'document.downloaded',
+  DOCUMENT_DELETED: 'document.deleted',
+  DOCUMENT_RESTORED: 'document.restored',
+  DOCUMENT_ARCHIVED: 'document.archived',
+  DOCUMENT_UNARCHIVED: 'document.unarchived',
+  DOCUMENT_EDITED: 'document.edited',
+  VERSION_UPLOADED: 'version.uploaded',
+  VERSION_RESTORED: 'version.restored',
+  ACL_CHANGED: 'acl.changed',
+  ACCESS_DENIED: 'access.denied',
+  USER_LOGIN: 'user.login',
+  USER_LOGIN_FAILED: 'user.login_failed',
+  USER_PASSWORD_RESET: 'user.password_reset',
+} as const;
+
+export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
+export const AUDIT_ACTION_VALUES: readonly string[] = Object.values(AUDIT_ACTIONS);
+
+/** Human labels for audit actions (UI display; falls back to the raw key). */
+export const AUDIT_ACTION_LABELS: Record<string, string> = {
+  [AUDIT_ACTIONS.DOCUMENT_CREATED]: 'Document created',
+  [AUDIT_ACTIONS.DOCUMENT_UPDATED]: 'Document updated',
+  [AUDIT_ACTIONS.DOCUMENT_VIEWED]: 'Document viewed',
+  [AUDIT_ACTIONS.DOCUMENT_DOWNLOADED]: 'Document downloaded',
+  [AUDIT_ACTIONS.DOCUMENT_DELETED]: 'Document deleted',
+  [AUDIT_ACTIONS.DOCUMENT_RESTORED]: 'Document restored',
+  [AUDIT_ACTIONS.DOCUMENT_ARCHIVED]: 'Document archived',
+  [AUDIT_ACTIONS.DOCUMENT_UNARCHIVED]: 'Document unarchived',
+  [AUDIT_ACTIONS.DOCUMENT_EDITED]: 'Document edited',
+  [AUDIT_ACTIONS.VERSION_UPLOADED]: 'Version uploaded',
+  [AUDIT_ACTIONS.VERSION_RESTORED]: 'Version restored',
+  [AUDIT_ACTIONS.ACL_CHANGED]: 'Access changed',
+  [AUDIT_ACTIONS.ACCESS_DENIED]: 'Access denied',
+  [AUDIT_ACTIONS.USER_LOGIN]: 'Sign-in',
+  [AUDIT_ACTIONS.USER_LOGIN_FAILED]: 'Failed sign-in',
+  [AUDIT_ACTIONS.USER_PASSWORD_RESET]: 'Password reset',
+};
+
+/** One row of the audit trail as surfaced to the audit query API + UI. */
+export interface AuditEventItem {
+  id: string;
+  action: string;
+  source: AuditSource;
+  targetType: string | null;
+  documentId: string | null;
+  documentTitle: string | null;
+  documentNumber: string | null;
+  versionId: string | null;
+  actorUserId: string | null;
+  actorName: string | null;
+  actorEmail: string | null;
+  ipAddress: string | null;
+  userAgent: string | null;
+  metadata: Record<string, unknown> | null;
+  createdAt: string;
 }
