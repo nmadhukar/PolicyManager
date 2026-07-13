@@ -309,6 +309,17 @@ export const AUDIT_ACTIONS = {
   DOCUMENT_APPROVED: 'document.approved',
   DOCUMENT_PUBLISHED: 'document.published',
   ACKNOWLEDGMENT_ASSIGNED: 'acknowledgment.assigned',
+  // Phase 7 — Public read-only API: client lifecycle (web) + per-call access (api).
+  API_CLIENT_CREATED: 'api_client.created',
+  API_CLIENT_UPDATED: 'api_client.updated',
+  API_CLIENT_REVOKED: 'api_client.revoked',
+  API_CLIENT_ROTATED: 'api_client.rotated',
+  API_DOCUMENTS_LISTED: 'api.documents.listed',
+  API_DOCUMENT_READ: 'api.document.read',
+  API_CONTENT_READ: 'api.content.read',
+  API_DOWNLOAD_ISSUED: 'api.download.issued',
+  API_VERSIONS_READ: 'api.versions.read',
+  API_SEARCH: 'api.search',
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
@@ -343,6 +354,16 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   [AUDIT_ACTIONS.DOCUMENT_APPROVED]: 'Document approved',
   [AUDIT_ACTIONS.DOCUMENT_PUBLISHED]: 'Document published',
   [AUDIT_ACTIONS.ACKNOWLEDGMENT_ASSIGNED]: 'Distributed for acknowledgment',
+  [AUDIT_ACTIONS.API_CLIENT_CREATED]: 'API client created',
+  [AUDIT_ACTIONS.API_CLIENT_UPDATED]: 'API client updated',
+  [AUDIT_ACTIONS.API_CLIENT_REVOKED]: 'API client revoked',
+  [AUDIT_ACTIONS.API_CLIENT_ROTATED]: 'API client secret rotated',
+  [AUDIT_ACTIONS.API_DOCUMENTS_LISTED]: 'API: documents listed',
+  [AUDIT_ACTIONS.API_DOCUMENT_READ]: 'API: document read',
+  [AUDIT_ACTIONS.API_CONTENT_READ]: 'API: content read',
+  [AUDIT_ACTIONS.API_DOWNLOAD_ISSUED]: 'API: download issued',
+  [AUDIT_ACTIONS.API_VERSIONS_READ]: 'API: versions read',
+  [AUDIT_ACTIONS.API_SEARCH]: 'API: search',
 };
 
 /** One row of the audit trail as surfaced to the audit query API + UI. */
@@ -706,4 +727,141 @@ export interface CoverPageData {
     changeSummary: string | null;
   }[];
   generatedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Public read-only API v1 — API clients + integration surface (Phase 7)
+// ---------------------------------------------------------------------------
+
+/**
+ * Scopes a public API client can hold. `documents:read` is the baseline (list +
+ * metadata + versions + search); `content:read` additionally unlocks extracted
+ * text; `download` unlocks short-lived presigned file downloads. Scopes are
+ * additive and independent — a client may hold any subset — and, per AGENTS.md §8,
+ * access to extracted text obeys the SAME gate as file download (its own scope).
+ */
+export type ApiScope = 'documents:read' | 'content:read' | 'download';
+
+export const API_SCOPES: readonly ApiScope[] = [
+  'documents:read',
+  'content:read',
+  'download',
+] as const;
+
+/** The baseline scope every client should hold to do anything useful. */
+export const API_DEFAULT_SCOPE: ApiScope = 'documents:read';
+
+/** Human labels for scopes (management UI checkboxes). */
+export const API_SCOPE_LABELS: Record<ApiScope, string> = {
+  'documents:read': 'Read document metadata & search',
+  'content:read': 'Read extracted text content',
+  download: 'Download document files',
+};
+
+/**
+ * An API client as surfaced to the management UI. NEVER carries the secret hash —
+ * the plaintext secret is shown exactly once at create/rotate time via
+ * {@link ApiClientSecret}.
+ */
+export interface ApiClientItem {
+  id: string;
+  name: string;
+  clientId: string;
+  scopes: ApiScope[];
+  allowedCategoryIds: string[];
+  enabled: boolean;
+  createdAt: string;
+  createdByName: string | null;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+}
+
+/**
+ * The one-time secret reveal returned by create/rotate. `credential` is the
+ * ready-to-use `clientId.secret` bearer value; it can NEVER be retrieved again
+ * (only its Argon2 hash is stored — AGENTS.md §8).
+ */
+export interface ApiClientSecret {
+  client: ApiClientItem;
+  secret: string;
+  credential: string;
+}
+
+/** Body for POST /api-clients. */
+export interface CreateApiClientInput {
+  name: string;
+  scopes: ApiScope[];
+  allowedCategoryIds?: string[];
+}
+
+/** Body for PATCH /api-clients/:id — adjust scopes, category allow-list, or enabled. */
+export interface UpdateApiClientInput {
+  scopes?: ApiScope[];
+  allowedCategoryIds?: string[];
+  enabled?: boolean;
+}
+
+// ---- Public API v1 response shapes (stable external contract) --------------
+
+/** One document as exposed by the public API list/search/detail responses. */
+export interface ApiDocument {
+  id: string;
+  title: string;
+  documentNumber: string | null;
+  categoryId: string | null;
+  categoryName: string | null;
+  status: DocumentStatus;
+  accessLevel: AccessLevel;
+  tags: string[];
+  version: number | null;
+  effectiveDate: string | null;
+  updatedAt: string;
+}
+
+/** Extracted-text payload (scope `content:read`). */
+export interface ApiDocumentContent {
+  documentId: string;
+  versionId: string | null;
+  version: number | null;
+  extractedText: string;
+  hasExtractedText: boolean;
+}
+
+/** Presigned-download payload (scope `download`). */
+export interface ApiDownloadTicket {
+  url: string;
+  expiresIn: number;
+  fileName: string;
+  version: number | null;
+}
+
+/** One immutable version in the public versions response (metadata only). */
+export interface ApiDocumentVersion {
+  version: number;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  checksum: string;
+  createdAt: string;
+  hasExtractedText: boolean;
+}
+
+/**
+ * One search hit. `score` + `snippet` are keyword-derived today, but the shape is
+ * deliberately future-proof for a pgvector semantic backend behind the SAME
+ * contract (the deferred RAG phase) — a caller written against this response does
+ * not change when search becomes semantic.
+ */
+export interface ApiSearchHit {
+  document: ApiDocument;
+  score: number;
+  snippet: string | null;
+}
+
+export interface ApiSearchResponse {
+  query: string;
+  total: number;
+  page: number;
+  pageSize: number;
+  items: ApiSearchHit[];
 }

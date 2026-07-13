@@ -16,7 +16,14 @@ async function bootstrap() {
     .setTitle('PolicyManager API')
     .setDescription('Document management for behavioral health compliance')
     .setVersion('1.0')
+    // Internal (web) API: JWT bearer. Public API v1: a separate API-key scheme so
+    // the two auth models never collide in the docs (Phase 7).
     .addBearerAuth()
+    .addApiKey(
+      { type: 'apiKey', name: 'X-Api-Key', in: 'header', description: 'Public API v1 key: `clientId.secret` (also accepted as `Authorization: Bearer`).' },
+      'api-key',
+    )
+    .addTag('public-api-v1', 'Read-only public API for EMR/AI integration (API-key auth).')
     .build();
   const document = SwaggerModule.createDocument(app, swaggerConfig);
   SwaggerModule.setup('api/docs', app, document);

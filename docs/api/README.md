@@ -1,21 +1,65 @@
-# API Documentation
+# Public API v1
 
-This folder contains human-readable integration notes for the PolicyManager public API.
+Human-readable integration notes for the PolicyManager public API (Phase 7). The
+machine-readable contract is the OpenAPI/Swagger document served at `/api/docs`
+(tag **public-api-v1**, security scheme **api-key**).
 
-API v1 principles:
+## Principles
 
-- Read-only.
-- Scoped by API client.
-- Audited.
-- Versioned under `/api/v1`.
-- Safe for future EMR and AI ingestion use.
+- **Read-only.** Every route is `GET`; there are no write routes under `/api/v1`.
+- **Scoped by API client.** A client holds a subset of scopes and, optionally, a
+  category allow-list.
+- **Audited.** Every call writes an `AuditEvent` with `source=api` and the
+  `apiClientId`.
+- **Versioned** under `/api/v1`, separate from the JWT-guarded internal API.
 
-Planned endpoint groups:
+## Authentication
 
-- Documents.
-- Document versions.
-- Extracted text.
-- Downloads.
-- Search.
+Clients are managed by an administrator (`api.manage`) under
+**Admin → API Clients** in the web app. Creating (or rotating) a client returns a
+`clientId.secret` **credential exactly once** — only its Argon2 hash is stored, so
+it can never be retrieved again (rotate to get a new one).
 
-OpenAPI/Swagger output should be linked here once the API scaffold exists.
+Send the credential as either header:
+
+```
+Authorization: Bearer <clientId>.<secret>
+X-Api-Key: <clientId>.<secret>
+```
+
+- Missing / invalid / disabled / revoked credential → `401`.
+- Authenticated but missing the route's scope → `403`.
+
+## Scopes
+
+| Scope            | Unlocks                                             |
+| ---------------- | --------------------------------------------------- |
+| `documents:read` | list, detail, versions, search (baseline)           |
+| `content:read`   | `GET /documents/:id/content` (extracted text)       |
+| `download`       | `GET /documents/:id/download` (presigned file URL)  |
+
+## Visibility
+
+A client only ever sees documents that are **published**, **not soft-deleted**,
+**not confidential** (public/restricted only), and — when the client has a
+non-empty allow-list — **within an allowed category**. A `categoryId` filter can
+only narrow within that allow-list, never widen it. Documents outside the scope
+read as `404` (their existence is not disclosed).
+
+## Endpoints
+
+| Method & path                          | Scope            | Returns                                             |
+| -------------------------------------- | ---------------- | -------------------------------------------------- |
+| `GET /api/v1/documents`                | `documents:read` | Paginated list. Filters: `q`, `categoryId`, `tag`, `updatedSince`, `page`, `pageSize`. |
+| `GET /api/v1/documents/:id`            | `documents:read` | One document (metadata).                            |
+| `GET /api/v1/documents/:id/content`    | `content:read`   | Current version's extracted text (RAG-ready).       |
+| `GET /api/v1/documents/:id/download`   | `download`       | Short-lived (≤300s) presigned download URL.         |
+| `GET /api/v1/documents/:id/versions`   | `documents:read` | Version history metadata (newest first).            |
+| `GET /api/v1/search?q=`                | `documents:read` | Keyword hits over title + extracted text; each hit carries `score` + `snippet`. |
+
+## Search & the RAG seam
+
+Search is keyword today (case-insensitive over title and the current version's
+extracted text). The response shape (`{ query, total, page, pageSize, items:[{ document, score, snippet }] }`)
+is deliberately stable so a future pgvector/semantic backend can replace the match
+predicate behind the **same contract** — existing integrations do not change.

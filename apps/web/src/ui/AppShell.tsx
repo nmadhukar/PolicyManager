@@ -21,6 +21,7 @@ const NAV: NavItem[] = [
   { label: 'Users', to: '/admin/users', icon: '⚙', requires: PERMISSIONS.USER_MANAGE },
   { label: 'Storage', to: '/admin/storage', icon: '▦', requires: PERMISSIONS.STORAGE_MANAGE },
   { label: 'Email', to: '/admin/email', icon: '✉', requires: PERMISSIONS.SMTP_MANAGE },
+  { label: 'API Clients', to: '/admin/api-clients', icon: '⚿', requires: PERMISSIONS.API_MANAGE },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {

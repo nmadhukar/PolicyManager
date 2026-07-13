@@ -13,6 +13,8 @@ import { AuditModule } from './audit/audit.module';
 import { ReviewModule } from './review/review.module';
 import { AttestationModule } from './attestation/attestation.module';
 import { SmtpModule } from './smtp/smtp.module';
+import { ApiClientsModule } from './api-clients/api-clients.module';
+import { PublicApiModule } from './public-api/public-api.module';
 
 @Module({
   imports: [
@@ -31,6 +33,9 @@ import { SmtpModule } from './smtp/smtp.module';
     AttestationModule,
     ReviewModule,
     SmtpModule,
+    // Phase 7 — public read-only API + its (JWT-guarded) client management.
+    ApiClientsModule,
+    PublicApiModule,
   ],
 })
 export class AppModule {}

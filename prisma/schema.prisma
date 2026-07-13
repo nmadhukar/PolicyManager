@@ -26,36 +26,37 @@ enum UserStatus {
 }
 
 model User {
-  id           String     @id @default(uuid())
-  email        String     @unique
-  name         String
-  title        String?
-  passwordHash String?
-  status       UserStatus @default(active)
-  mfaSecret    String?
+  id                  String     @id @default(uuid())
+  email               String     @unique
+  name                String
+  title               String?
+  passwordHash        String?
+  status              UserStatus @default(active)
+  mfaSecret           String?
   // Forces a password change on next login (temp passwords / admin resets).
-  mustChangePassword Boolean @default(false)
+  mustChangePassword  Boolean    @default(false)
   // Brute-force lockout counters. `lockedUntil` in the future blocks login;
   // an explicit admin lock sets it far in the future (distinct from `status`).
-  failedLoginAttempts Int       @default(0)
+  failedLoginAttempts Int        @default(0)
   lockedUntil         DateTime?
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
 
-  roles            UserRole[]
-  identities       UserIdentity[]
-  ownedDocuments   Document[]        @relation("DocumentOwner")
-  deletedDocuments Document[]        @relation("DocumentDeleter")
-  uploadedVersions DocumentVersion[] @relation("VersionUploader")
-  createdAcls      DocumentAcl[]     @relation("AclCreatedBy")
-  auditEvents      AuditEvent[]      @relation("AuditActor")
-  reviewAssignments    ReviewAssignment[] @relation("ReviewAssignmentReviewer")
-  createdReviewAssignments ReviewAssignment[] @relation("ReviewAssignmentCreator")
-  assignedReviewTasks  ReviewTask[]       @relation("ReviewTaskAssignee")
-  completedReviewTasks ReviewTask[]       @relation("ReviewTaskCompleter")
+  roles                     UserRole[]
+  identities                UserIdentity[]
+  ownedDocuments            Document[]                 @relation("DocumentOwner")
+  deletedDocuments          Document[]                 @relation("DocumentDeleter")
+  uploadedVersions          DocumentVersion[]          @relation("VersionUploader")
+  createdAcls               DocumentAcl[]              @relation("AclCreatedBy")
+  auditEvents               AuditEvent[]               @relation("AuditActor")
+  reviewAssignments         ReviewAssignment[]         @relation("ReviewAssignmentReviewer")
+  createdReviewAssignments  ReviewAssignment[]         @relation("ReviewAssignmentCreator")
+  assignedReviewTasks       ReviewTask[]               @relation("ReviewTaskAssignee")
+  completedReviewTasks      ReviewTask[]               @relation("ReviewTaskCompleter")
   attestations              Attestation[]              @relation("AttestationUser")
   acknowledgmentAssignments AcknowledgmentAssignment[] @relation("AckAssignee")
   assignedAcknowledgments   AcknowledgmentAssignment[] @relation("AckAssignedBy")
+  createdApiClients         ApiClient[]                @relation("ApiClientCreator")
 
   @@schema("policytracker")
 }
@@ -198,17 +199,17 @@ model DocumentCategory {
 /// Stable logical document. The file bytes live in immutable DocumentVersion
 /// rows; `currentVersionId` points at the version currently surfaced.
 model Document {
-  id               String         @id @default(uuid())
+  id               String          @id @default(uuid())
   title            String
-  documentNumber   String?        @unique
+  documentNumber   String?         @unique
   categoryId       String?
   ownerId          String
   description      String?
   tags             String[]
-  status           DocumentStatus @default(draft)
-  accessLevel      AccessLevel    @default(restricted)
-  currentVersionId String?        @unique
-  reviewCadence    ReviewCadence  @default(none)
+  status           DocumentStatus  @default(draft)
+  accessLevel      AccessLevel     @default(restricted)
+  currentVersionId String?         @unique
+  reviewCadence    ReviewCadence   @default(none)
   nextReviewDate   DateTime?
   effectiveDate    DateTime?
   // Soft-delete only (AGENTS.md §9): a non-null `deletedAt` hides the document
@@ -219,20 +220,20 @@ model Document {
   // Lets archive/unarchive be reversible: the status held before archiving is
   // stashed here so unarchive can restore the exact prior lifecycle state.
   preArchiveStatus DocumentStatus?
-  createdAt        DateTime       @default(now())
-  updatedAt        DateTime       @updatedAt
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
 
-  category       DocumentCategory? @relation(fields: [categoryId], references: [id])
-  owner          User              @relation("DocumentOwner", fields: [ownerId], references: [id])
-  deletedBy      User?             @relation("DocumentDeleter", fields: [deletedById], references: [id])
+  category                  DocumentCategory?          @relation(fields: [categoryId], references: [id])
+  owner                     User                       @relation("DocumentOwner", fields: [ownerId], references: [id])
+  deletedBy                 User?                      @relation("DocumentDeleter", fields: [deletedById], references: [id])
   // Nullable FK breaks the Document<->DocumentVersion cycle; NoAction avoids a
   // referential-action loop that Postgres would otherwise reject.
-  currentVersion DocumentVersion?  @relation("CurrentVersion", fields: [currentVersionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  versions       DocumentVersion[] @relation("DocumentVersions")
-  acls           DocumentAcl[]     @relation("DocumentAclDoc")
-  auditEvents    AuditEvent[]      @relation("AuditDoc")
-  reviewAssignments ReviewAssignment[] @relation("ReviewAssignmentDoc")
-  reviewTasks       ReviewTask[]       @relation("ReviewTaskDoc")
+  currentVersion            DocumentVersion?           @relation("CurrentVersion", fields: [currentVersionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  versions                  DocumentVersion[]          @relation("DocumentVersions")
+  acls                      DocumentAcl[]              @relation("DocumentAclDoc")
+  auditEvents               AuditEvent[]               @relation("AuditDoc")
+  reviewAssignments         ReviewAssignment[]         @relation("ReviewAssignmentDoc")
+  reviewTasks               ReviewTask[]               @relation("ReviewTaskDoc")
   attestations              Attestation[]              @relation("AttestationDoc")
   acknowledgmentAssignments AcknowledgmentAssignment[] @relation("AckDoc")
 
@@ -264,9 +265,9 @@ model DocumentVersion {
   extractedText  String?        @db.Text
   createdAt      DateTime       @default(now())
 
-  document   Document  @relation("DocumentVersions", fields: [documentId], references: [id], onDelete: Cascade)
-  currentOf  Document? @relation("CurrentVersion")
-  uploadedBy User      @relation("VersionUploader", fields: [uploadedById], references: [id])
+  document                  Document                   @relation("DocumentVersions", fields: [documentId], references: [id], onDelete: Cascade)
+  currentOf                 Document?                  @relation("CurrentVersion")
+  uploadedBy                User                       @relation("VersionUploader", fields: [uploadedById], references: [id])
   attestations              Attestation[]              @relation("AttestationVersion")
   acknowledgmentAssignments AcknowledgmentAssignment[] @relation("AckVersion")
 
@@ -417,9 +418,9 @@ model ReviewTask {
   notes         String?
   createdAt     DateTime         @default(now())
 
-  document    Document @relation("ReviewTaskDoc", fields: [documentId], references: [id], onDelete: Cascade)
-  assignedTo  User     @relation("ReviewTaskAssignee", fields: [assignedToId], references: [id])
-  completedBy User?    @relation("ReviewTaskCompleter", fields: [completedById], references: [id])
+  document     Document      @relation("ReviewTaskDoc", fields: [documentId], references: [id], onDelete: Cascade)
+  assignedTo   User          @relation("ReviewTaskAssignee", fields: [assignedToId], references: [id])
+  completedBy  User?         @relation("ReviewTaskCompleter", fields: [completedById], references: [id])
   attestations Attestation[] @relation("AttestationReviewTask")
 
   @@index([documentId])
@@ -562,5 +563,35 @@ model AcknowledgmentAssignment {
   @@index([documentId])
   @@index([assigneeId])
   @@index([status])
+  @@schema("policytracker")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7 — Public read-only API v1 (EMR / AI integration)
+// ---------------------------------------------------------------------------
+
+/// A machine client for the read-only public API (`/api/v1`). Authenticates with
+/// `clientId.secret`; only the Argon2 hash of the high-entropy secret is stored —
+/// the plaintext is shown to an operator exactly once at create/rotate time and is
+/// NEVER recoverable (AGENTS.md §8). `scopes` gate capabilities
+/// (documents:read / content:read / download); `allowedCategoryIds` optionally
+/// restricts visibility to specific categories (empty = all). A client is usable
+/// only while `enabled` and `revokedAt` is null. `clientId` is uniquely indexed
+/// (the guard's hot lookup path).
+model ApiClient {
+  id                 String    @id @default(uuid())
+  name               String
+  clientId           String    @unique
+  secretHash         String
+  scopes             String[]
+  allowedCategoryIds String[]
+  enabled            Boolean   @default(true)
+  createdAt          DateTime  @default(now())
+  createdById        String?
+  lastUsedAt         DateTime?
+  revokedAt          DateTime?
+
+  createdBy User? @relation("ApiClientCreator", fields: [createdById], references: [id], onDelete: SetNull)
+
   @@schema("policytracker")
 }

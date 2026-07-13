@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { ProtectedRoute } from './auth/ProtectedRoute';
 import { AcknowledgmentsPage } from './pages/AcknowledgmentsPage';
+import { ApiClientsPage } from './pages/ApiClientsPage';
 import { AuditLogPage } from './pages/AuditLogPage';
 import { ChangePasswordPage } from './pages/ChangePasswordPage';
 import { DashboardPage } from './pages/DashboardPage';
@@ -97,6 +98,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <StorageAdminPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/api-clients"
+        element={
+          <ProtectedRoute>
+            <ApiClientsPage />
           </ProtectedRoute>
         }
       />
