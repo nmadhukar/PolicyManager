@@ -2,6 +2,7 @@ import { FormEvent, MouseEvent, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AxiosError } from 'axios';
 import { Document, Page, pdfjs } from 'react-pdf';
+import pdfWorkerUrl from 'react-pdf/node_modules/pdfjs-dist/build/pdf.worker.min.mjs?url';
 import {
   ANNOTATION_TYPE_LABELS,
   ANNOTATION_TYPES,
@@ -24,12 +25,9 @@ import { apiErrorMessage } from '../lib/apiError';
 import { ErrorState, LoadingState } from './states';
 import { useFocusTrap } from './useFocusTrap';
 
-// Load the pdf.js worker from the bundled pdfjs-dist (versions are deduped with
-// react-pdf, so the API + worker match). Vite resolves this URL at build time.
-pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.min.mjs',
-  import.meta.url,
-).toString();
+// Load the pdf.js worker bundled inside react-pdf. Importing the app-level
+// pdfjs-dist worker can drift from react-pdf's API version and break previews.
+pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 const DEFAULT_RECT: AnnotationRect = { pageNumber: 1, x: 0.08, y: 0.08, width: 0.28, height: 0.08 };
 

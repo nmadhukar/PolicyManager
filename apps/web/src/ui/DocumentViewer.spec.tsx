@@ -7,6 +7,7 @@ const mockHasPermission = vi.fn();
 const mockListAnnotations = vi.fn();
 const mockGetViewUrl = vi.fn();
 const mockResolveAnnotation = vi.fn();
+const mockPdfjs = vi.hoisted(() => ({ GlobalWorkerOptions: { workerSrc: '' } }));
 
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
@@ -40,7 +41,7 @@ vi.mock('../api/documents', () => ({
 vi.mock('react-pdf', () => ({
   Document: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   Page: () => <div>PDF page</div>,
-  pdfjs: { GlobalWorkerOptions: { workerSrc: '' } },
+  pdfjs: mockPdfjs,
 }));
 
 function renderViewer() {
@@ -81,6 +82,15 @@ describe('DocumentViewer annotations', () => {
     renderViewer();
 
     expect(await screen.findByRole('button', { name: 'Add annotation' })).toBeInTheDocument();
+  });
+
+  it('uses the pdf.js worker bundled with react-pdf', () => {
+    expect(mockPdfjs.GlobalWorkerOptions.workerSrc).toContain(
+      'react-pdf/node_modules/pdfjs-dist/build/pdf.worker.min.mjs',
+    );
+    expect(mockPdfjs.GlobalWorkerOptions.workerSrc).not.toContain(
+      'apps/web/node_modules/pdfjs-dist',
+    );
   });
 
   it('keeps read-only viewers from seeing annotation authoring controls', async () => {

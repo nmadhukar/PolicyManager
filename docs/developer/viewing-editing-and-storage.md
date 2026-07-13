@@ -48,6 +48,13 @@ rendition yet return `404` (regenerate first). The web viewer renders PDFs with
 `react-pdf`/pdf.js (text/annotation layers off) and images natively. It is
 code-split (lazy) so pdf.js is only loaded when a preview is opened.
 
+The pdf.js worker must stay version-locked to the pdf.js API bundled by
+`react-pdf`. `DocumentViewer` imports the worker from
+`react-pdf/node_modules/pdfjs-dist/...`; do not add a separate web dependency on
+`pdfjs-dist` or switch the worker import to the app-level package path unless
+the versions are proven identical. A mismatch causes PDF previews to fail with
+an API/Worker version error.
+
 ## OnlyOffice editing (`documents/onlyoffice.service.ts`)
 
 Editing docx/xlsx/pptx uses a self-hosted OnlyOffice DocumentServer.
