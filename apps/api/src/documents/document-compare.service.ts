@@ -11,8 +11,12 @@ import {
 import { AuditService } from '../audit/audit.service';
 import type { RequestContext } from '../audit/request-context';
 import { PrismaService } from '../prisma/prisma.service';
+import { pdfSafeText } from '../common/pdf-text.util';
 import { DocumentAccessService, type AccessDocument } from './document-access.service';
 import { buildLineDiff } from './document-compare.util';
+
+/** Cap on changed hunks rendered into the export PDF (full redline stays in-app). */
+const MAX_PDF_HUNKS = 500;
 
 const compareSelect = {
   id: true,
@@ -57,6 +61,36 @@ export class DocumentCompareService {
     user: AuthUser,
     ctx: RequestContext = {},
   ): Promise<VersionCompareResult> {
+    const result = await this.computeResult(documentId, fromVersionId, toVersionId, user, ctx);
+    await this.audit.record({
+      action: AUDIT_ACTIONS.VERSION_COMPARE_VIEWED,
+      actorUserId: user.id,
+      documentId,
+      versionId: result.toVersionId,
+      targetType: 'version_compare',
+      ...ctx,
+      metadata: {
+        fromVersionId: result.fromVersionId,
+        toVersionId: result.toVersionId,
+        fromVersionNumber: result.fromVersionNumber,
+        toVersionNumber: result.toVersionNumber,
+      },
+    });
+    return result;
+  }
+
+  /**
+   * Loads + access-enforces the version pair and builds the comparison WITHOUT
+   * auditing, so `compare` (view) and `exportPdf` (export) each record exactly ONE
+   * action rather than an export also counting as a view.
+   */
+  private async computeResult(
+    documentId: string,
+    fromVersionId: string,
+    toVersionId: string,
+    user: AuthUser,
+    ctx: RequestContext = {},
+  ): Promise<VersionCompareResult> {
     const { from, to } = await this.loadPair(documentId, fromVersionId, toVersionId);
     await this.enforceView(user, from.document, ctx);
 
@@ -72,9 +106,16 @@ export class DocumentCompareService {
       );
     }
 
-    const hunks = textAvailable ? buildLineDiff(from.extractedText, to.extractedText) : [];
-    const summary = summarize(hunks);
-    const result: VersionCompareResult = {
+    const diff = textAvailable
+      ? buildLineDiff(from.extractedText, to.extractedText)
+      : { hunks: [], truncated: false };
+    if (diff.truncated) {
+      warnings.push(
+        'Text comparison was truncated because one or both versions are very large; only the first portion was compared.',
+      );
+    }
+    const summary = summarize(diff.hunks);
+    return {
       documentId,
       documentTitle: from.document.title,
       fromVersionId: from.id,
@@ -85,24 +126,8 @@ export class DocumentCompareService {
       warnings,
       summary,
       metadataChanges: metadataChanges(from, to),
-      hunks,
+      hunks: diff.hunks,
     };
-
-    await this.audit.record({
-      action: AUDIT_ACTIONS.VERSION_COMPARE_VIEWED,
-      actorUserId: user.id,
-      documentId,
-      versionId: to.id,
-      targetType: 'version_compare',
-      ...ctx,
-      metadata: {
-        fromVersionId: from.id,
-        toVersionId: to.id,
-        fromVersionNumber: from.versionNumber,
-        toVersionNumber: to.versionNumber,
-      },
-    });
-    return result;
   }
 
   async exportPdf(
@@ -112,15 +137,22 @@ export class DocumentCompareService {
     user: AuthUser,
     ctx: RequestContext = {},
   ): Promise<StreamableFile> {
-    const result = await this.compare(documentId, fromVersionId, toVersionId, user, ctx);
+    // Use computeResult (not compare) so an export is not ALSO audited as a view.
+    const result = await this.computeResult(documentId, fromVersionId, toVersionId, user, ctx);
     const pdf = await PDFDocument.create();
     const font = await pdf.embedFont(StandardFonts.Helvetica);
     const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
-    const page = pdf.addPage([612, 792]);
+    let page = pdf.addPage([612, 792]);
     let y = 740;
     const draw = (text: string, size = 10, isBold = false) => {
-      if (y < 60) return;
-      page.drawText(text.slice(0, 100), {
+      if (y < 60) {
+        // Paginate instead of silently dropping content past the first page.
+        page = pdf.addPage([612, 792]);
+        y = 740;
+      }
+      // pdfSafeText guarantees WinAnsi-drawable text so a smart quote / em-dash /
+      // CJK glyph in the policy can never make drawText throw.
+      page.drawText(pdfSafeText(text).slice(0, 110), {
         x: 54,
         y,
         size,
@@ -143,9 +175,17 @@ export class DocumentCompareService {
       draw(`${c.label}: ${c.oldValue ?? '-'} -> ${c.newValue ?? '-'}`, 9);
     }
     draw('Text changes', 12, true);
-    for (const h of result.hunks.filter((h) => h.type !== 'unchanged').slice(0, 45)) {
+    const changed = result.hunks.filter((h) => h.type !== 'unchanged');
+    for (const h of changed.slice(0, MAX_PDF_HUNKS)) {
       const marker = h.type === 'added' ? '+' : h.type === 'removed' ? '-' : '~';
       draw(`${marker} ${h.oldText ?? h.newText ?? ''}${h.type === 'changed' ? ` -> ${h.newText}` : ''}`, 8);
+    }
+    if (changed.length > MAX_PDF_HUNKS) {
+      draw(
+        `... ${changed.length - MAX_PDF_HUNKS} more change(s) omitted; open the in-app compare for the full redline.`,
+        8,
+        true,
+      );
     }
     const buffer = Buffer.from(await pdf.save());
 

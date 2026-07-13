@@ -2,6 +2,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import {
   APP_NOTIFICATION_LABELS,
+  APP_NOTIFICATION_TYPES,
   AUDIT_ACTIONS,
   PERMISSIONS,
   ROLES,
@@ -94,10 +95,19 @@ export class NotificationsService {
   ): Promise<Paginated<NotificationItem>> {
     const page = Math.max(Math.trunc(query.page ?? 1), 1);
     const pageSize = Math.min(Math.max(Math.trunc(query.pageSize ?? DEFAULT_PAGE_SIZE), 1), MAX_PAGE_SIZE);
+    // Honor the in-app preference: nothing shows if in-app is off, and per-type
+    // `inApp:false` overrides are hidden from the feed (they may still be created
+    // for the email digest). Only EXPIRED notifications are hidden (future-dated stay).
+    const prefs = await this.ensurePreferences(user.id);
+    if (!prefs.inAppEnabled) {
+      return { items: [], total: 0, page, pageSize };
+    }
+    const hiddenInApp = APP_NOTIFICATION_TYPES.filter((t) => !typeEnabled(prefs, t, 'inApp'));
     const where: Prisma.NotificationWhereInput = {
       recipientId: user.id,
       dismissedAt: null,
-      expiresAt: { equals: null },
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+      ...(hiddenInApp.length ? { type: { notIn: hiddenInApp } } : {}),
       ...(query.unreadOnly ? { readAt: null } : {}),
     };
     const [rows, total] = await this.prisma.$transaction([
@@ -116,8 +126,19 @@ export class NotificationsService {
   }
 
   async unreadCount(user: AuthUser): Promise<{ unread: number }> {
+    // Mirror `list`'s in-app preference + expiry filter so the badge count can't
+    // diverge from the visible feed.
+    const prefs = await this.ensurePreferences(user.id);
+    if (!prefs.inAppEnabled) return { unread: 0 };
+    const hiddenInApp = APP_NOTIFICATION_TYPES.filter((t) => !typeEnabled(prefs, t, 'inApp'));
     const unread = await this.prisma.notification.count({
-      where: { recipientId: user.id, readAt: null, dismissedAt: null },
+      where: {
+        recipientId: user.id,
+        readAt: null,
+        dismissedAt: null,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+        ...(hiddenInApp.length ? { type: { notIn: hiddenInApp } } : {}),
+      },
     });
     return { unread };
   }
@@ -211,64 +232,66 @@ export class NotificationsService {
     let failed = 0;
     for (const pref of prefs) {
       if (pref.user.status !== 'active' || (!force && !shouldSend(pref, now))) continue;
-      const since = pref.lastDigestSentAt ?? windowStart(pref.digestFrequency, now);
-      const rows = await this.prisma.notification.findMany({
-        where: {
-          recipientId: pref.userId,
-          dismissedAt: null,
-          createdAt: { gt: since, lte: now },
-        },
-        orderBy: { createdAt: 'desc' },
-        take: 25,
-      });
-      const digestRows = rows.filter((row) =>
-        typeEnabled(pref, row.type as AppNotificationType, 'emailDigest'),
-      );
-      const digestUser = authUserFromPreference(pref.user);
-      const visibleRows = [];
-      for (const row of digestRows) {
-        if (await this.canSeeLinkedDocument(digestUser, row.documentId)) visibleRows.push(row);
-      }
-      if (visibleRows.length === 0) continue;
-      const subject = `PolicyManager digest: ${visibleRows.length} update${visibleRows.length === 1 ? '' : 's'}`;
-      const html = renderDigest(pref.user.name, visibleRows);
-      const ok = await this.mail.send(
-        { to: pref.user.email, subject, html },
-        { type: 'other', toUserId: pref.userId },
-      );
-      await this.prisma.notificationDelivery.create({
-        data: {
-          recipientId: pref.userId,
-          channel: 'email_digest',
-          status: ok ? 'sent' : 'failed',
-          subject,
-          sentAt: ok ? now : undefined,
-          errorMessage: ok ? undefined : 'MailService returned false',
-          metadata: { count: visibleRows.length } as Prisma.InputJsonValue,
-        },
-      });
-      if (ok) {
-        await this.prisma.notificationPreference.update({
-          where: { userId: pref.userId },
-          data: { lastDigestSentAt: now },
+      // Isolate each user: one user's send/DB error must never abort the sweep and
+      // starve every subsequent user of their digest.
+      try {
+        const since = pref.lastDigestSentAt ?? windowStart(pref.digestFrequency, now);
+        const rows = await this.prisma.notification.findMany({
+          where: {
+            recipientId: pref.userId,
+            dismissedAt: null,
+            createdAt: { gt: since, lte: now },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 25,
         });
-        sent += 1;
+        const digestRows = rows.filter((row) =>
+          typeEnabled(pref, row.type as AppNotificationType, 'emailDigest'),
+        );
+        const digestUser = authUserFromPreference(pref.user);
+        const visibleRows = [];
+        for (const row of digestRows) {
+          if (await this.canSeeLinkedDocument(digestUser, row.documentId)) visibleRows.push(row);
+        }
+        if (visibleRows.length === 0) continue;
+        const subject = `PolicyManager digest: ${visibleRows.length} update${visibleRows.length === 1 ? '' : 's'}`;
+        const html = renderDigest(pref.user.name, visibleRows);
+        const ok = await this.mail.send(
+          { to: pref.user.email, subject, html },
+          { type: 'other', toUserId: pref.userId },
+        );
+        // On success advance the dedup watermark FIRST, so a later failure writing the
+        // delivery/audit row can't leave `lastDigestSentAt` stale and cause a re-send.
+        if (ok) {
+          await this.prisma.notificationPreference.update({
+            where: { userId: pref.userId },
+            data: { lastDigestSentAt: now },
+          });
+          sent += 1;
+        } else {
+          failed += 1;
+        }
+        await this.prisma.notificationDelivery.create({
+          data: {
+            recipientId: pref.userId,
+            channel: 'email_digest',
+            status: ok ? 'sent' : 'failed',
+            subject,
+            sentAt: ok ? now : undefined,
+            errorMessage: ok ? undefined : 'MailService returned false',
+            metadata: { count: visibleRows.length } as Prisma.InputJsonValue,
+          },
+        });
         await this.audit.record({
-          action: AUDIT_ACTIONS.NOTIFICATION_DIGEST_SENT,
+          action: ok ? AUDIT_ACTIONS.NOTIFICATION_DIGEST_SENT : AUDIT_ACTIONS.NOTIFICATION_DIGEST_FAILED,
           actorUserId: pref.userId,
           source: 'system',
           targetType: 'notification_digest',
           metadata: { count: visibleRows.length },
         });
-      } else {
+      } catch (err) {
         failed += 1;
-        await this.audit.record({
-          action: AUDIT_ACTIONS.NOTIFICATION_DIGEST_FAILED,
-          actorUserId: pref.userId,
-          source: 'system',
-          targetType: 'notification_digest',
-          metadata: { count: visibleRows.length },
-        });
+        this.logger.warn(`Digest failed for user ${pref.userId}: ${(err as Error).message}`);
       }
     }
     return { usersConsidered: prefs.length, digestsSent: sent, failed };

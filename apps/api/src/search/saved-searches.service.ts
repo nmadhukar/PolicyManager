@@ -144,9 +144,13 @@ export class SavedSearchesService {
     const row = await this.prisma.savedSearch.findUnique({ where: { id } });
     if (!row) throw new NotFoundException('Saved search not found');
     const owns = row.ownerId === user.id;
-    const canShare =
+    const canManageShared =
       user.permissions.includes(PERMISSIONS.SAVED_SEARCH_MANAGE) || user.roles.includes(ROLES.ADMIN);
-    if (!owns && !canShare) throw new ForbiddenException('You cannot change this saved search');
+    // A private preset is editable ONLY by its owner. The manage/admin permission
+    // governs SHARED (role/global) searches — it must not let one user mutate or
+    // delete another user's private preset.
+    const allowed = owns || (row.scope !== 'private' && canManageShared);
+    if (!allowed) throw new ForbiddenException('You cannot change this saved search');
     return row;
   }
 }

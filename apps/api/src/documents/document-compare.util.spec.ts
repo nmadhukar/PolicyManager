@@ -1,8 +1,8 @@
-import { buildLineDiff } from './document-compare.util';
+import { buildLineDiff, MAX_DIFF_LINES } from './document-compare.util';
 
 describe('buildLineDiff', () => {
   it('marks unchanged, removed, changed, and added lines in order', () => {
-    const hunks = buildLineDiff(
+    const { hunks, truncated } = buildLineDiff(
       ['Policy title', 'Staff must sign annually.', 'Old restraint rule.'].join('\n'),
       [
         'Policy title',
@@ -12,6 +12,7 @@ describe('buildLineDiff', () => {
       ].join('\n'),
     );
 
+    expect(truncated).toBe(false);
     expect(hunks).toEqual([
       { type: 'unchanged', oldLine: 1, newLine: 1, oldText: 'Policy title', newText: 'Policy title' },
       {
@@ -32,7 +33,20 @@ describe('buildLineDiff', () => {
     ]);
   });
 
-  it('returns a text-unavailable marker when both versions are empty', () => {
-    expect(buildLineDiff('', '')).toEqual([]);
+  it('returns an empty, non-truncated result when both versions are empty', () => {
+    expect(buildLineDiff('', '')).toEqual({ hunks: [], truncated: false });
+  });
+
+  it('caps very large inputs and flags truncation instead of allocating an O(N*M) matrix', () => {
+    const big = Array.from({ length: MAX_DIFF_LINES + 500 }, (_, i) => `line ${i}`).join('\n');
+    const other = Array.from({ length: MAX_DIFF_LINES + 500 }, (_, i) => `LINE ${i}`).join('\n');
+    const { hunks, truncated } = buildLineDiff(big, other);
+    expect(truncated).toBe(true);
+    // Only the first MAX_DIFF_LINES per side are diffed, so no hunk references a line
+    // number beyond the cap.
+    for (const h of hunks) {
+      if (h.oldLine != null) expect(h.oldLine).toBeLessThanOrEqual(MAX_DIFF_LINES);
+      if (h.newLine != null) expect(h.newLine).toBeLessThanOrEqual(MAX_DIFF_LINES);
+    }
   });
 });

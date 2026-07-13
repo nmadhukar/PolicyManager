@@ -178,27 +178,30 @@ function applyDueState(
   now: Date,
 ): void {
   if (!dueState) return;
+  // Push an AND clause rather than assigning `where.nextReviewDate`/`where.status`
+  // directly — otherwise a due-state chip would silently CLOBBER an explicit
+  // reviewAfter/reviewBefore or status filter set above (e.g. a saved search that
+  // combines "expired" with a date bound would lose the bound).
+  const and = normalizeAnd(where.AND);
+  where.AND = and;
   if (dueState === 'expired') {
-    where.nextReviewDate = { not: null, lt: now };
-    return;
+    and.push({ nextReviewDate: { not: null, lt: now } });
+  } else if (dueState === 'dueSoon') {
+    and.push({ nextReviewDate: { not: null, gte: now, lte: addDays(now, DEFAULT_REVIEW_LEAD_DAYS) } });
+  } else if (dueState === 'missingApproval') {
+    and.push({ status: { in: ['draft', 'in_review'] } });
+  } else if (dueState === 'notAcknowledged') {
+    and.push({ acknowledgmentAssignments: { some: { status: { in: ['pending', 'overdue'] } } } });
   }
-  if (dueState === 'dueSoon') {
-    where.nextReviewDate = {
-      not: null,
-      gte: now,
-      lte: addDays(now, DEFAULT_REVIEW_LEAD_DAYS),
-    };
-    return;
-  }
-  if (dueState === 'missingApproval') {
-    where.status = { in: ['draft', 'in_review'] };
-    return;
-  }
-  if (dueState === 'notAcknowledged') {
-    where.acknowledgmentAssignments = {
-      some: { status: { in: ['pending', 'overdue'] } },
-    };
-  }
+}
+
+/** Coerces an optional Prisma AND (object | array | undefined) into an array. */
+function normalizeAnd(
+  existing: Prisma.DocumentWhereInput['AND'],
+): Prisma.DocumentWhereInput[] {
+  if (Array.isArray(existing)) return existing;
+  if (existing) return [existing];
+  return [];
 }
 
 function addDays(value: Date, days: number): Date {

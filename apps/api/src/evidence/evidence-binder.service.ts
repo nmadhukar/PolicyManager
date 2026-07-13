@@ -14,6 +14,12 @@ import type { RequestContext } from '../audit/request-context';
 import { CoverPageService } from '../attestation/cover-page.service';
 import { DocumentAccessService } from '../documents/document-access.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { pdfSafeText } from '../common/pdf-text.util';
+
+/** Caps so a synchronous binder export can't exhaust memory / stall the event loop. */
+const MAX_BINDER_CSV_ROWS = 5000;
+/** Max rows rendered into a PDF section (the ZIP CSV carries the complete set). */
+const MAX_BINDER_PDF_LINES = 2000;
 
 const docSelect = {
   id: true,
@@ -64,12 +70,10 @@ export class EvidenceBinderService {
     user: AuthUser,
     ctx: RequestContext = {},
   ): Promise<StreamableFile> {
-    this.assertCanExport(user);
+    // Cheap coarse gate first (no DB hit), then load + fine-grained access checks.
+    await this.assertExportPermission(documentId, user, ctx);
     const doc = await this.loadDoc(documentId);
-    await this.access.assertCanAccess(user, doc, 'download');
-    if (options.includeAuditLog !== false && !user.permissions.includes(PERMISSIONS.AUDIT_READ)) {
-      throw new ForbiddenException('Audit log evidence requires audit.read');
-    }
+    await this.authorizeDocumentAccess(doc, options, user, ctx);
 
     const opts = normalizeOptions(options);
     const fileName = `${fileStem(doc)}-evidence-binder.${opts.format === 'zip' ? 'zip' : 'pdf'}`;
@@ -93,8 +97,77 @@ export class EvidenceBinderService {
       });
     } catch (err) {
       await this.recordJob(doc, user, opts, fileName, 'failed', null, (err as Error).message);
+      // A failed export is still an access event — record it so the audit trail isn't
+      // silent on attempts that errored mid-generation.
+      await this.audit.record({
+        action: AUDIT_ACTIONS.EVIDENCE_BINDER_EXPORTED,
+        actorUserId: user.id,
+        documentId,
+        versionId: doc.currentVersionId ?? undefined,
+        targetType: 'evidence_binder',
+        ...ctx,
+        metadata: { format: opts.format, outcome: 'failed', error: (err as Error).message.slice(0, 500) },
+      });
       throw err;
     }
+  }
+
+  /**
+   * Coarse permission gate, checked BEFORE loading the document so an unauthorized
+   * caller never triggers a DB read. Audits the denial (AGENTS.md §8).
+   */
+  private async assertExportPermission(
+    documentId: string,
+    user: AuthUser,
+    ctx: RequestContext,
+  ): Promise<void> {
+    if (user.permissions.includes(PERMISSIONS.EVIDENCE_EXPORT)) return;
+    await this.audit.record({
+      action: AUDIT_ACTIONS.ACCESS_DENIED,
+      actorUserId: user.id,
+      documentId,
+      targetType: 'evidence_binder',
+      ...ctx,
+      metadata: { attemptedAction: 'evidence.export', reason: 'evidence.export' },
+    });
+    throw new ForbiddenException('Evidence binder export requires evidence.export');
+  }
+
+  /**
+   * Fine-grained confidential download access + audit-log gating on the loaded doc,
+   * auditing an ACCESS_DENIED event on any denial (a denied evidence export on a
+   * confidential document must not be silent).
+   */
+  private async authorizeDocumentAccess(
+    doc: BinderDoc,
+    options: EvidenceBinderOptions,
+    user: AuthUser,
+    ctx: RequestContext,
+  ): Promise<void> {
+    if (!(await this.access.canAccess(user, doc, 'download'))) {
+      await this.auditDenied(doc, user, ctx, 'document.download');
+      throw new ForbiddenException('You do not have access to this document');
+    }
+    if (options.includeAuditLog !== false && !user.permissions.includes(PERMISSIONS.AUDIT_READ)) {
+      await this.auditDenied(doc, user, ctx, 'audit.read');
+      throw new ForbiddenException('Audit log evidence requires audit.read');
+    }
+  }
+
+  private async auditDenied(
+    doc: BinderDoc,
+    user: AuthUser,
+    ctx: RequestContext,
+    reason: string,
+  ): Promise<void> {
+    await this.audit.record({
+      action: AUDIT_ACTIONS.ACCESS_DENIED,
+      actorUserId: user.id,
+      documentId: doc.id,
+      targetType: 'evidence_binder',
+      ...ctx,
+      metadata: { attemptedAction: 'evidence.export', reason, accessLevel: doc.accessLevel },
+    });
   }
 
   private async buildZip(
@@ -144,15 +217,30 @@ export class EvidenceBinderService {
     const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
     let page = pdf.addPage([612, 792]);
     let y = 738;
-    page.drawText(title, { x: 54, y, size: 16, font: bold, color: rgb(0.08, 0.1, 0.15) });
+    // pdfSafeText keeps Word smart quotes / dashes / CJK from crashing drawText.
+    page.drawText(pdfSafeText(title), { x: 54, y, size: 16, font: bold, color: rgb(0.08, 0.1, 0.15) });
     y -= 28;
-    for (const line of csv.split('\n').slice(0, 55)) {
+    const lines = csv.split('\n');
+    // Paginate across as many pages as needed (was capped at 55 lines on a single
+    // page, silently dropping evidence). Bound the total so a huge roster can't
+    // balloon the PDF; the ZIP export always carries the complete CSV.
+    for (const line of lines.slice(0, MAX_BINDER_PDF_LINES)) {
       if (y < 54) {
         page = pdf.addPage([612, 792]);
         y = 738;
       }
-      page.drawText(line.slice(0, 110), { x: 54, y, size: 8, font, color: rgb(0.18, 0.22, 0.29) });
+      page.drawText(pdfSafeText(line).slice(0, 120), { x: 54, y, size: 8, font, color: rgb(0.18, 0.22, 0.29) });
       y -= 12;
+    }
+    if (lines.length > MAX_BINDER_PDF_LINES) {
+      if (y < 54) {
+        page = pdf.addPage([612, 792]);
+        y = 738;
+      }
+      page.drawText(
+        `... ${lines.length - MAX_BINDER_PDF_LINES} more row(s) omitted — use the ZIP export for the complete CSV.`,
+        { x: 54, y, size: 8, font: bold, color: rgb(0.5, 0.1, 0.1) },
+      );
     }
   }
 
@@ -173,6 +261,7 @@ export class EvidenceBinderService {
       where: { documentId, action: { in: ['reviewed', 'approved'] } },
       include: { user: { select: { name: true, email: true } }, version: { select: { versionNumber: true } } },
       orderBy: { signedAt: 'asc' },
+      take: MAX_BINDER_CSV_ROWS,
     });
     return csv(['action', 'name', 'role', 'email', 'version', 'signedAt', 'comments'], rows.map((r) => [
       r.action,
@@ -190,6 +279,7 @@ export class EvidenceBinderService {
       where: { documentId },
       include: { assignee: { select: { name: true, email: true } }, version: { select: { versionNumber: true } } },
       orderBy: [{ createdAt: 'desc' }],
+      take: MAX_BINDER_CSV_ROWS,
     });
     return csv(['assignee', 'email', 'version', 'status', 'dueDate', 'completedAt'], rows.map((r) => [
       r.assignee?.name,
@@ -206,6 +296,7 @@ export class EvidenceBinderService {
       where: { documentId },
       include: { assignedTo: { select: { name: true, email: true } }, completedBy: { select: { name: true } } },
       orderBy: { createdAt: 'desc' },
+      take: MAX_BINDER_CSV_ROWS,
     });
     return csv(['assignedTo', 'email', 'status', 'dueDate', 'completedAt', 'completedBy', 'notes'], rows.map((r) => [
       r.assignedTo?.name,
@@ -223,6 +314,7 @@ export class EvidenceBinderService {
       where: { documentId },
       include: { uploadedBy: { select: { name: true, email: true } } },
       orderBy: { versionNumber: 'desc' },
+      take: MAX_BINDER_CSV_ROWS,
     });
     return csv(['version', 'fileName', 'mimeType', 'checksum', 'uploadedBy', 'createdAt', 'changeSummary'], rows.map((r) => [
       r.versionNumber,
@@ -287,7 +379,7 @@ export class EvidenceBinderService {
         fileName,
         checksum: checksum ?? undefined,
         errorMessage: errorMessage?.slice(0, 1000),
-        completedAt: new Date(),
+        completedAt: status === 'completed' ? new Date() : null,
       },
     });
   }
@@ -318,7 +410,11 @@ function csv(headers: string[], rows: unknown[][]): string {
 }
 
 function csvCell(value: unknown): string {
-  const text = value == null ? '' : String(value);
+  const raw = value == null ? '' : String(value);
+  // Neutralize spreadsheet formula injection: a cell beginning with = + - @ (or a
+  // tab/CR) is executed as a formula by Excel/Sheets. Prefix a single quote so
+  // auditor-opened CSVs render it as literal text.
+  const text = /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
   return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 

@@ -129,22 +129,36 @@ describe('buildDocumentListQuery', () => {
     });
   });
 
-  it('supports due-state quick filters', () => {
+  it('supports due-state quick filters as composable AND clauses', () => {
     const now = new Date('2026-07-13T12:00:00Z');
     const expired = buildDocumentListQuery({ dueState: 'expired' }, now);
-    expect(expired.where.nextReviewDate).toEqual({ not: null, lt: now });
+    expect(expired.where.AND).toContainEqual({ nextReviewDate: { not: null, lt: now } });
 
     const dueSoon = buildDocumentListQuery({ dueState: 'dueSoon' }, now);
-    expect(dueSoon.where.nextReviewDate).toEqual({
-      not: null,
-      gte: now,
-      lte: new Date('2026-07-27T12:00:00.000Z'),
+    expect(dueSoon.where.AND).toContainEqual({
+      nextReviewDate: { not: null, gte: now, lte: new Date('2026-07-27T12:00:00.000Z') },
     });
 
     const notAcknowledged = buildDocumentListQuery({ dueState: 'notAcknowledged' }, now);
-    expect(notAcknowledged.where.acknowledgmentAssignments).toEqual({
-      some: { status: { in: ['pending', 'overdue'] } },
+    expect(notAcknowledged.where.AND).toContainEqual({
+      acknowledgmentAssignments: { some: { status: { in: ['pending', 'overdue'] } } },
     });
+  });
+
+  it('due-state composes with (does not clobber) an explicit review-date bound', () => {
+    const now = new Date('2026-07-13T12:00:00Z');
+    const q = buildDocumentListQuery({ dueState: 'expired', reviewAfter: '2026-01-01' }, now);
+    // The explicit lower bound survives...
+    expect(q.where.nextReviewDate).toEqual({ gte: new Date('2026-01-01') });
+    // ...AND the due-state upper bound is applied alongside it.
+    expect(q.where.AND).toContainEqual({ nextReviewDate: { not: null, lt: now } });
+  });
+
+  it('missingApproval composes with an explicit status filter instead of overwriting it', () => {
+    const now = new Date('2026-07-13T12:00:00Z');
+    const q = buildDocumentListQuery({ dueState: 'missingApproval', status: 'draft' }, now);
+    expect(q.where.status).toBe('draft');
+    expect(q.where.AND).toContainEqual({ status: { in: ['draft', 'in_review'] } });
   });
 
   it('sorts by an allowed field + order', () => {

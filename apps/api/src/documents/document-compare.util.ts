@@ -19,20 +19,43 @@ function tokenize(text: string | null | undefined): TokenLine[] {
  * Deterministic line-level LCS diff. Adjacent remove+add pairs are collapsed into
  * `changed` hunks so reviewers see edits instead of two unrelated operations.
  */
-export function buildLineDiff(oldText: string | null | undefined, newText: string | null | undefined): PolicyDiffHunk[] {
-  const oldLines = tokenize(oldText);
-  const newLines = tokenize(newText);
-  if (oldLines.length === 0 && newLines.length === 0) return [];
+export interface LineDiffResult {
+  hunks: PolicyDiffHunk[];
+  /** True when either side exceeded MAX_DIFF_LINES and was clipped before diffing. */
+  truncated: boolean;
+}
 
-  const dp = Array.from({ length: oldLines.length + 1 }, () =>
-    Array<number>(newLines.length + 1).fill(0),
-  );
+/** Upper bound on lines diffed per side; caps the O(N*M) LCS matrix (memory + CPU)
+ *  so an authorized user comparing two very large versions can't OOM the worker. */
+export const MAX_DIFF_LINES = 3000;
+
+export function buildLineDiff(
+  oldText: string | null | undefined,
+  newText: string | null | undefined,
+): LineDiffResult {
+  let oldLines = tokenize(oldText);
+  let newLines = tokenize(newText);
+  let truncated = false;
+  if (oldLines.length > MAX_DIFF_LINES) {
+    oldLines = oldLines.slice(0, MAX_DIFF_LINES);
+    truncated = true;
+  }
+  if (newLines.length > MAX_DIFF_LINES) {
+    newLines = newLines.slice(0, MAX_DIFF_LINES);
+    truncated = true;
+  }
+  if (oldLines.length === 0 && newLines.length === 0) return { hunks: [], truncated };
+
+  // Flat Int32Array LCS matrix (bounded by MAX_DIFF_LINES^2) — avoids a multi-GB
+  // array-of-arrays on large documents.
+  const width = newLines.length + 1;
+  const dp = new Int32Array((oldLines.length + 1) * width);
   for (let i = oldLines.length - 1; i >= 0; i -= 1) {
     for (let j = newLines.length - 1; j >= 0; j -= 1) {
-      dp[i][j] =
+      dp[i * width + j] =
         oldLines[i].text === newLines[j].text
-          ? dp[i + 1][j + 1] + 1
-          : Math.max(dp[i + 1][j], dp[i][j + 1]);
+          ? dp[(i + 1) * width + (j + 1)] + 1
+          : Math.max(dp[(i + 1) * width + j], dp[i * width + (j + 1)]);
     }
   }
 
@@ -52,7 +75,7 @@ export function buildLineDiff(oldText: string | null | undefined, newText: strin
       });
       i += 1;
       j += 1;
-    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+    } else if (dp[(i + 1) * width + j] >= dp[i * width + (j + 1)]) {
       raw.push({
         type: 'removed',
         oldLine: oldLine.line,
@@ -92,7 +115,7 @@ export function buildLineDiff(oldText: string | null | undefined, newText: strin
     });
     j += 1;
   }
-  return collapseChanged(raw);
+  return { hunks: collapseChanged(raw), truncated };
 }
 
 function collapseChanged(raw: PolicyDiffHunk[]): PolicyDiffHunk[] {
