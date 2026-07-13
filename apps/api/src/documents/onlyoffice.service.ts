@@ -1,6 +1,12 @@
-import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as jwt from 'jsonwebtoken';
+import { hostOf } from '../common/net.util';
 
 /** OnlyOffice editor family, chosen by file extension. */
 export type OnlyOfficeDocumentType = 'word' | 'cell' | 'slide';
@@ -93,9 +99,14 @@ export class OnlyOfficeService {
   private readonly secret: string;
   private readonly apiInternalUrl: string;
   private readonly publicUrl: string;
+  /** Hosts the save callback may fetch edited bytes from (SM1 — SSRF allow-list). */
+  private readonly downloadAllowedHosts: Set<string>;
 
   constructor(private readonly config: ConfigService) {
-    this.secret = config.get<string>('ONLYOFFICE_JWT_SECRET') || 'change-me-onlyoffice';
+    // SH2: fail closed. A missing secret is a boot error — never a shipped
+    // 'change-me' default that would let a forged editor config or save callback
+    // through (JWT verification with a known default is no verification at all).
+    this.secret = config.getOrThrow<string>('ONLYOFFICE_JWT_SECRET');
     this.apiInternalUrl = (
       config.get<string>('ONLYOFFICE_API_INTERNAL_URL') || 'http://host.docker.internal:3000'
     ).replace(/\/$/, '');
@@ -103,6 +114,35 @@ export class OnlyOfficeService {
       /\/$/,
       '',
     );
+    this.downloadAllowedHosts = this.buildDownloadAllowlist();
+  }
+
+  /**
+   * The set of hosts {@link downloadEditedFile} may fetch from (SM1). Always
+   * includes the configured Docs-server host + the internal API host. When
+   * `ONLYOFFICE_DOWNLOAD_ALLOWED_HOSTS` is set it is used verbatim (production
+   * lock-down); otherwise loopback aliases are trusted so local/dev + tests work
+   * out of the box while cloud-metadata / internal / arbitrary hosts stay blocked.
+   */
+  private buildDownloadAllowlist(): Set<string> {
+    const hosts = new Set<string>();
+    const add = (u?: string | null): void => {
+      const h = u ? hostOf(u) : null;
+      if (h) hosts.add(h);
+    };
+    add(this.publicUrl);
+    add(this.apiInternalUrl);
+    const override = this.config.get<string>('ONLYOFFICE_DOWNLOAD_ALLOWED_HOSTS');
+    if (override && override.trim()) {
+      override
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean)
+        .forEach((h) => hosts.add(h));
+    } else {
+      ['localhost', '127.0.0.1', '::1', 'host.docker.internal'].forEach((h) => hosts.add(h));
+    }
+    return hosts;
   }
 
   /** Public Docs-server URL the browser loads `DocsAPI` from. */
@@ -124,10 +164,14 @@ export class OnlyOfficeService {
     return jwt.verify(token, this.secret) as T;
   }
 
-  /** Mints a scoped token for the server-to-server source-content URL. */
-  signContentToken(documentId: string, versionId: string): string {
+  /**
+   * Mints a scoped token for the server-to-server source-content URL. The editing
+   * `userId` is carried so {@link DocumentsService.getVersionSource} can re-verify
+   * access to (confidential) bytes as defence in depth (SH2).
+   */
+  signContentToken(documentId: string, versionId: string, userId?: string): string {
     return this.signToken(
-      { documentId, versionId, purpose: 'content' } satisfies ScopedTokenPayload,
+      { documentId, versionId, purpose: 'content', userId } satisfies ScopedTokenPayload,
       CONTENT_TOKEN_TTL_SECONDS,
     );
   }
@@ -231,7 +275,7 @@ export class OnlyOfficeService {
     user: { id: string; name: string };
   }): Record<string, unknown> {
     const { documentId, versionId, fileName } = params;
-    const contentToken = this.signContentToken(documentId, versionId);
+    const contentToken = this.signContentToken(documentId, versionId, params.user.id);
     const callbackToken = this.signCallbackToken(documentId, versionId, params.user.id);
 
     const document = {
@@ -268,10 +312,11 @@ export class OnlyOfficeService {
    * origin the callback uses (or front both behind a shared hostname).
    */
   async downloadEditedFile(url: string): Promise<Buffer> {
+    this.assertDownloadUrlAllowed(url);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 60_000);
     try {
-      const res = await fetch(url, { signal: controller.signal });
+      const res = await fetch(url, { signal: controller.signal, redirect: 'error' });
       if (!res.ok) {
         throw new Error(`OnlyOffice edited-file download failed: HTTP ${res.status}`);
       }
@@ -279,5 +324,29 @@ export class OnlyOfficeService {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * SSRF guard (SM1): the Docs server hands us `body.url` to fetch the edited bytes.
+   * A forged/compromised callback could point that at cloud metadata (169.254.169.254),
+   * an internal service, or an arbitrary host to exfiltrate/pivot. We fetch ONLY from
+   * an http(s) URL whose host is on the allow-list, and disable redirects.
+   */
+  private assertDownloadUrlAllowed(url: string): void {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new BadRequestException('OnlyOffice save callback URL is invalid');
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new BadRequestException('OnlyOffice save callback URL scheme is not allowed');
+    }
+    const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (this.downloadAllowedHosts.has(host)) return;
+    this.logger.warn(
+      `Rejected OnlyOffice save-callback download to non-allow-listed host "${host}"`,
+    );
+    throw new BadRequestException('OnlyOffice save callback URL host is not allowed');
   }
 }

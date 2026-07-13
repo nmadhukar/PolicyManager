@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { AxiosError } from 'axios';
 import { getEditorConfig } from '../api/documents';
 import { ErrorState, LoadingState } from './states';
+import { useFocusTrap } from './useFocusTrap';
 
 interface DocEditorInstance {
   destroyEditor: () => void;
@@ -55,7 +56,12 @@ export function OnlyOfficeEditor({
 }) {
   const containerId = useRef(`onlyoffice-${Math.random().toString(36).slice(2)}`);
   const editorRef = useRef<DocEditorInstance | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const [scriptError, setScriptError] = useState(false);
+
+  // Focus management for the overlay (AGENTS.md §10c). The embedded editor owns
+  // focus once loaded; this moves focus in on open and restores it on close.
+  useFocusTrap(true, dialogRef, onClose);
 
   const configQuery = useQuery({
     queryKey: ['editor-config', documentId],
@@ -97,7 +103,8 @@ export function OnlyOfficeEditor({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex flex-col bg-slate-900/70"
+      ref={dialogRef}
+      className="fixed inset-0 z-50 flex flex-col bg-slate-900/70 focus:outline-none"
       role="dialog"
       aria-modal="true"
       aria-label="Editing document"

@@ -1,5 +1,6 @@
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { ProtectedRoute } from './auth/ProtectedRoute';
+import { ErrorBoundary } from './ui/ErrorBoundary';
 import { AcknowledgmentsPage } from './pages/AcknowledgmentsPage';
 import { ApiClientsPage } from './pages/ApiClientsPage';
 import { AuditLogPage } from './pages/AuditLogPage';
@@ -17,8 +18,12 @@ import { StorageAdminPage } from './pages/StorageAdminPage';
 import { UsersPage } from './pages/UsersPage';
 
 export default function App() {
+  const location = useLocation();
   return (
-    <Routes>
+    // Keying the boundary on the path clears a caught error when the user
+    // navigates elsewhere, so one crashed page never wedges the whole app.
+    <ErrorBoundary key={location.pathname}>
+      <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
@@ -119,6 +124,7 @@ export default function App() {
         }
       />
       <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+      </Routes>
+    </ErrorBoundary>
   );
 }

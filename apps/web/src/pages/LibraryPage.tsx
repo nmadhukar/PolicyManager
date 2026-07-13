@@ -1,4 +1,4 @@
-import { FormEvent, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AxiosError } from 'axios';
@@ -23,13 +23,16 @@ import {
   unarchiveDocument,
 } from '../api/documents';
 import { flattenCategories, listCategoryTree } from '../api/categories';
+import { listUsers } from '../api/users';
 import { useAuth } from '../auth/AuthContext';
 import { useDebouncedValue } from '../lib/useDebouncedValue';
+import { apiErrorMessage } from '../lib/apiError';
 import { formatDate, statusBadgeClasses, statusLabel } from '../lib/format';
 import { AppShell } from '../ui/AppShell';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { EmptyState, ErrorState, ForbiddenState, LoadingState } from '../ui/states';
 import { TagInput } from '../ui/TagInput';
+import { useToast } from '../ui/Toast';
 
 /** Library scope: active (default), archived-only, or the soft-delete trash. */
 type LibraryView = 'active' | 'archived' | 'trash';
@@ -72,6 +75,7 @@ export function LibraryPage() {
 function Library() {
   const { hasPermission } = useAuth();
   const canWrite = hasPermission(PERMISSIONS.DOCUMENT_WRITE);
+  const canManageUsers = hasPermission(PERMISSIONS.USER_MANAGE);
 
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [view, setView] = useState<LibraryView>('active');
@@ -118,18 +122,27 @@ function Library() {
     [categoriesQuery.data],
   );
 
-  // Accumulate owner options seen across result pages so the dropdown is stable.
+  // Prefer the full user directory for the owner filter (admins); gracefully fall
+  // back to owners seen across loaded result pages when that endpoint is 403/empty.
+  const usersQuery = useQuery({
+    queryKey: ['users'],
+    queryFn: listUsers,
+    enabled: canManageUsers,
+    retry: false,
+  });
+
   const [ownerOptions, setOwnerOptions] = useState<Map<string, string>>(new Map());
-  useMemo(() => {
-    if (!query.data) return;
+  // State update lives in an effect (not render/useMemo) to avoid a setState-in-render.
+  useEffect(() => {
     setOwnerOptions((prev) => {
       const next = new Map(prev);
-      for (const item of query.data.items) {
+      for (const u of usersQuery.data ?? []) next.set(u.id, u.name);
+      for (const item of query.data?.items ?? []) {
         if (item.ownerName) next.set(item.ownerId, item.ownerName);
       }
       return next;
     });
-  }, [query.data]);
+  }, [usersQuery.data, query.data]);
 
   const patch = (part: Partial<Filters>) => {
     setFilters((f) => ({ ...f, ...part }));
@@ -632,6 +645,7 @@ function DocumentsTable({
 /** Per-row soft-delete / restore / archive actions (write users only). */
 function RowActions({ doc, view }: { doc: DocumentListItem; view: LibraryView }) {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['documents'] });
 
@@ -641,12 +655,22 @@ function RowActions({ doc, view }: { doc: DocumentListItem; view: LibraryView })
       setConfirmDelete(false);
       void invalidate();
     },
+    onError: (err) => toast.error(apiErrorMessage(err, 'Could not delete the document.')),
   });
-  const restore = useMutation({ mutationFn: () => restoreDocument(doc.id), onSuccess: invalidate });
-  const archive = useMutation({ mutationFn: () => archiveDocument(doc.id), onSuccess: invalidate });
+  const restore = useMutation({
+    mutationFn: () => restoreDocument(doc.id),
+    onSuccess: invalidate,
+    onError: (err) => toast.error(apiErrorMessage(err, 'Could not restore the document.')),
+  });
+  const archive = useMutation({
+    mutationFn: () => archiveDocument(doc.id),
+    onSuccess: invalidate,
+    onError: (err) => toast.error(apiErrorMessage(err, 'Could not archive the document.')),
+  });
   const unarchive = useMutation({
     mutationFn: () => unarchiveDocument(doc.id),
     onSuccess: invalidate,
+    onError: (err) => toast.error(apiErrorMessage(err, 'Could not unarchive the document.')),
   });
 
   const busy = del.isPending || restore.isPending || archive.isPending || unarchive.isPending;

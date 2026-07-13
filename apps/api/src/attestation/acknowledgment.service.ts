@@ -280,32 +280,49 @@ export class AcknowledgmentService {
     if (assignment.status === 'cancelled') {
       throw new BadRequestException('This acknowledgment assignment has been cancelled');
     }
-    if (input.hasViewed !== true) {
+
+    // C5/SL3: do NOT trust the client-supplied `hasViewed`. The assignee must have
+    // actually opened THIS version — the view-url endpoint records an immutable
+    // `document.viewed` audit event (with the versionId), and THAT server-side
+    // evidence is the gate. A forged `hasViewed:true` cannot satisfy it.
+    const viewed = await this.prisma.auditEvent.count({
+      where: {
+        action: AUDIT_ACTIONS.DOCUMENT_VIEWED,
+        actorUserId: user.id,
+        versionId: assignment.versionId,
+      },
+    });
+    if (viewed === 0) {
       throw new BadRequestException('You must open and read the document before acknowledging');
     }
 
-    const attestation = await this.attestation.record(
-      {
-        documentId: assignment.documentId,
-        versionId: assignment.versionId,
-        action: 'acknowledged',
-        signatureName: input.signatureName?.trim() || user.name,
-        signatureRole: input.signatureRole,
-        comments: input.comments,
-        acknowledgmentAssignmentId: assignment.id,
-      },
-      user,
-      ctx,
-    );
-
-    const updated = await this.prisma.acknowledgmentAssignment.update({
-      where: { id: assignment.id },
-      data: { status: 'completed', completedAt: new Date() },
-      include: {
-        document: { select: { title: true, documentNumber: true } },
-        version: { select: { versionNumber: true } },
-        assignedBy: { select: { name: true } },
-      },
+    // C6/D4: the immutable acknowledged sign-off and the assignment completion
+    // commit ATOMICALLY — a completed assignment always has its evidence.
+    const { attestation, updated } = await this.prisma.$transaction(async (tx) => {
+      const att = await this.attestation.record(
+        {
+          documentId: assignment.documentId,
+          versionId: assignment.versionId,
+          action: 'acknowledged',
+          signatureName: input.signatureName?.trim() || user.name,
+          signatureRole: input.signatureRole,
+          comments: input.comments,
+          acknowledgmentAssignmentId: assignment.id,
+        },
+        user,
+        ctx,
+        tx,
+      );
+      const upd = await tx.acknowledgmentAssignment.update({
+        where: { id: assignment.id },
+        data: { status: 'completed', completedAt: new Date() },
+        include: {
+          document: { select: { title: true, documentNumber: true } },
+          version: { select: { versionNumber: true } },
+          assignedBy: { select: { name: true } },
+        },
+      });
+      return { attestation: att, updated: upd };
     });
 
     return {

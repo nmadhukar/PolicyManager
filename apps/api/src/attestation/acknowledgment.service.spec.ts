@@ -10,19 +10,28 @@ import { AcknowledgmentService } from './acknowledgment.service';
  */
 describe('AcknowledgmentService', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const makePrisma = (): any => ({
-    document: { findFirst: jest.fn() },
-    user: { findMany: jest.fn().mockResolvedValue([]) },
-    role: { findMany: jest.fn().mockResolvedValue([]) },
-    userRole: { findMany: jest.fn().mockResolvedValue([]) },
-    acknowledgmentAssignment: {
-      findUnique: jest.fn().mockResolvedValue(null),
-      findMany: jest.fn().mockResolvedValue([]),
-      create: jest.fn().mockResolvedValue({ id: 'asg-new' }),
-      update: jest.fn(),
-      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
-    },
-  });
+  const makePrisma = (): any => {
+    const prisma: any = {
+      document: { findFirst: jest.fn() },
+      user: { findMany: jest.fn().mockResolvedValue([]) },
+      role: { findMany: jest.fn().mockResolvedValue([]) },
+      userRole: { findMany: jest.fn().mockResolvedValue([]) },
+      // C5/SL3: acknowledge gates on a recorded document.viewed audit for the user+version.
+      auditEvent: { count: jest.fn().mockResolvedValue(0) },
+      acknowledgmentAssignment: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        findMany: jest.fn().mockResolvedValue([]),
+        create: jest.fn().mockResolvedValue({ id: 'asg-new' }),
+        update: jest.fn(),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+    };
+    // C6/D4: acknowledge wraps the sign-off + completion in one transaction.
+    prisma.$transaction = jest.fn((arg: unknown) =>
+      typeof arg === 'function' ? (arg as (tx: unknown) => unknown)(prisma) : Promise.all(arg as unknown[]),
+    );
+    return prisma;
+  };
   const makeAudit = () => ({ record: jest.fn().mockResolvedValue('ae-1') });
   const makeAttestation = () => ({ record: jest.fn().mockResolvedValue({ id: 'att-1', action: 'acknowledged' }) });
 
@@ -177,6 +186,8 @@ describe('AcknowledgmentService', () => {
     it('records an acknowledged sign-off and completes the assignment', async () => {
       const { svc, prisma, attestation } = build();
       prisma.acknowledgmentAssignment.findUnique.mockResolvedValue(assignmentRow());
+      // C5/SL3: a prior document.viewed audit for this user+version exists.
+      prisma.auditEvent.count.mockResolvedValue(1);
       prisma.acknowledgmentAssignment.update.mockResolvedValue(
         assignmentRow({ status: 'completed', completedAt: new Date('2026-07-13T00:00:00Z') }),
       );
@@ -185,6 +196,10 @@ describe('AcknowledgmentService', () => {
         ipAddress: '10.0.0.9',
       });
 
+      // The gate is the recorded view, not the client boolean.
+      expect(prisma.auditEvent.count).toHaveBeenCalledWith({
+        where: { action: 'document.viewed', actorUserId: 'staff-1', versionId: 'v-2' },
+      });
       expect(attestation.record).toHaveBeenCalledWith(
         expect.objectContaining({
           documentId: 'doc-1',
@@ -196,6 +211,7 @@ describe('AcknowledgmentService', () => {
         }),
         staff,
         { ipAddress: '10.0.0.9' },
+        expect.anything(), // tx client (C6/D4)
       );
       expect(prisma.acknowledgmentAssignment.update.mock.calls[0][0].data).toMatchObject({
         status: 'completed',
@@ -204,10 +220,13 @@ describe('AcknowledgmentService', () => {
       expect(res.attestation.action).toBe('acknowledged');
     });
 
-    it('rejects acknowledging without having viewed the document (AGENTS.md §10b)', async () => {
+    it('C5/SL3: rejects acknowledging with NO recorded view — even if the client claims hasViewed:true', async () => {
       const { svc, prisma, attestation } = build();
       prisma.acknowledgmentAssignment.findUnique.mockResolvedValue(assignmentRow());
-      await expect(svc.acknowledge('asg-1', { hasViewed: false }, staff)).rejects.toBeInstanceOf(
+      // No document.viewed audit exists for this user+version...
+      prisma.auditEvent.count.mockResolvedValue(0);
+      // ...and a forged hasViewed:true must NOT satisfy the gate.
+      await expect(svc.acknowledge('asg-1', { hasViewed: true }, staff)).rejects.toBeInstanceOf(
         BadRequestException,
       );
       expect(attestation.record).not.toHaveBeenCalled();

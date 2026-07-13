@@ -11,6 +11,7 @@ import {
   type DocumentVersionSummary,
 } from '@policymanager/shared';
 import {
+  UPLOAD_ACCEPT,
   UpdateDocumentInput,
   archiveDocument,
   getDocument,
@@ -33,6 +34,9 @@ import { AppShell } from '../ui/AppShell';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { EmptyState, ErrorState, ForbiddenState, LoadingState } from '../ui/states';
 import { TagInput } from '../ui/TagInput';
+import { useToast } from '../ui/Toast';
+import { apiErrorMessage } from '../lib/apiError';
+import { triggerUrlDownload } from '../lib/download';
 
 // Heavy viewing/editing surfaces are code-split so the detail page (and its tests)
 // don't pull in pdf.js / OnlyOffice / TipTap until a user actually opens one.
@@ -156,6 +160,7 @@ function Detail({ id }: { id: string }) {
 function DocumentActions({ doc }: { doc: DocumentDetail }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const invalidate = () => {
@@ -163,10 +168,15 @@ function DocumentActions({ doc }: { doc: DocumentDetail }) {
     void queryClient.invalidateQueries({ queryKey: ['documents'] });
   };
 
-  const archive = useMutation({ mutationFn: () => archiveDocument(doc.id), onSuccess: invalidate });
+  const archive = useMutation({
+    mutationFn: () => archiveDocument(doc.id),
+    onSuccess: invalidate,
+    onError: (err) => toast.error(apiErrorMessage(err, 'Could not archive the document.')),
+  });
   const unarchive = useMutation({
     mutationFn: () => unarchiveDocument(doc.id),
     onSuccess: invalidate,
+    onError: (err) => toast.error(apiErrorMessage(err, 'Could not unarchive the document.')),
   });
   const del = useMutation({
     mutationFn: () => softDeleteDocument(doc.id),
@@ -175,6 +185,7 @@ function DocumentActions({ doc }: { doc: DocumentDetail }) {
       // The document now 404s on this route — return to the library.
       navigate('/library');
     },
+    onError: (err) => toast.error(apiErrorMessage(err, 'Could not delete the document.')),
   });
 
   const busy = archive.isPending || unarchive.isPending || del.isPending;
@@ -482,9 +493,11 @@ function EditMetadata({ doc, onDone }: { doc: DocumentDetail; onDone: () => void
 
 function QuickTags({ doc }: { doc: DocumentDetail }) {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const mutation = useMutation({
     mutationFn: (tags: string[]) => updateDocument(doc.id, { tags }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['document', doc.id] }),
+    onError: (err) => toast.error(apiErrorMessage(err, 'Could not update tags.')),
   });
 
   return (
@@ -671,9 +684,12 @@ function OverlayFallback() {
  */
 function RegenerateButton({ documentId, versionId }: { documentId: string; versionId: string }) {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const mutation = useMutation({
     mutationFn: () => regenerateRendition(documentId, versionId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['document', documentId] }),
+    onError: (err) =>
+      toast.error(apiErrorMessage(err, 'Could not generate a preview for this version.')),
   });
   return (
     <button
@@ -699,6 +715,7 @@ function RestoreVersionButton({
   version: DocumentVersionSummary;
 }) {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [confirm, setConfirm] = useState(false);
   const mutation = useMutation({
     mutationFn: () => restoreVersion(doc.id, version.id),
@@ -707,6 +724,7 @@ function RestoreVersionButton({
       void queryClient.invalidateQueries({ queryKey: ['document', doc.id] });
       void queryClient.invalidateQueries({ queryKey: ['documents'] });
     },
+    onError: (err) => toast.error(apiErrorMessage(err, 'Could not restore this version.')),
   });
 
   return (
@@ -742,7 +760,8 @@ function DownloadButton({ documentId, versionId }: { documentId: string; version
     mutationFn: () => getDownloadUrl(documentId, versionId),
     onSuccess: (ticket) => {
       setError(false);
-      window.open(ticket.url, '_blank', 'noopener,noreferrer');
+      // Hidden-anchor download: a post-await window.open would be popup-blocked.
+      triggerUrlDownload(ticket.url, ticket.fileName);
     },
     onError: () => setError(true),
   });
@@ -767,21 +786,31 @@ function UploadVersion({ doc }: { doc: DocumentDetail }) {
   const [file, setFile] = useState<File | null>(null);
   const [changeSummary, setChangeSummary] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState(0);
 
   const mutation = useMutation({
     mutationFn: () => {
       if (!file) throw new Error('no file');
-      return uploadVersion(doc.id, file, changeSummary.trim() || undefined);
+      return uploadVersion(doc.id, file, changeSummary.trim() || undefined, setProgress);
     },
     onSuccess: () => {
       setFile(null);
       setChangeSummary('');
       if (fileRef.current) fileRef.current.value = '';
       setError(null);
+      setProgress(0);
       void queryClient.invalidateQueries({ queryKey: ['document', doc.id] });
       void queryClient.invalidateQueries({ queryKey: ['documents'] });
     },
-    onError: () => setError('Upload failed. Please try again.'),
+    onError: (err) => {
+      setProgress(0);
+      setError(
+        apiErrorMessage(err, 'Upload failed. Please try again.', {
+          413: 'This file is too large to upload.',
+          415: 'This file type isn’t supported. Try PDF, Office, image, or text.',
+        }),
+      );
+    },
   });
 
   const onSubmit = (e: FormEvent) => {
@@ -790,6 +819,8 @@ function UploadVersion({ doc }: { doc: DocumentDetail }) {
       setError('Choose a file to upload.');
       return;
     }
+    setError(null);
+    setProgress(0);
     mutation.mutate();
   };
 
@@ -808,9 +839,13 @@ function UploadVersion({ doc }: { doc: DocumentDetail }) {
             id="uv-file"
             ref={fileRef}
             type="file"
+            accept={UPLOAD_ACCEPT}
             className="block w-full text-sm text-ink-soft file:mr-3 file:rounded-md file:border-0 file:bg-brand-600 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-white hover:file:bg-brand-700"
             onChange={(e) => setFile(e.target.files?.[0] ?? null)}
           />
+          <p className="mt-1 text-xs text-ink-muted">
+            PDF, Office (Word/Excel/PowerPoint), images, or text.
+          </p>
         </div>
         <div className="min-w-[12rem] flex-1">
           <label htmlFor="uv-summary" className="label">
@@ -828,6 +863,27 @@ function UploadVersion({ doc }: { doc: DocumentDetail }) {
           {mutation.isPending ? 'Uploading…' : 'Upload'}
         </button>
       </div>
+      {mutation.isPending && (
+        <div className="mt-3">
+          <div className="mb-1 flex items-center justify-between text-xs text-ink-muted">
+            <span>Uploading{file ? ` ${file.name}` : ''}…</span>
+            <span>{progress}%</span>
+          </div>
+          <div
+            className="h-2 w-full overflow-hidden rounded-full bg-slate-100"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={progress}
+            aria-label="Upload progress"
+          >
+            <div
+              className="h-full rounded-full bg-brand-500 transition-all"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+        </div>
+      )}
       {error && (
         <p className="mt-2 text-xs text-red-600" role="alert">
           {error}

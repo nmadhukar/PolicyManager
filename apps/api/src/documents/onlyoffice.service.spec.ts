@@ -1,4 +1,4 @@
-import { UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as jwt from 'jsonwebtoken';
 import {
@@ -183,5 +183,48 @@ describe('OnlyOfficeService.verifyCallbackBody', () => {
     const svc = build();
     const token = jwt.sign({ status: 2 }, 'attacker-secret');
     expect(() => svc.verifyCallbackBody({ status: 2, token })).toThrow(UnauthorizedException);
+  });
+});
+
+describe('OnlyOfficeService.downloadEditedFile SSRF guard (SM1)', () => {
+  it('rejects a URL whose host is not on the allow-list (before any fetch)', async () => {
+    const svc = build();
+    // Cloud metadata, internal RFC-1918, and arbitrary public hosts are all denied
+    // (default allow-list = Docs host + loopback only).
+    await expect(svc.downloadEditedFile('http://169.254.169.254/latest/meta-data')).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    await expect(svc.downloadEditedFile('http://10.1.2.3/secret')).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    await expect(svc.downloadEditedFile('http://evil.example.com/x')).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+  });
+
+  it('rejects a non-http(s) scheme', async () => {
+    const svc = build();
+    await expect(svc.downloadEditedFile('file:///etc/passwd')).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+  });
+
+  it('honours ONLYOFFICE_DOWNLOAD_ALLOWED_HOSTS for the Docs host', async () => {
+    const svc = new OnlyOfficeService(
+      new ConfigService({
+        ONLYOFFICE_JWT_SECRET: SECRET,
+        ONLYOFFICE_URL: 'http://localhost:8080',
+        ONLYOFFICE_DOWNLOAD_ALLOWED_HOSTS: 'docs.internal',
+      }),
+    );
+    // With an explicit allow-list, the broad loopback aliases (e.g. 127.0.0.1) are
+    // no longer auto-trusted — only the Docs host + configured hosts pass.
+    await expect(svc.downloadEditedFile('http://127.0.0.1:9999/x')).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    // ...but a non-allow-listed host is still rejected before fetching.
+    await expect(svc.downloadEditedFile('http://other.host/x')).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
   });
 });

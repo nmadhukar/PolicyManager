@@ -1,5 +1,6 @@
 import { Body, Controller, Get, HttpCode, Post, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { AUDIT_ACTIONS } from '@policymanager/shared';
 import type { AuthUser } from '@policymanager/shared';
 import { AuditService } from '../audit/audit.service';
@@ -17,6 +18,13 @@ import { JwtAuthGuard } from './guards/jwt-auth.guard';
 const FORGOT_PASSWORD_MESSAGE =
   'If an account exists for that email, a password reset link has been sent.';
 
+/**
+ * SM3: tight per-IP limit for credential/token endpoints (10 req / 60s) to blunt
+ * brute-force + credential-stuffing. Overrides the generous global default; the
+ * whole throttler is skippable via `THROTTLE_DISABLED` (test env).
+ */
+const AUTH_THROTTLE = { default: { limit: 10, ttl: 60_000 } };
+
 @ApiTags('auth')
 @Controller('auth')
 export class AuthController {
@@ -27,6 +35,7 @@ export class AuthController {
 
   @Post('login')
   @HttpCode(200)
+  @Throttle(AUTH_THROTTLE)
   @ApiOperation({ summary: 'Local email + password login. Returns access + refresh tokens.' })
   async login(@Body() dto: LoginDto, @ReqContext() ctx: RequestContext) {
     try {
@@ -53,6 +62,7 @@ export class AuthController {
 
   @Post('refresh')
   @HttpCode(200)
+  @Throttle(AUTH_THROTTLE)
   @ApiOperation({ summary: 'Rotate a refresh token for a new access + refresh pair.' })
   refresh(@Body() dto: RefreshDto) {
     return this.auth.refresh(dto.refreshToken);
@@ -67,6 +77,7 @@ export class AuthController {
 
   @Post('forgot-password')
   @HttpCode(200)
+  @Throttle(AUTH_THROTTLE)
   @ApiOperation({
     summary: 'Request a password reset link. Always returns 200 (no account enumeration).',
   })
@@ -77,6 +88,7 @@ export class AuthController {
 
   @Post('reset-password')
   @HttpCode(200)
+  @Throttle(AUTH_THROTTLE)
   @ApiOperation({ summary: 'Complete a password reset using an emailed token.' })
   async resetPassword(@Body() dto: ResetPasswordDto, @ReqContext() ctx: RequestContext) {
     const { userId } = await this.auth.resetPassword(dto.token, dto.newPassword);

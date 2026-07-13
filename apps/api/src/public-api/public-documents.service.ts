@@ -206,7 +206,8 @@ export class PublicDocumentsService {
           sizeBytes: true,
           checksum: true,
           createdAt: true,
-          extractedText: true,
+          // D2: read the persisted flag, not the (large) @db.Text column.
+          hasExtractedText: true,
         },
       },
     });
@@ -222,10 +223,11 @@ export class PublicDocumentsService {
       version: v.versionNumber,
       fileName: v.fileName,
       mimeType: v.mimeType,
-      sizeBytes: v.sizeBytes,
+      // D10: BigInt column → JSON-safe number.
+      sizeBytes: Number(v.sizeBytes),
       checksum: v.checksum,
       createdAt: v.createdAt.toISOString(),
-      hasExtractedText: !!v.extractedText && v.extractedText.length > 0,
+      hasExtractedText: v.hasExtractedText,
     }));
   }
 

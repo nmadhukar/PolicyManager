@@ -151,6 +151,10 @@ describe('Review scheduling & SMTP admin (e2e)', () => {
 
   afterAll(async () => {
     if (prisma) {
+      // Immutable evidence now blocks a document DELETE (onDelete: Restrict, D1),
+      // so clear attestations + acknowledgments before the documents below.
+      await prisma.attestation.deleteMany({ where: { documentId: { in: createdDocIds } } });
+      await prisma.acknowledgmentAssignment.deleteMany({ where: { documentId: { in: createdDocIds } } });
       await prisma.reviewTask.deleteMany({ where: { documentId: { in: createdDocIds } } });
       await prisma.reviewAssignment.deleteMany({ where: { documentId: { in: createdDocIds } } });
       await prisma.notificationLog.deleteMany({ where: { toEmail: { contains: String(suffix) } } });

@@ -172,7 +172,7 @@ function DistributeForm({ doc }: { doc: DocumentDetail }) {
           {Object.values(ROLES).map((role) => (
             <label
               key={role}
-              className={`cursor-pointer rounded-full border px-2.5 py-0.5 text-xs ${
+              className={`cursor-pointer rounded-full border px-2.5 py-0.5 text-xs focus-within:ring-2 focus-within:ring-brand-400 focus-within:ring-offset-2 ${
                 roleNames.includes(role)
                   ? 'border-brand-500 bg-brand-50 text-brand-700'
                   : 'border-slate-200 text-ink-soft'

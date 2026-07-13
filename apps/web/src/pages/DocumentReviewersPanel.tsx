@@ -4,7 +4,9 @@ import { AxiosError } from 'axios';
 import type { DocumentDetail } from '@policymanager/shared';
 import { assignReviewer, listReviewers, removeReviewer } from '../api/reviews';
 import { listUsers } from '../api/users';
+import { apiErrorMessage } from '../lib/apiError';
 import { formatDate } from '../lib/format';
+import { useToast } from '../ui/Toast';
 
 /**
  * Reviewers panel on the document detail page (review.manage users). Shows the
@@ -87,9 +89,11 @@ function RemoveReviewerButton({
   userId: string;
   onDone: () => void;
 }) {
+  const toast = useToast();
   const mutation = useMutation({
     mutationFn: () => removeReviewer(documentId, userId),
     onSuccess: onDone,
+    onError: (err) => toast.error(apiErrorMessage(err, 'Could not remove the reviewer.')),
   });
   return (
     <button

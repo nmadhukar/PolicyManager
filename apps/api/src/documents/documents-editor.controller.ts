@@ -46,8 +46,12 @@ export class DocumentsEditorController {
     @Query('token') token: string,
     @Res({ passthrough: true }) res: Response,
   ): Promise<StreamableFile> {
-    this.onlyOffice.verifyScopedToken(token ?? '', 'content', id, versionId);
-    const { buffer, mimeType, fileName } = await this.documents.getVersionSource(id, versionId);
+    const payload = this.onlyOffice.verifyScopedToken(token ?? '', 'content', id, versionId);
+    const { buffer, mimeType, fileName } = await this.documents.getVersionSource(
+      id,
+      versionId,
+      payload.userId,
+    );
     res.set({
       'Content-Type': mimeType,
       'Content-Disposition': `inline; filename="${fileName.replace(/["\r\n]/g, '')}"`,

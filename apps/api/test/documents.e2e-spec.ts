@@ -330,4 +330,78 @@ describe('Documents & Versioning (e2e)', () => {
     expect(v3Row?.s3Key).not.toBe(v1Row?.s3Key); // copied to a new key, not moved
     expect(v3Row?.checksum).toBe(v1Row?.checksum); // identical bytes
   }, 45000);
+
+  it('C1/D6: two concurrent version uploads get DISTINCT numbers (or one clean 409), never a 500 or byte overwrite', async () => {
+    const created = await request(app.getHttpServer())
+      .post('/api/documents')
+      .set('Authorization', auth())
+      .send({ title: `Concurrent CC-${suffix}` })
+      .expect(201);
+    const docId = created.body.id as string;
+    createdDocIds.push(docId);
+
+    const upload = (n: number) =>
+      request(app.getHttpServer())
+        .post(`/api/documents/${docId}/versions`)
+        .set('Authorization', auth())
+        .attach('file', makePdf(`Concurrent body ${n}`), {
+          filename: `cc-${n}.pdf`,
+          contentType: 'application/pdf',
+        });
+
+    // Fire both at once against the same (empty) document.
+    const [r1, r2] = await Promise.all([upload(1), upload(2)]);
+
+    // Neither is a raw 500 — the row lock serializes and the P2002 backstop maps to 409.
+    expect(r1.status).not.toBe(500);
+    expect(r2.status).not.toBe(500);
+    for (const r of [r1, r2]) expect([201, 409]).toContain(r.status);
+
+    // Successful uploads have DISTINCT version numbers...
+    const numbers = [r1, r2].filter((r) => r.status === 201).map((r) => r.body.versionNumber);
+    expect(new Set(numbers).size).toBe(numbers.length);
+
+    // ...and the DB never holds two versions with the same number for this doc.
+    const versions = await prisma.documentVersion.findMany({
+      where: { documentId: docId },
+      select: { versionNumber: true, s3Key: true },
+    });
+    const dbNumbers = versions.map((v) => v.versionNumber);
+    expect(new Set(dbNumbers).size).toBe(dbNumbers.length);
+    // Distinct numbers ⇒ distinct deterministic keys ⇒ no byte overwrite.
+    const keys = versions.map((v) => v.s3Key);
+    expect(new Set(keys).size).toBe(keys.length);
+  }, 30000);
+
+  it('C4/D3: a document number freed by soft-delete can be reused by a new document', async () => {
+    const num = `PP-REUSE-${suffix}`;
+    const first = await request(app.getHttpServer())
+      .post('/api/documents')
+      .set('Authorization', auth())
+      .send({ title: `Reuse First ${suffix}`, documentNumber: num })
+      .expect(201);
+    createdDocIds.push(first.body.id);
+
+    // Soft-delete frees the number (the unique is partial: WHERE deletedAt IS NULL).
+    await request(app.getHttpServer())
+      .delete(`/api/documents/${first.body.id}`)
+      .set('Authorization', auth())
+      .expect(200);
+
+    // A brand-new document may now take the same number (previously a false 409).
+    const second = await request(app.getHttpServer())
+      .post('/api/documents')
+      .set('Authorization', auth())
+      .send({ title: `Reuse Second ${suffix}`, documentNumber: num })
+      .expect(201);
+    createdDocIds.push(second.body.id);
+    expect(second.body.documentNumber).toBe(num);
+
+    // But two ACTIVE documents still cannot share the number.
+    await request(app.getHttpServer())
+      .post('/api/documents')
+      .set('Authorization', auth())
+      .send({ title: `Reuse Third ${suffix}`, documentNumber: num })
+      .expect(409);
+  }, 30000);
 });

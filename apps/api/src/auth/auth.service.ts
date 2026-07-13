@@ -177,7 +177,22 @@ export class AuthService {
     const tokenHash = AuthService.hashRefreshToken(rawRefresh);
     const record = await this.prisma.refreshToken.findUnique({ where: { tokenHash } });
 
-    if (!record || record.revokedAt || record.expiresAt.getTime() <= Date.now()) {
+    if (!record) {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+    // SL4 — reuse detection: a KNOWN but already-revoked token was replayed. Because
+    // rotation revokes each token as it is spent, presenting a revoked token means
+    // either a rotated token was stolen and replayed, or the legitimate holder
+    // raced. Either way, treat it as a compromised token family and REVOKE ALL of
+    // this user's live refresh tokens (family kill), forcing a fresh login.
+    if (record.revokedAt) {
+      await this.prisma.refreshToken.updateMany({
+        where: { userId: record.userId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+    if (record.expiresAt.getTime() <= Date.now()) {
       throw new UnauthorizedException('Invalid refresh token');
     }
 

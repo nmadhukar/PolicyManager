@@ -16,10 +16,12 @@ import {
   runReviewSweep,
 } from '../api/reviews';
 import { useAuth } from '../auth/AuthContext';
+import { apiErrorMessage } from '../lib/apiError';
 import { formatDate } from '../lib/format';
 import { AppShell } from '../ui/AppShell';
 import { Modal } from '../ui/Modal';
 import { EmptyState, ErrorState, LoadingState } from '../ui/states';
+import { useToast } from '../ui/Toast';
 
 /** Start-of-day (local) for a date, for calendar/day comparisons. */
 function startOfDay(d: Date): Date {
@@ -97,12 +99,14 @@ function ReviewsDashboard() {
 function ComplianceCards() {
   const query = useQuery({ queryKey: ['compliance-summary'], queryFn: getComplianceSummary });
   const queryClient = useQueryClient();
+  const toast = useToast();
   const sweep = useMutation({
     mutationFn: runReviewSweep,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['compliance-summary'] });
       void queryClient.invalidateQueries({ queryKey: ['review-tasks'] });
     },
+    onError: (err) => toast.error(apiErrorMessage(err, 'Could not run the review sweep.')),
   });
 
   const forbidden = (query.error as AxiosError | null)?.response?.status === 403;
@@ -340,7 +344,7 @@ function CompleteModal({ task, onClose }: { task: ReviewTaskItem; onClose: () =>
   };
 
   return (
-    <Modal open onClose={onClose} titleId="complete-review-title">
+    <Modal open onClose={onClose} titleId="complete-review-title" busy={mutation.isPending}>
       <form onSubmit={onSubmit} aria-label="Complete review">
         <h2 id="complete-review-title" className="text-base font-semibold text-ink">
           Complete review

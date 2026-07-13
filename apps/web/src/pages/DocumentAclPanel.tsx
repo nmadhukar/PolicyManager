@@ -12,6 +12,8 @@ import {
 import { AddAclInput, addAcl, listAcl, removeAcl } from '../api/acl';
 import { updateDocument } from '../api/documents';
 import { listRoles, listUsers } from '../api/users';
+import { apiErrorMessage } from '../lib/apiError';
+import { useToast } from '../ui/Toast';
 
 /**
  * Access-control panel on the document detail page (document.write users). Shows
@@ -20,6 +22,7 @@ import { listRoles, listUsers } from '../api/users';
  */
 export function DocumentAclPanel({ doc }: { doc: DocumentDetail }) {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const aclQuery = useQuery({ queryKey: ['acl', doc.id], queryFn: () => listAcl(doc.id) });
 
   const invalidate = () => {
@@ -30,6 +33,7 @@ export function DocumentAclPanel({ doc }: { doc: DocumentDetail }) {
   const levelMutation = useMutation({
     mutationFn: (accessLevel: AccessLevel) => updateDocument(doc.id, { accessLevel }),
     onSuccess: invalidate,
+    onError: (err) => toast.error(apiErrorMessage(err, 'Could not change the access level.')),
   });
 
   const grants = aclQuery.data ?? [];
@@ -133,9 +137,11 @@ function RemoveGrantButton({
   aclId: string;
   onDone: () => void;
 }) {
+  const toast = useToast();
   const mutation = useMutation({
     mutationFn: () => removeAcl(documentId, aclId),
     onSuccess: onDone,
+    onError: (err) => toast.error(apiErrorMessage(err, 'Could not remove the grant.')),
   });
   return (
     <button

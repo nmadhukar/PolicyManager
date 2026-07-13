@@ -12,25 +12,31 @@ describe('ReviewService', () => {
   const config = new ConfigService({ FRONTEND_URL: 'http://localhost:5173' });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const makePrisma = (): any => ({
-    document: { findFirst: jest.fn(), findMany: jest.fn().mockResolvedValue([]), count: jest.fn(), update: jest.fn() },
-    user: { findUnique: jest.fn() },
-    reviewAssignment: {
-      findUnique: jest.fn().mockResolvedValue(null),
-      findMany: jest.fn().mockResolvedValue([]),
-      create: jest.fn(),
-      delete: jest.fn(),
-    },
-    reviewTask: {
-      findUnique: jest.fn(),
-      findMany: jest.fn().mockResolvedValue([]),
-      count: jest.fn().mockResolvedValue(0),
-      create: jest.fn().mockResolvedValue({ id: 'task-new' }),
-      update: jest.fn(),
-      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
-    },
-    $transaction: jest.fn((ops: Promise<unknown>[]) => Promise.all(ops)),
-  });
+  const makePrisma = (): any => {
+    const prisma: any = {
+      document: { findFirst: jest.fn(), findMany: jest.fn().mockResolvedValue([]), count: jest.fn(), update: jest.fn() },
+      user: { findUnique: jest.fn() },
+      reviewAssignment: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        findMany: jest.fn().mockResolvedValue([]),
+        create: jest.fn(),
+        delete: jest.fn(),
+      },
+      reviewTask: {
+        findUnique: jest.fn(),
+        findMany: jest.fn().mockResolvedValue([]),
+        count: jest.fn().mockResolvedValue(0),
+        create: jest.fn().mockResolvedValue({ id: 'task-new' }),
+        update: jest.fn(),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+    };
+    // C6/D4: completeTask now uses the callback (interactive) transaction form.
+    prisma.$transaction = jest.fn((arg: unknown) =>
+      typeof arg === 'function' ? (arg as (tx: unknown) => unknown)(prisma) : Promise.all(arg as unknown[]),
+    );
+    return prisma;
+  };
   const makeMail = () => ({ sendReviewReminder: jest.fn().mockResolvedValue(true) });
   const makeAudit = () => ({ record: jest.fn().mockResolvedValue('ae-1') });
   const makeAttestation = () => ({ record: jest.fn().mockResolvedValue({ id: 'att-1' }) });
@@ -183,6 +189,33 @@ describe('ReviewService', () => {
       expect(prisma.reviewTask.create).not.toHaveBeenCalled();
       expect(mail.sendReviewReminder).not.toHaveBeenCalled();
     });
+
+    it('C2/D9: a concurrent create collision (P2002) is skipped, not fatal — no dup task', async () => {
+      const { svc, prisma, mail, audit } = build();
+      prisma.document.findMany.mockResolvedValue([
+        {
+          id: 'doc-1',
+          title: 'Intake Policy',
+          nextReviewDate: new Date('2026-07-20T00:00:00Z'),
+          currentVersionId: 'v1',
+          owner,
+          reviewAssignments: [{ reviewer: reviewerA }],
+        },
+      ]);
+      // Another sweep won the open-task partial unique first.
+      const { Prisma } = jest.requireActual('@prisma/client');
+      prisma.reviewTask.create.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('dup', { code: 'P2002', clientVersion: 'x' }),
+      );
+
+      const res = await svc.runReviewSweep(NOW);
+
+      expect(res.tasksCreated).toBe(0); // the collision was skipped
+      expect(mail.sendReviewReminder).not.toHaveBeenCalled();
+      expect(
+        audit.record.mock.calls.filter((c: unknown[]) => (c[0] as { action: string }).action === 'review.task_created'),
+      ).toHaveLength(0);
+    });
   });
 
   describe('completeTask', () => {
@@ -251,6 +284,7 @@ describe('ReviewService', () => {
         }),
         staff,
         {},
+        expect.anything(), // tx client (C6/D4)
       );
     });
 

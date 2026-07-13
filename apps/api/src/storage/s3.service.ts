@@ -15,6 +15,7 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { hostOf, isPrivateOrLoopbackHost } from '../common/net.util';
 import {
   buildDocumentObjectKey,
   buildRenditionObjectKey,
@@ -97,11 +98,36 @@ export class S3Service implements OnModuleInit {
       region,
       endpoint,
       forcePathStyle: envBool(config.get('S3_FORCE_PATH_STYLE'), Boolean(endpoint)),
-      credentials: {
-        accessKeyId: config.get<string>('S3_ACCESS_KEY_ID') || 'minioadmin',
-        secretAccessKey: config.get<string>('S3_SECRET_ACCESS_KEY') || 'minioadmin',
-      },
+      credentials: S3Service.resolveCredentials(config, endpoint),
     });
+  }
+
+  /**
+   * Resolves S3 credentials (SM2). The convenient `minioadmin` default is kept ONLY
+   * when the endpoint is a LOCAL MinIO (loopback / RFC-1918 / host.docker.internal).
+   * For real AWS S3 (no endpoint) or a remote S3-compatible endpoint, explicit
+   * `S3_ACCESS_KEY_ID`/`S3_SECRET_ACCESS_KEY` are required — the app refuses to boot
+   * with a shipped default that would otherwise silently ship to production.
+   */
+  private static resolveCredentials(
+    config: ConfigService,
+    endpoint?: string,
+  ): { accessKeyId: string; secretAccessKey: string } {
+    const accessKeyId = config.get<string>('S3_ACCESS_KEY_ID') || '';
+    const secretAccessKey = config.get<string>('S3_SECRET_ACCESS_KEY') || '';
+    if (accessKeyId && secretAccessKey) return { accessKeyId, secretAccessKey };
+
+    const host = endpoint ? hostOf(endpoint) : null;
+    const local = !!host && isPrivateOrLoopbackHost(host);
+    if (local) {
+      return {
+        accessKeyId: accessKeyId || 'minioadmin',
+        secretAccessKey: secretAccessKey || 'minioadmin',
+      };
+    }
+    throw new Error(
+      'S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY are required when S3_ENDPOINT is not a local MinIO endpoint (no default credential is shipped for non-local storage).',
+    );
   }
 
   /**
@@ -216,15 +242,21 @@ export class S3Service implements OnModuleInit {
    * request before calling this (AGENTS.md §8).
    *
    * @param ttlSeconds URL lifetime; defaults to 300s (5 min).
+   * @param s3VersionId Pins the presigned URL to a specific S3 object version when
+   *   bucket versioning is enabled — so a URL always serves the exact bytes of the
+   *   requested DocumentVersion, even if a (never-intended) same-key overwrite ever
+   *   occurred (C7).
    */
   async getPresignedDownloadUrl(
     key: string,
     ttlSeconds = 300,
     downloadFileName?: string,
+    s3VersionId?: string,
   ): Promise<string> {
     const command = new GetObjectCommand({
       Bucket: this.bucket,
       Key: key,
+      ...(s3VersionId ? { VersionId: s3VersionId } : {}),
       ...(downloadFileName
         ? { ResponseContentDisposition: `attachment; filename="${sanitizeHeader(downloadFileName)}"` }
         : {}),

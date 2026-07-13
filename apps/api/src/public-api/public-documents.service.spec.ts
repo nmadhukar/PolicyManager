@@ -177,7 +177,8 @@ describe('PublicDocumentsService', () => {
             sizeBytes: 100,
             checksum: 'abc',
             createdAt: new Date('2026-05-01T00:00:00Z'),
-            extractedText: 'text',
+            // D2: getVersions now reads the persisted flag, not the text column.
+            hasExtractedText: true,
           },
           {
             versionNumber: 1,
@@ -186,7 +187,7 @@ describe('PublicDocumentsService', () => {
             sizeBytes: 90,
             checksum: 'def',
             createdAt: new Date('2026-04-01T00:00:00Z'),
-            extractedText: null,
+            hasExtractedText: false,
           },
         ],
       });

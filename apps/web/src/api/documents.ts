@@ -111,13 +111,26 @@ export async function uploadVersion(
   id: string,
   file: File,
   changeSummary?: string,
+  /** Reports upload progress 0–100 (only fires when total size is known). */
+  onProgress?: (percent: number) => void,
 ): Promise<DocumentVersionSummary> {
   const form = new FormData();
   form.append('file', file);
   if (changeSummary) form.append('changeSummary', changeSummary);
-  const { data } = await http.post<DocumentVersionSummary>(`/documents/${id}/versions`, form);
+  const { data } = await http.post<DocumentVersionSummary>(`/documents/${id}/versions`, form, {
+    onUploadProgress: (e) => {
+      if (onProgress && e.total) onProgress(Math.round((e.loaded / e.total) * 100));
+    },
+  });
   return data;
 }
+
+/**
+ * Client-side hint of the file types the versioning + import flows accept, for
+ * the `accept` attribute on file inputs. The API remains authoritative.
+ */
+export const UPLOAD_ACCEPT =
+  '.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.png,.jpg,.jpeg,.gif,.webp,image/*';
 
 export async function getDownloadUrl(
   documentId: string,

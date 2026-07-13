@@ -82,6 +82,46 @@ export class DocumentAccessService {
   }
 
   /**
+   * Access decision for a bare user id (no AuthUser in hand). Resolves the user's
+   * roles + permissions from the DB, then applies the same {@link canAccess} logic.
+   * Used by server-to-server paths that carry only an id (e.g. the OnlyOffice
+   * content token — SH2 defence in depth). A disabled/unknown user is denied.
+   */
+  async canAccessByUserId(
+    userId: string,
+    doc: AccessDocument,
+    action: AccessAction,
+  ): Promise<boolean> {
+    const user = await this.resolveAuthUser(userId);
+    if (!user) return false;
+    return this.canAccess(user, doc, action);
+  }
+
+  /** Loads the RBAC context (roles + de-duplicated permissions) for an active user. */
+  private async resolveAuthUser(userId: string): Promise<AuthUser | null> {
+    const u = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        status: true,
+        roles: {
+          select: {
+            role: { select: { name: true, permissions: { select: { permission: { select: { key: true } } } } } },
+          },
+        },
+      },
+    });
+    if (!u || u.status !== 'active') return null;
+    const roles = u.roles.map((ur) => ur.role.name);
+    const permissions = Array.from(
+      new Set(u.roles.flatMap((ur) => ur.role.permissions.map((rp) => rp.permission.key))),
+    );
+    return { id: u.id, email: u.email, name: u.name, roles, permissions, mustChangePassword: false };
+  }
+
+  /**
    * A Prisma where-clause that filters a document list down to what `user` may
    * VIEW — used to exclude confidential documents the caller has no grant for.
    * AND this into the base list query. Admins get an empty clause (see all).

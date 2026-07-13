@@ -18,6 +18,8 @@ import { AppShell } from '../ui/AppShell';
 import { EmptyState, ErrorState, ForbiddenState, LoadingState } from '../ui/states';
 
 const PAGE_SIZE = 25;
+/** Larger page size for the "export all" sweep — fewer round-trips. */
+const EXPORT_PAGE_SIZE = 200;
 
 interface Filters {
   action: string;
@@ -100,6 +102,25 @@ function AuditTrail() {
   const items = query.data?.items ?? [];
   const hasFilters = Object.values(filters).some((v) => v !== '');
 
+  const [exporting, setExporting] = useState(false);
+  // Export the FULL result set for the active filter (all pages), not just the
+  // page on screen. Paginates server-side in large batches.
+  const exportAll = async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const all: AuditEventItem[] = [];
+      for (let p = 1; p <= 1000; p += 1) {
+        const res = await listAudit({ ...params, page: p, pageSize: EXPORT_PAGE_SIZE });
+        all.push(...res.items);
+        if (res.items.length === 0 || all.length >= res.total) break;
+      }
+      exportCsv(all);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <div className="space-y-5">
       <FiltersBar
@@ -109,7 +130,8 @@ function AuditTrail() {
           setFilters(EMPTY_FILTERS);
           setPage(1);
         }}
-        onExport={items.length > 0 ? () => exportCsv(items) : undefined}
+        onExport={total > 0 ? exportAll : undefined}
+        exporting={exporting}
       />
 
       {query.isLoading ? (
@@ -166,11 +188,13 @@ function FiltersBar({
   onChange,
   onClear,
   onExport,
+  exporting = false,
 }: {
   filters: Filters;
   onChange: (part: Partial<Filters>) => void;
   onClear: () => void;
   onExport?: () => void;
+  exporting?: boolean;
 }) {
   const hasFilters = Object.values(filters).some((v) => v !== '');
   return (
@@ -269,7 +293,20 @@ function FiltersBar({
         ) : (
           <span />
         )}
-        <button className="btn-secondary !py-1.5 text-sm" onClick={onExport} disabled={!onExport}>
+        <button
+          className="btn-secondary !py-1.5 text-sm"
+          onClick={() => {
+            if (onExport) void onExport();
+          }}
+          disabled={!onExport || exporting}
+          aria-busy={exporting}
+        >
+          {exporting && (
+            <span
+              aria-hidden
+              className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-300 border-t-brand-600"
+            />
+          )}
           Export CSV
         </button>
       </div>

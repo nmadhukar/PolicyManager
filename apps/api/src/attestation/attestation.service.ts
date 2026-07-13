@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import {
   AUDIT_ACTIONS,
@@ -9,6 +9,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import type { RequestContext } from '../audit/request-context';
+import { DocumentAccessService } from '../documents/document-access.service';
 
 /** Everything needed to record one immutable attestation. */
 export interface RecordAttestationInput {
@@ -51,6 +52,7 @@ export class AttestationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly access: DocumentAccessService,
   ) {}
 
   /**
@@ -58,13 +60,20 @@ export class AttestationService {
    * from the request context so the row is self-contained survey evidence. The
    * write is inside the request path (unlike audit) because losing a sign-off is
    * not acceptable — callers must await it.
+   *
+   * `tx` lets a caller enlist the sign-off in its OWN transaction so the state
+   * change (approve/complete/acknowledge) and its immutable evidence commit
+   * atomically — never one without the other (C6/D4). The `attestation.*` audit is
+   * best-effort as always.
    */
   async record(
     input: RecordAttestationInput,
     user: AuthUser,
     ctx: RequestContext = {},
+    tx?: Prisma.TransactionClient,
   ): Promise<AttestationItem> {
-    const created = await this.prisma.attestation.create({
+    const client = tx ?? this.prisma;
+    const created = await client.attestation.create({
       data: {
         documentId: input.documentId,
         versionId: input.versionId ?? undefined,
@@ -110,6 +119,37 @@ export class AttestationService {
       orderBy: { signedAt: 'desc' },
     });
     return rows.map((r) => AttestationService.toItem(r));
+  }
+
+  /**
+   * Access-enforced approval chain for the HTTP surface (SH1). The raw
+   * {@link listApprovalChain} leaks a confidential document's reviewers/approvers
+   * to any `document.read` holder; this loads the (non-deleted) document, clears the
+   * same VIEW gate as the rest of the document surface (owner/Admin/ACL for
+   * confidential), audits a denial, and only then returns the chain.
+   */
+  async listApprovalChainForDocument(
+    documentId: string,
+    user: AuthUser,
+    ctx: RequestContext = {},
+  ): Promise<AttestationItem[]> {
+    const doc = await this.prisma.document.findFirst({
+      where: { id: documentId, deletedAt: null },
+      select: { id: true, ownerId: true, accessLevel: true, categoryId: true },
+    });
+    if (!doc) throw new NotFoundException('Document not found');
+    if (!(await this.access.canAccess(user, doc, 'view'))) {
+      await this.audit.record({
+        action: AUDIT_ACTIONS.ACCESS_DENIED,
+        actorUserId: user.id,
+        documentId,
+        targetType: 'document',
+        ...ctx,
+        metadata: { attemptedAction: 'view', accessLevel: doc.accessLevel, artifact: 'approval-chain' },
+      });
+      throw new ForbiddenException('You do not have access to this document');
+    }
+    return this.listApprovalChain(documentId);
   }
 
   /** Projects a joined attestation row onto the shared {@link AttestationItem}. */

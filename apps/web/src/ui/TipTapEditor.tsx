@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { EditorContent, useEditor, type Editor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { getVersionHtml, saveHtmlVersion } from '../api/documents';
-import { LoadingState } from './states';
+import { ErrorState, LoadingState } from './states';
+import { useFocusTrap } from './useFocusTrap';
 
 /**
  * In-app rich-text (TipTap) authoring for native HTML documents (AGENTS.md §10a).
@@ -24,12 +25,20 @@ export function TipTapEditor({
   onClose: () => void;
 }) {
   const [error, setError] = useState<string | null>(null);
+  const [dirty, setDirty] = useState(false);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
 
   const initial = useQuery({
     queryKey: ['version-html', documentId, version?.id],
     queryFn: () => getVersionHtml(documentId, version!.id),
     enabled: !!version,
+    retry: false,
   });
+
+  // Loading an existing version failed — block saving so we never replace a real
+  // version with a blank document (FM5).
+  const initialError = !!version && initial.isError;
 
   const editor = useEditor({
     extensions: [StarterKit],
@@ -40,6 +49,8 @@ export function TipTapEditor({
         'aria-label': 'Document body',
       },
     },
+    // User edits mark the document dirty; programmatic setContent below does not.
+    onUpdate: () => setDirty(true),
   });
 
   // Load existing HTML into the editor once it (and the content) are ready.
@@ -53,10 +64,26 @@ export function TipTapEditor({
     mutationFn: () => saveHtmlVersion(documentId, editor?.getHTML() ?? '', 'Edited text document'),
     onSuccess: () => {
       setError(null);
+      setDirty(false);
       onSaved();
     },
     onError: () => setError('Could not save. Please try again.'),
   });
+
+  // Guarded close: never discard unsaved edits silently (FM5); never interrupt a
+  // save in flight.
+  const requestClose = () => {
+    if (save.isPending) return;
+    if (dirty && !initialError) {
+      setConfirmDiscard(true);
+      return;
+    }
+    onClose();
+  };
+
+  useFocusTrap(true, dialogRef, requestClose);
+
+  const blockSave = save.isPending || !editor || initialError || (!!version && initial.isLoading);
 
   return (
     <div
@@ -64,17 +91,18 @@ export function TipTapEditor({
       role="dialog"
       aria-modal="true"
       aria-label="Text document editor"
-      onMouseDown={onClose}
+      onMouseDown={requestClose}
     >
       <div
-        className="card flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden p-0"
+        ref={dialogRef}
+        className="card flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden p-0 focus:outline-none"
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3">
           <h2 className="text-base font-semibold text-ink">
             {version ? 'Edit text document' : 'New text document'}
           </h2>
-          <button className="text-sm text-ink-muted hover:text-ink" onClick={onClose}>
+          <button className="text-sm text-ink-muted hover:text-ink" onClick={requestClose}>
             Cancel
           </button>
         </div>
@@ -82,6 +110,13 @@ export function TipTapEditor({
         {version && initial.isLoading ? (
           <div className="p-6">
             <LoadingState label="Loading document…" />
+          </div>
+        ) : initialError ? (
+          <div className="p-6">
+            <ErrorState
+              description="We couldn't load this version to edit. Saving is disabled until it loads, so a blank document can't overwrite it."
+              onRetry={() => void initial.refetch()}
+            />
           </div>
         ) : (
           <>
@@ -97,18 +132,32 @@ export function TipTapEditor({
             {error}
           </p>
         )}
-        <div className="flex justify-end gap-2 border-t border-slate-200 px-5 py-3">
-          <button className="btn-secondary" onClick={onClose} disabled={save.isPending}>
-            Cancel
-          </button>
-          <button
-            className="btn-primary"
-            onClick={() => save.mutate()}
-            disabled={save.isPending || !editor}
+
+        {confirmDiscard ? (
+          <div
+            className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 bg-amber-50 px-5 py-3"
+            role="alert"
           >
-            {save.isPending ? 'Saving…' : 'Save version'}
-          </button>
-        </div>
+            <span className="text-sm text-amber-800">Discard your unsaved changes?</span>
+            <div className="flex gap-2">
+              <button className="btn-secondary" onClick={() => setConfirmDiscard(false)}>
+                Keep editing
+              </button>
+              <button className="btn-danger" onClick={onClose}>
+                Discard
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex justify-end gap-2 border-t border-slate-200 px-5 py-3">
+            <button className="btn-secondary" onClick={requestClose} disabled={save.isPending}>
+              Cancel
+            </button>
+            <button className="btn-primary" onClick={() => save.mutate()} disabled={blockSave}>
+              {save.isPending ? 'Saving…' : 'Save version'}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

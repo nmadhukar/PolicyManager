@@ -1,4 +1,5 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import type { DocumentCategoryNode } from '@policymanager/shared';
 import { PrismaService } from '../prisma/prisma.service';
 import type { CreateCategoryDto } from './dto/create-category.dto';
@@ -32,11 +33,20 @@ export class DocumentCategoriesService {
       });
       if (!parent) throw new BadRequestException('Unknown parentId');
     }
-    const created = await this.prisma.documentCategory.create({
-      data: { name: dto.name, parentId: dto.parentId, description: dto.description },
-      select: { id: true, name: true, parentId: true, description: true },
-    });
-    return { ...created, children: [] };
+    try {
+      const created = await this.prisma.documentCategory.create({
+        data: { name: dto.name, parentId: dto.parentId, description: dto.description },
+        select: { id: true, name: true, parentId: true, description: true },
+      });
+      return { ...created, children: [] };
+    } catch (err) {
+      // D12/C10: a sibling category with this name already exists (unique on
+      // (name, parentId) + the root partial unique). Surface a clean 409.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        throw new ConflictException('A category with that name already exists here');
+      }
+      throw err;
+    }
   }
 }
 

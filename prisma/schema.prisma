@@ -193,6 +193,11 @@ model DocumentCategory {
   documents Document[]
   acls      DocumentAcl[]      @relation("CategoryAcl")
 
+  // No two sibling categories share a name. NOTE (D12/C10): this compound unique
+  // only constrains rows with a NON-NULL parentId (Postgres treats NULLs as
+  // distinct), so a companion PARTIAL unique index on `name WHERE parentId IS NULL`
+  // (migration `data_integrity_hardening`) enforces uniqueness among root categories.
+  @@unique([name, parentId])
   @@index([parentId])
   @@schema("policytracker")
 }
@@ -202,7 +207,11 @@ model DocumentCategory {
 model Document {
   id               String          @id @default(uuid())
   title            String
-  documentNumber   String?         @unique
+  // Uniqueness is enforced by a PARTIAL unique index scoped to live documents
+  // (`WHERE "deletedAt" IS NULL`), added in migration `data_integrity_hardening`.
+  // A plain `@unique` would collide with soft-deleted rows and mis-report a
+  // re-import of a number whose only holder is in the trash (C4/D3).
+  documentNumber   String?
   categoryId       String?
   ownerId          String
   description      String?
@@ -259,12 +268,19 @@ model DocumentVersion {
   renditionS3Key String?
   fileName       String
   mimeType       String
-  sizeBytes      Int
+  // BigInt so files >2 GiB are represented exactly; serialized to a JS number in
+  // the API projections (D10).
+  sizeBytes      BigInt
   checksum       String
   uploadedById   String
   changeSummary  String?
   status         DocumentStatus @default(draft)
   extractedText  String?        @db.Text
+  // Persisted existence flag for `extractedText`, set at write time. Lets list,
+  // detail, and version reads compute "has text" WITHOUT selecting the (large)
+  // @db.Text column on every row (D2). The text itself is read only where used
+  // (public search / content).
+  hasExtractedText Boolean      @default(false)
   createdAt      DateTime       @default(now())
 
   document                  Document                   @relation("DocumentVersions", fields: [documentId], references: [id], onDelete: Cascade)
@@ -275,6 +291,8 @@ model DocumentVersion {
 
   @@unique([documentId, versionNumber])
   @@index([documentId])
+  // Dedup hot path: import checksum lookups scan by checksum (D7).
+  @@index([checksum])
   @@schema("policytracker")
 }
 
@@ -524,7 +542,11 @@ model Attestation {
   signedAt                   DateTime          @default(now())
   createdAt                  DateTime          @default(now())
 
-  document                 Document                  @relation("AttestationDoc", fields: [documentId], references: [id], onDelete: Cascade)
+  // Restrict (NOT Cascade): an attestation is immutable compliance evidence, so a
+  // raw DELETE of its document must FAIL rather than silently erase the sign-off
+  // (D1). Soft-delete keeps the document + its evidence; a genuine purge must
+  // remove evidence explicitly and deliberately.
+  document                 Document                  @relation("AttestationDoc", fields: [documentId], references: [id], onDelete: Restrict)
   version                  DocumentVersion?          @relation("AttestationVersion", fields: [versionId], references: [id], onDelete: SetNull)
   user                     User                      @relation("AttestationUser", fields: [userId], references: [id])
   reviewTask               ReviewTask?               @relation("AttestationReviewTask", fields: [reviewTaskId], references: [id], onDelete: SetNull)
@@ -553,8 +575,11 @@ model AcknowledgmentAssignment {
   completedAt  DateTime?
   createdAt    DateTime  @default(now())
 
-  document     Document        @relation("AckDoc", fields: [documentId], references: [id], onDelete: Cascade)
-  version      DocumentVersion @relation("AckVersion", fields: [versionId], references: [id], onDelete: Cascade)
+  // Restrict (NOT Cascade): a completed assignment is backed by an immutable
+  // acknowledged Attestation — compliance evidence that a raw document/version
+  // DELETE must not silently erase (D1).
+  document     Document        @relation("AckDoc", fields: [documentId], references: [id], onDelete: Restrict)
+  version      DocumentVersion @relation("AckVersion", fields: [versionId], references: [id], onDelete: Restrict)
   assignee     User            @relation("AckAssignee", fields: [assigneeId], references: [id])
   assignedBy   User            @relation("AckAssignedBy", fields: [assignedById], references: [id])
   attestations Attestation[]   @relation("AckAttestation")

@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { vi } from 'vitest';
@@ -96,6 +96,57 @@ describe('AuditLogPage', () => {
     const link = table.getByRole('link', { name: 'Seclusion Policy' });
     expect(link).toHaveAttribute('href', '/library/doc-1');
     expect(table.getByText('10.0.0.5')).toBeInTheDocument();
+  });
+
+  it('Export CSV fetches ALL pages for the active filter, not just the page on screen', async () => {
+    mockAuth.mockReturnValue(baseAuth([PERMISSIONS.AUDIT_READ]));
+
+    const many = (n: number, offset = 0): AuditEventItem[] =>
+      Array.from({ length: n }, (_, i) => event({ id: `ae-${offset + i}` }));
+
+    // Display query uses pageSize 25; the export sweep uses a larger pageSize and
+    // must walk every page (250 rows here → two export pages).
+    vi.spyOn(auditApi, 'listAudit').mockImplementation(async (p) => {
+      if ((p.pageSize ?? 0) >= 200) {
+        return p.page === 1
+          ? { items: many(200, 0), total: 250, page: 1, pageSize: 200 }
+          : { items: many(50, 200), total: 250, page: 2, pageSize: 200 };
+      }
+      return { items: many(25), total: 250, page: 1, pageSize: 25 };
+    });
+
+    const created: unknown[] = [];
+    const origCreate = URL.createObjectURL;
+    const origRevoke = URL.revokeObjectURL;
+    const origClick = HTMLAnchorElement.prototype.click;
+    URL.createObjectURL = vi.fn((b: Blob) => {
+      created.push(b);
+      return 'blob:mock';
+    }) as unknown as typeof URL.createObjectURL;
+    URL.revokeObjectURL = vi.fn() as unknown as typeof URL.revokeObjectURL;
+    // Stop the hidden-anchor click from attempting a jsdom navigation.
+    HTMLAnchorElement.prototype.click = vi.fn();
+
+    try {
+      renderPage();
+      await waitFor(() => expect(screen.getByRole('table')).toBeInTheDocument());
+
+      fireEvent.click(screen.getByRole('button', { name: 'Export CSV' }));
+
+      // Proves it paged past the on-screen page to gather the full set.
+      await waitFor(() =>
+        expect(auditApi.listAudit).toHaveBeenCalledWith(
+          expect.objectContaining({ page: 2, pageSize: 200 }),
+        ),
+      );
+      // Exactly one combined CSV file is produced from all fetched pages.
+      await waitFor(() => expect(created).toHaveLength(1));
+      expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledTimes(1);
+    } finally {
+      URL.createObjectURL = origCreate;
+      URL.revokeObjectURL = origRevoke;
+      HTMLAnchorElement.prototype.click = origClick;
+    }
   });
 
   it('shows "System" for actor-less events (e.g. failed login)', async () => {

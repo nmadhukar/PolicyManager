@@ -23,7 +23,7 @@ export function ConfirmDialog({
 }) {
   const titleId = useId();
   return (
-    <Modal open={open} onClose={onCancel} titleId={titleId}>
+    <Modal open={open} onClose={onCancel} titleId={titleId} busy={busy}>
       <h2 id={titleId} className="text-base font-semibold text-ink">
         {title}
       </h2>

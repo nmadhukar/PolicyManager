@@ -215,6 +215,27 @@ describe('AuthService', () => {
       expect(prisma.refreshToken.create).not.toHaveBeenCalled();
     });
 
+    it('SL4: reuse of a revoked token kills the whole token family (revokes all live tokens)', async () => {
+      const prisma = makePrisma();
+      prisma.refreshToken.findUnique.mockResolvedValue({
+        id: 'rt-1',
+        userId: 'user-9',
+        revokedAt: new Date(), // KNOWN but already revoked => replay/theft
+        expiresAt: new Date(Date.now() + 100_000),
+      });
+      prisma.refreshToken.updateMany.mockResolvedValue({ count: 3 });
+
+      await expect(build(prisma).refresh('replayed')).rejects.toBeInstanceOf(UnauthorizedException);
+
+      // Family kill: every live refresh token for that user is revoked.
+      expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith({
+        where: { userId: 'user-9', revokedAt: null },
+        data: { revokedAt: expect.any(Date) },
+      });
+      // No new pair is issued.
+      expect(prisma.refreshToken.create).not.toHaveBeenCalled();
+    });
+
     it('rejects an expired token with 401', async () => {
       const prisma = makePrisma();
       prisma.refreshToken.findUnique.mockResolvedValue({

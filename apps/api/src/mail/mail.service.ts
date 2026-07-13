@@ -105,8 +105,9 @@ export class MailService {
     return this.envConfig();
   }
 
+  /** SM2: require an encryption key — never fall back to a shipped default. */
   private encryptionKey(): string {
-    return this.config.get<string>('APP_ENCRYPTION_KEY', 'change-me-app-encryption-key');
+    return this.config.getOrThrow<string>('APP_ENCRYPTION_KEY');
   }
 
   private buildTransport(cfg: ResolvedSmtp): Transporter {

@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LibraryPage } from './LibraryPage';
+import { ToastProvider } from '../ui/Toast';
 
 // vitest hoists vi.mock; factory-referenced vars must be prefixed with `mock`.
 const mockHasPermission = vi.fn();
@@ -74,13 +75,20 @@ vi.mock('../api/categories', () => ({
   flattenCategories: () => [],
 }));
 
+// The owner filter reads the user directory when permitted; stub it to no-ops.
+vi.mock('../api/users', () => ({
+  listUsers: vi.fn().mockResolvedValue([]),
+}));
+
 function renderLibrary() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={['/library']}>
-        <LibraryPage />
-      </MemoryRouter>
+      <ToastProvider>
+        <MemoryRouter initialEntries={['/library']}>
+          <LibraryPage />
+        </MemoryRouter>
+      </ToastProvider>
     </QueryClientProvider>,
   );
 }
@@ -208,5 +216,18 @@ describe('LibraryPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
     await waitFor(() => expect(mockArchive).toHaveBeenCalledWith('doc-1'));
+  });
+
+  it('surfaces an error toast when a row action fails (no silent failure)', async () => {
+    mockHasPermission.mockReturnValue(true);
+    mockListDocuments.mockResolvedValue(oneDoc());
+    mockArchive.mockReset().mockRejectedValue({ response: { status: 500 } });
+    renderLibrary();
+    await waitFor(() => expect(screen.getByText('Seclusion & Restraint Policy')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('Could not archive the document.'),
+    );
   });
 });

@@ -56,22 +56,27 @@ export class DocumentApprovalService {
 
     const status: DocumentStatus = input.publish ? 'published' : 'approved';
 
-    // Record the immutable sign-off first (audits attestation.approved).
-    const attestation = await this.attestation.record(
-      {
-        documentId,
-        versionId: doc.currentVersionId,
-        action: 'approved',
-        signatureName: input.signatureName?.trim() || user.name,
-        signatureRole: input.signatureRole,
-        comments: input.comments,
-      },
-      user,
-      ctx,
-    );
+    // C6/D4: the state change and its immutable sign-off commit ATOMICALLY — an
+    // `approved` status is never persisted without its evidence, nor vice versa.
+    const attestation = await this.prisma.$transaction(async (tx) => {
+      const att = await this.attestation.record(
+        {
+          documentId,
+          versionId: doc.currentVersionId,
+          action: 'approved',
+          signatureName: input.signatureName?.trim() || user.name,
+          signatureRole: input.signatureRole,
+          comments: input.comments,
+        },
+        user,
+        ctx,
+        tx,
+      );
+      await tx.document.update({ where: { id: documentId }, data: { status } });
+      return att;
+    });
 
-    await this.prisma.document.update({ where: { id: documentId }, data: { status } });
-
+    // Audit + acknowledgment re-trigger happen AFTER commit (out of the critical path).
     await this.audit.record({
       action: AUDIT_ACTIONS.DOCUMENT_APPROVED,
       actorUserId: user.id,

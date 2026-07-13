@@ -90,6 +90,9 @@ describe('Public API v1 (e2e)', () => {
         checksum: 'deadbeef',
         uploadedById: ownerId,
         extractedText: opts.extractedText,
+        // Mirror the app write path (writeVersion) which persists this flag
+        // alongside the text (D2) — the summary/versions reads use the flag.
+        hasExtractedText: !!opts.extractedText && opts.extractedText.length > 0,
       },
     });
     await prisma.document.update({

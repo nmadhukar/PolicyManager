@@ -17,10 +17,12 @@ import {
   UserView,
 } from '../api/users';
 import { useAuth } from '../auth/AuthContext';
+import { apiErrorMessage } from '../lib/apiError';
 import { AppShell } from '../ui/AppShell';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { Modal } from '../ui/Modal';
 import { EmptyState, ErrorState, ForbiddenState, LoadingState } from '../ui/states';
+import { useToast } from '../ui/Toast';
 
 export function UsersPage() {
   const { hasPermission } = useAuth();
@@ -223,7 +225,7 @@ function CreateUserPanel({ roles, onDone }: { roles: RoleView[]; onDone: () => v
             return (
               <label
                 key={role.id}
-                className={`cursor-pointer rounded-lg border px-3 py-1.5 text-sm ${
+                className={`cursor-pointer rounded-lg border px-3 py-1.5 text-sm focus-within:ring-2 focus-within:ring-brand-400 focus-within:ring-offset-2 ${
                   checked
                     ? 'border-brand-400 bg-brand-50 text-brand-700'
                     : 'border-slate-300 text-ink-soft hover:bg-slate-50'
@@ -255,6 +257,7 @@ type RowDialog = 'disable' | 'lock' | 'reset' | null;
 
 function UserRow({ user, roles }: { user: UserView; roles: RoleView[] }) {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const { user: me } = useAuth();
   const [editing, setEditing] = useState(false);
   const [selected, setSelected] = useState<string[]>(user.roles);
@@ -269,6 +272,7 @@ function UserRow({ user, roles }: { user: UserView; roles: RoleView[] }) {
       setEditing(false);
       void invalidate();
     },
+    onError: (err) => toast.error(apiErrorMessage(err, 'Could not update roles.')),
   });
 
   const statusMutation = useMutation({
@@ -277,6 +281,7 @@ function UserRow({ user, roles }: { user: UserView; roles: RoleView[] }) {
       closeDialog();
       void invalidate();
     },
+    onError: (err) => toast.error(apiErrorMessage(err, "Could not change the user's status.")),
   });
 
   const lockMutation = useMutation({
@@ -285,6 +290,7 @@ function UserRow({ user, roles }: { user: UserView; roles: RoleView[] }) {
       closeDialog();
       void invalidate();
     },
+    onError: (err) => toast.error(apiErrorMessage(err, "Could not change the account lock.")),
   });
 
   const disabled = user.status === 'disabled';
@@ -308,7 +314,7 @@ function UserRow({ user, roles }: { user: UserView; roles: RoleView[] }) {
                 return (
                   <label
                     key={role.id}
-                    className={`cursor-pointer rounded-md border px-2 py-1 text-xs ${
+                    className={`cursor-pointer rounded-md border px-2 py-1 text-xs focus-within:ring-2 focus-within:ring-brand-400 focus-within:ring-offset-2 ${
                       checked
                         ? 'border-brand-400 bg-brand-50 text-brand-700'
                         : 'border-slate-300 text-ink-soft hover:bg-slate-50'
@@ -529,7 +535,7 @@ function ResetPasswordDialog({
   if (!open) return null;
 
   return (
-    <Modal open={open} onClose={close} titleId={titleId}>
+    <Modal open={open} onClose={close} titleId={titleId} busy={mutation.isPending}>
       <h2 id={titleId} className="text-base font-semibold text-ink">
         Reset password for {user.name}
       </h2>

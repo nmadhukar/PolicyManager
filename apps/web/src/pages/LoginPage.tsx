@@ -1,5 +1,5 @@
 import { FormEvent, useState } from 'react';
-import { Link, Navigate, useLocation } from 'react-router-dom';
+import { Link, Navigate, useLocation, useSearchParams } from 'react-router-dom';
 import { AxiosError } from 'axios';
 import { useAuth } from '../auth/AuthContext';
 import { AuthBrand, AuthCard } from '../ui/AuthLayout';
@@ -7,8 +7,10 @@ import { AuthBrand, AuthCard } from '../ui/AuthLayout';
 export function LoginPage() {
   const { status, login } = useAuth();
   const location = useLocation();
+  const [searchParams] = useSearchParams();
   const locationState = location.state as { from?: string; resetSuccess?: boolean } | null;
-  const from = locationState?.from ?? '/';
+  // Prefer SPA router state; fall back to ?from= (survives a full reload).
+  const from = locationState?.from ?? searchParams.get('from') ?? '/';
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');

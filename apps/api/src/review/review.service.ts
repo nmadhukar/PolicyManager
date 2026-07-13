@@ -221,16 +221,29 @@ export class ReviewService {
           : [doc.owner];
 
       for (const reviewer of reviewers) {
-        const task = await this.prisma.reviewTask.create({
-          data: {
-            documentId: doc.id,
-            versionId: doc.currentVersionId ?? undefined,
-            dueDate: due,
-            assignedToId: reviewer.id,
-            status: 'pending',
-          },
-          select: { id: true },
-        });
+        // C2/D9: the `reviewTasks: { none: open }` guard above makes the sweep
+        // idempotent, but two concurrent sweeps could still both pass it. The
+        // partial unique index on OPEN (documentId, assignedToId) is the real
+        // backstop — a lost race surfaces as P2002, which we treat as "already
+        // created" and skip rather than crashing the whole sweep.
+        let task: { id: string };
+        try {
+          task = await this.prisma.reviewTask.create({
+            data: {
+              documentId: doc.id,
+              versionId: doc.currentVersionId ?? undefined,
+              dueDate: due,
+              assignedToId: reviewer.id,
+              status: 'pending',
+            },
+            select: { id: true },
+          });
+        } catch (err) {
+          if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+            continue; // an open task for this (doc, reviewer) already exists
+          }
+          throw err;
+        }
         tasksCreated += 1;
 
         await this.audit.record({
@@ -257,9 +270,14 @@ export class ReviewService {
     }
 
     // Flip any still-open, past-due tasks (including freshly-created ones for docs
-    // already past their date) to `overdue`.
+    // already past their date) to `overdue` — but ONLY for documents still in active
+    // circulation (C8), so a soft-deleted/archived/retired doc's tasks are not revived.
     const overdue = await this.prisma.reviewTask.updateMany({
-      where: { status: { in: ['pending', 'in_progress'] }, dueDate: { lt: now } },
+      where: {
+        status: { in: ['pending', 'in_progress'] },
+        dueDate: { lt: now },
+        document: { deletedAt: null, status: INACTIVE_STATUSES },
+      },
       data: { status: 'overdue' },
     });
 
@@ -318,8 +336,11 @@ export class ReviewService {
       throw new BadRequestException((err as Error).message);
     }
 
-    await this.prisma.$transaction([
-      this.prisma.reviewTask.update({
+    // C6/D4: the task completion, the document's advanced review date, AND the
+    // immutable `reviewed` sign-off commit ATOMICALLY — a completed review always
+    // carries its evidence, and evidence never exists for an uncommitted completion.
+    await this.prisma.$transaction(async (tx) => {
+      await tx.reviewTask.update({
         where: { id: taskId },
         data: {
           status: 'completed',
@@ -327,13 +348,28 @@ export class ReviewService {
           completedById: user.id,
           notes: dto.notes,
         },
-      }),
-      this.prisma.document.update({
+      });
+      await tx.document.update({
         where: { id: task.documentId },
         data: { nextReviewDate: newNextReviewDate },
-      }),
-    ]);
+      });
+      await this.attestation.record(
+        {
+          documentId: task.documentId,
+          versionId: task.versionId ?? task.document.currentVersionId ?? null,
+          action: 'reviewed',
+          signatureName: dto.signatureName?.trim() || user.name,
+          signatureRole: dto.signatureRole,
+          comments: dto.notes,
+          reviewTaskId: taskId,
+        },
+        user,
+        ctx,
+        tx,
+      );
+    });
 
+    // Audit after commit (out of the critical path).
     await this.audit.record({
       action: AUDIT_ACTIONS.REVIEW_COMPLETED,
       actorUserId: user.id,
@@ -343,21 +379,6 @@ export class ReviewService {
       ...ctx,
       metadata: { taskId, newNextReviewDate: newNextReviewDate.toISOString() },
     });
-
-    // Phase 6: record the immutable reviewer sign-off tied to this task + version.
-    await this.attestation.record(
-      {
-        documentId: task.documentId,
-        versionId: task.versionId ?? task.document.currentVersionId ?? null,
-        action: 'reviewed',
-        signatureName: dto.signatureName?.trim() || user.name,
-        signatureRole: dto.signatureRole,
-        comments: dto.notes,
-        reviewTaskId: taskId,
-      },
-      user,
-      ctx,
-    );
 
     return this.getTask(taskId, user);
   }

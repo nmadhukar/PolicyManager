@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { APP_GUARD } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { PrismaModule } from './prisma/prisma.module';
 import { HealthModule } from './health/health.module';
 import { MailModule } from './mail/mail.module';
@@ -20,6 +22,25 @@ import { ImportsModule } from './imports/imports.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, envFilePath: ['../../.env', '.env'] }),
+    // SM3: global request throttling (per-IP). The default limit is generous so
+    // normal traffic is unaffected; the sensitive auth routes tighten it with
+    // @Throttle. `THROTTLE_DISABLED=true` skips it entirely (used by the test env so
+    // suites making many rapid requests are not rate-limited).
+    ThrottlerModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        throttlers: [
+          {
+            name: 'default',
+            ttl: Number(config.get('THROTTLE_TTL', 60_000)),
+            limit: Number(config.get('THROTTLE_LIMIT', 300)),
+          },
+        ],
+        skipIf: () =>
+          String(config.get('THROTTLE_DISABLED', 'false')) === 'true' ||
+          String(config.get('NODE_ENV')) === 'test',
+      }),
+    }),
     // Drives the daily QC review sweep (ReviewScheduler).
     ScheduleModule.forRoot(),
     PrismaModule,
@@ -40,5 +61,7 @@ import { ImportsModule } from './imports/imports.module';
     // Phase 8 — bulk import & consolidation (CSV manifest + bulk upload).
     ImportsModule,
   ],
+  // SM3: enforce the throttler globally (auth routes add tighter @Throttle limits).
+  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
 export class AppModule {}

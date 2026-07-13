@@ -62,6 +62,7 @@ describe('ImportsService', () => {
     document: {
       findFirst: jest.fn().mockResolvedValue(null),
       update: jest.fn().mockResolvedValue({}),
+      delete: jest.fn().mockResolvedValue({}),
     },
     documentVersion: { findFirst: jest.fn().mockResolvedValue(null) },
     documentCategory: {
@@ -171,6 +172,29 @@ describe('ImportsService', () => {
     expect(items[1]).toMatchObject({ status: 'created' });
     expect(prisma.importBatch.update.mock.calls[0][0].data).toMatchObject({
       createdCount: 1,
+      errorCount: 1,
+    });
+  });
+
+  it('C3/D5: rolls back the document when its version upload fails (no orphan, error row)', async () => {
+    const prisma = makePrisma();
+    const documents = makeDocuments();
+    // The document is created, but its first version fails.
+    documents.addVersion.mockRejectedValueOnce(new Error('S3 down'));
+    const { svc } = build(prisma, documents);
+
+    const csv = 'title,fileName\nGood Title,a.pdf\n';
+    await svc.runManifestImport(manifest(csv), [file('a.pdf')], importer);
+
+    // The just-created document was deleted so no version-less orphan remains.
+    expect(prisma.document.delete).toHaveBeenCalledTimes(1);
+    const item = prisma.importItem.create.mock.calls[0][0].data;
+    expect(item.status).toBe('error');
+    expect(item.documentId).toBeNull();
+    expect(item.message).toMatch(/S3 down/);
+    // Batch reports one error, zero created.
+    expect(prisma.importBatch.update.mock.calls[0][0].data).toMatchObject({
+      createdCount: 0,
       errorCount: 1,
     });
   });

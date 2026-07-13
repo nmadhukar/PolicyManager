@@ -44,6 +44,7 @@ vi.mock('../api/documents', () => ({
   getDownloadUrl: vi.fn(),
   updateDocument: vi.fn(),
   uploadVersion: vi.fn(),
+  UPLOAD_ACCEPT: '.pdf,.docx',
 }));
 
 vi.mock('../api/categories', () => ({

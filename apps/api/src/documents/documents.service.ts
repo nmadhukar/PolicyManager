@@ -62,7 +62,12 @@ const DOWNLOAD_TTL_SECONDS = 300;
 /** In-browser view URLs are equally short-lived (AGENTS.md §8). */
 const VIEW_TTL_SECONDS = 300;
 
-/** Version fields needed to build a summary — deliberately excludes the bytes. */
+/**
+ * Version fields needed to build a summary — deliberately excludes the bytes AND
+ * the (potentially large) `extractedText` @db.Text (D2). "Has text" is read from
+ * the persisted `hasExtractedText` flag instead of loading the whole column on
+ * every list row / version.
+ */
 const versionSummarySelect = {
   id: true,
   versionNumber: true,
@@ -73,10 +78,13 @@ const versionSummarySelect = {
   changeSummary: true,
   status: true,
   createdAt: true,
-  extractedText: true,
+  hasExtractedText: true,
   renditionS3Key: true,
   uploadedBy: { select: { name: true } },
 } satisfies Prisma.DocumentVersionSelect;
+
+/** The row shape produced by {@link versionSummarySelect}. */
+type VersionSummaryRow = Prisma.DocumentVersionGetPayload<{ select: typeof versionSummarySelect }>;
 
 /** Access-relevant document fields joined onto a version lookup. */
 const accessSelect = {
@@ -250,6 +258,10 @@ export class DocumentsService {
       ...ctx,
       metadata: { fields: Object.keys(data) },
     });
+    // C8: retiring/archiving via a metadata update also deactivates open work items.
+    if (dto.status === 'archived' || dto.status === 'retired') {
+      await this.deactivateWorkItems(id);
+    }
     return this.loadDetail(id);
   }
 
@@ -334,65 +346,87 @@ export class DocumentsService {
     changeSummary: string | undefined,
     uploadedById: string,
   ): Promise<DocumentVersionSummary> {
-    const agg = await this.prisma.documentVersion.aggregate({
-      where: { documentId },
-      _max: { versionNumber: true },
-    });
-    const versionNumber = computeNextVersionNumber(agg._max.versionNumber);
-
     const checksum = sha256Hex(file.buffer);
-    const sizeBytes = file.size ?? file.buffer.length;
+    const sizeBytes = BigInt(file.size ?? file.buffer.length); // D10: BigInt column
     const mimeType = file.mimetype || 'application/octet-stream';
-    const s3Key = this.s3.buildDocumentKey(documentId, versionNumber, file.originalname);
 
-    // Store bytes first; if the DB write later fails, the object is simply an
-    // unreferenced immutable blob (never overwritten) — safe to retry.
-    const { versionId } = await this.s3.putObject(s3Key, file.buffer, mimeType);
-
+    // Text extraction does not depend on the version number, so do it up front.
     // Best-effort — must never crash the write.
     const extractedText = await this.textExtraction.extract(
       file.buffer,
       mimeType,
       file.originalname,
     );
+    const hasExtractedText = extractedText.length > 0;
 
-    // Best-effort PDF rendition for uniform in-browser viewing. On failure the
-    // key stays null and the original remains downloadable (AGENTS.md §10a).
+    // C1/D6: allocate the version number AND store the bytes inside one transaction
+    // that ROW-LOCKS the parent document. Concurrent uploads to the same document
+    // serialize here, so each gets a distinct number + deterministic key — two
+    // writers never put to the same S3 key (no silent byte overwrite), and the
+    // unique (documentId, versionNumber) can never be violated. The S3 put is inside
+    // the tx so a version row is never persisted without its bytes; only the
+    // best-effort (possibly slow) rendition runs after commit.
+    let result: { created: VersionSummaryRow; s3Key: string; versionNumber: number };
+    try {
+      result = await this.prisma.$transaction(
+        async (tx) => {
+          await tx.$executeRaw`SELECT id FROM "policytracker"."Document" WHERE id = ${documentId} FOR UPDATE`;
+          const agg = await tx.documentVersion.aggregate({
+            where: { documentId },
+            _max: { versionNumber: true },
+          });
+          const versionNumber = computeNextVersionNumber(agg._max.versionNumber);
+          const s3Key = this.s3.buildDocumentKey(documentId, versionNumber, file.originalname);
+          const { versionId } = await this.s3.putObject(s3Key, file.buffer, mimeType);
+          const created = await tx.documentVersion.create({
+            data: {
+              documentId,
+              versionNumber,
+              s3Key,
+              s3VersionId: versionId,
+              fileName: file.originalname,
+              mimeType,
+              sizeBytes,
+              checksum,
+              uploadedById,
+              changeSummary,
+              extractedText: hasExtractedText ? extractedText : undefined,
+              hasExtractedText,
+            },
+            select: versionSummarySelect,
+          });
+          await tx.document.update({
+            where: { id: documentId },
+            data: { currentVersion: { connect: { id: created.id } } },
+          });
+          return { created, s3Key, versionNumber };
+        },
+        // Generous timeout: the S3 put runs inside the tx while the row lock is held.
+        { timeout: 30_000, maxWait: 15_000 },
+      );
+    } catch (err) {
+      throw mapVersionConflict(err);
+    }
+
+    // Best-effort PDF rendition AFTER commit (Gotenberg can take up to its timeout).
+    // On failure the pointer stays null and the original remains downloadable.
     const rendition = await this.renditions.generateForVersion({
       documentId,
-      versionNumber,
+      versionNumber: result.versionNumber,
       mimeType,
       fileName: file.originalname,
-      sourceS3Key: s3Key,
+      sourceS3Key: result.s3Key,
       sourceBuffer: file.buffer,
     });
-
-    const version = await this.prisma.$transaction(async (tx) => {
-      const created = await tx.documentVersion.create({
-        data: {
-          documentId,
-          versionNumber,
-          s3Key,
-          s3VersionId: versionId,
-          renditionS3Key: rendition.renditionS3Key ?? undefined,
-          fileName: file.originalname,
-          mimeType,
-          sizeBytes,
-          checksum,
-          uploadedById,
-          changeSummary,
-          extractedText: extractedText.length > 0 ? extractedText : undefined,
-        },
+    if (rendition.renditionS3Key) {
+      const updated = await this.prisma.documentVersion.update({
+        where: { id: result.created.id },
+        data: { renditionS3Key: rendition.renditionS3Key },
         select: versionSummarySelect,
       });
-      await tx.document.update({
-        where: { id: documentId },
-        data: { currentVersion: { connect: { id: created.id } } },
-      });
-      return created;
-    });
-
-    return this.toVersionSummary(version);
+      return this.toVersionSummary(updated);
+    }
+    return this.toVersionSummary(result.created);
   }
 
   /**
@@ -404,12 +438,24 @@ export class DocumentsService {
   async regenerateRendition(
     documentId: string,
     versionId: string,
+    user: AuthUser,
+    ctx: RequestContext = {},
   ): Promise<DocumentVersionSummary> {
     const version = await this.prisma.documentVersion.findFirst({
       where: { id: versionId, documentId, document: { deletedAt: null } },
-      select: { versionNumber: true, mimeType: true, fileName: true, s3Key: true },
+      select: {
+        versionNumber: true,
+        mimeType: true,
+        fileName: true,
+        s3Key: true,
+        document: { select: accessSelect },
+      },
     });
     if (!version) throw new NotFoundException('Version not found');
+    // SL2: regenerating a rendition reads + rewrites a derived artifact of the
+    // document, so it must clear the same confidential enforcement its sibling
+    // write paths do — not rely on the controller's coarse document.write alone.
+    await this.enforce(user, version.document, 'edit', ctx, versionId);
 
     const rendition = await this.renditions.generateForVersion({
       documentId,
@@ -442,29 +488,41 @@ export class DocumentsService {
   ): Promise<ViewTicket> {
     const version = await this.prisma.documentVersion.findFirst({
       where: { id: versionId, documentId, document: { deletedAt: null } },
-      select: { s3Key: true, renditionS3Key: true, mimeType: true, document: { select: accessSelect } },
+      select: {
+        s3Key: true,
+        s3VersionId: true,
+        renditionS3Key: true,
+        mimeType: true,
+        document: { select: accessSelect },
+      },
     });
     if (!version) throw new NotFoundException('Version not found');
     await this.enforce(user, version.document, 'view', ctx, versionId);
 
     let key: string;
     let mimeType: string;
+    // Pin the presigned URL to the exact S3 object version only when serving the
+    // SOURCE object (C7). The rendition is a separate derived object whose S3
+    // version id we do not track, so it is presigned by key alone.
+    let s3VersionId: string | undefined;
     if (version.renditionS3Key) {
       key = version.renditionS3Key;
       mimeType = 'application/pdf';
     } else if (version.mimeType === 'application/pdf') {
       key = version.s3Key;
       mimeType = 'application/pdf';
+      s3VersionId = version.s3VersionId ?? undefined;
     } else if (version.mimeType.startsWith('image/')) {
       key = version.s3Key;
       mimeType = version.mimeType;
+      s3VersionId = version.s3VersionId ?? undefined;
     } else {
       throw new NotFoundException(
         'No viewable rendition is available yet. Download the original, or regenerate the rendition.',
       );
     }
 
-    const url = await this.s3.getPresignedDownloadUrl(key, VIEW_TTL_SECONDS);
+    const url = await this.s3.getPresignedDownloadUrl(key, VIEW_TTL_SECONDS, undefined, s3VersionId);
     await this.audit.record({
       action: AUDIT_ACTIONS.DOCUMENT_VIEWED,
       actorUserId: user.id,
@@ -515,7 +573,7 @@ export class DocumentsService {
       // The parent-document join enforces soft-delete: a version of a trashed
       // document is not downloadable via the normal route (reads as 404).
       where: { id: versionId, documentId, document: { deletedAt: null } },
-      select: { s3Key: true, fileName: true, document: { select: accessSelect } },
+      select: { s3Key: true, s3VersionId: true, fileName: true, document: { select: accessSelect } },
     });
     if (!version) throw new NotFoundException('Version not found');
     await this.enforce(user, version.document, 'download', ctx, versionId);
@@ -524,6 +582,8 @@ export class DocumentsService {
       version.s3Key,
       DOWNLOAD_TTL_SECONDS,
       version.fileName,
+      // Pin to the exact stored object version (C7).
+      version.s3VersionId ?? undefined,
     );
     await this.audit.record({
       action: AUDIT_ACTIONS.DOCUMENT_DOWNLOADED,
@@ -581,12 +641,21 @@ export class DocumentsService {
   async getVersionSource(
     documentId: string,
     versionId: string,
+    editorUserId?: string,
   ): Promise<{ buffer: Buffer; mimeType: string; fileName: string }> {
     const version = await this.prisma.documentVersion.findFirst({
       where: { id: versionId, documentId, document: { deletedAt: null } },
-      select: { s3Key: true, mimeType: true, fileName: true },
+      select: { s3Key: true, mimeType: true, fileName: true, document: { select: accessSelect } },
     });
     if (!version) throw new NotFoundException('Version not found');
+    // SH2 (defence in depth): the scoped content token is the primary boundary, but
+    // the token also carries the editing user — re-verify that user still has edit
+    // access before streaming (esp. confidential) source bytes, so a leaked/replayed
+    // token alone cannot exfiltrate content after access was revoked.
+    if (editorUserId) {
+      const ok = await this.access.canAccessByUserId(editorUserId, version.document, 'edit');
+      if (!ok) throw new ForbiddenException('You do not have access to this document');
+    }
     const buffer = await this.s3.getObjectBuffer(version.s3Key);
     return { buffer, mimeType: version.mimeType, fileName: version.fileName };
   }
@@ -673,6 +742,8 @@ export class DocumentsService {
       targetType: 'document',
       ...ctx,
     });
+    // C8: cancel any open review/acknowledgment obligations for the trashed doc.
+    await this.deactivateWorkItems(id);
     return this.loadDetail(id, { includeDeleted: true });
   }
 
@@ -730,6 +801,9 @@ export class DocumentsService {
         targetType: 'document',
         ...ctx,
       });
+      // C8: an archived document is out of active circulation — cancel its open
+      // review tasks + pending acknowledgments so it stops raising obligations.
+      await this.deactivateWorkItems(id);
     }
     return this.loadDetail(id);
   }
@@ -801,70 +875,86 @@ export class DocumentsService {
       },
     });
     if (!source) throw new NotFoundException('Version not found');
+    const hasExtractedText = (source.extractedText?.length ?? 0) > 0;
 
-    const agg = await this.prisma.documentVersion.aggregate({
-      where: { documentId },
-      _max: { versionNumber: true },
-    });
-    const versionNumber = computeNextVersionNumber(agg._max.versionNumber);
-    const s3Key = this.s3.buildDocumentKey(documentId, versionNumber, source.fileName);
-
-    // Duplicate the source object to the new key — the original is untouched.
-    const { versionId: s3VersionId } = await this.s3.copyObject(
-      source.s3Key,
-      s3Key,
-      source.mimeType,
-    );
-
-    // Carry the source's PDF rendition forward too (identical bytes ⇒ identical
-    // rendition), so the restored version is immediately viewable. Best-effort:
-    // if the copy fails, viewing falls back to on-demand regeneration.
-    let renditionS3Key: string | null = null;
-    if (source.renditionS3Key) {
-      const destRenditionKey = this.s3.buildRenditionKey(documentId, versionNumber);
-      try {
-        await this.s3.copyObject(source.renditionS3Key, destRenditionKey, 'application/pdf');
-        renditionS3Key = destRenditionKey;
-      } catch {
-        renditionS3Key = null;
-      }
+    // C1/D6: allocate the number + copy the source bytes to the new key under the
+    // same document row lock used by uploads, so a concurrent restore/upload can
+    // never collide on a version number or S3 key.
+    let result: { created: VersionSummaryRow; versionNumber: number };
+    try {
+      result = await this.prisma.$transaction(
+        async (tx) => {
+          await tx.$executeRaw`SELECT id FROM "policytracker"."Document" WHERE id = ${documentId} FOR UPDATE`;
+          const agg = await tx.documentVersion.aggregate({
+            where: { documentId },
+            _max: { versionNumber: true },
+          });
+          const versionNumber = computeNextVersionNumber(agg._max.versionNumber);
+          const s3Key = this.s3.buildDocumentKey(documentId, versionNumber, source.fileName);
+          // Duplicate the source object to the new key — the original is untouched.
+          const { versionId: s3VersionId } = await this.s3.copyObject(
+            source.s3Key,
+            s3Key,
+            source.mimeType,
+          );
+          const created = await tx.documentVersion.create({
+            data: {
+              documentId,
+              versionNumber,
+              s3Key,
+              s3VersionId,
+              fileName: source.fileName,
+              mimeType: source.mimeType,
+              sizeBytes: source.sizeBytes,
+              checksum: source.checksum,
+              uploadedById: user.id,
+              changeSummary: `Restored from v${source.versionNumber}`,
+              extractedText: hasExtractedText ? source.extractedText ?? undefined : undefined,
+              hasExtractedText,
+            },
+            select: versionSummarySelect,
+          });
+          await tx.document.update({
+            where: { id: documentId },
+            data: { currentVersion: { connect: { id: created.id } } },
+          });
+          return { created, versionNumber };
+        },
+        { timeout: 30_000, maxWait: 15_000 },
+      );
+    } catch (err) {
+      throw mapVersionConflict(err);
     }
 
-    const created = await this.prisma.$transaction(async (tx) => {
-      const version = await tx.documentVersion.create({
-        data: {
-          documentId,
-          versionNumber,
-          s3Key,
-          s3VersionId,
-          renditionS3Key: renditionS3Key ?? undefined,
-          fileName: source.fileName,
-          mimeType: source.mimeType,
-          sizeBytes: source.sizeBytes,
-          checksum: source.checksum,
-          uploadedById: user.id,
-          changeSummary: `Restored from v${source.versionNumber}`,
-          extractedText: source.extractedText ?? undefined,
-        },
-        select: versionSummarySelect,
-      });
-      await tx.document.update({
-        where: { id: documentId },
-        data: { currentVersion: { connect: { id: version.id } } },
-      });
-      return version;
-    });
+    // Carry the source's PDF rendition forward too (identical bytes ⇒ identical
+    // rendition), so the restored version is immediately viewable. Best-effort,
+    // after commit: if the copy fails, viewing falls back to on-demand regeneration.
+    let summary = this.toVersionSummary(result.created);
+    if (source.renditionS3Key) {
+      const destRenditionKey = this.s3.buildRenditionKey(documentId, result.versionNumber);
+      try {
+        await this.s3.copyObject(source.renditionS3Key, destRenditionKey, 'application/pdf');
+        const updated = await this.prisma.documentVersion.update({
+          where: { id: result.created.id },
+          data: { renditionS3Key: destRenditionKey },
+          select: versionSummarySelect,
+        });
+        summary = this.toVersionSummary(updated);
+      } catch {
+        // leave the rendition pointer null; on-demand regeneration covers it.
+      }
+    }
 
     await this.audit.record({
       action: AUDIT_ACTIONS.VERSION_RESTORED,
       actorUserId: user.id,
       documentId,
-      versionId: created.id,
+      versionId: result.created.id,
       targetType: 'version',
       ...ctx,
-      metadata: { fromVersion: source.versionNumber, newVersion: created.versionNumber },
+      metadata: { fromVersion: source.versionNumber, newVersion: result.versionNumber },
     });
-    return this.toVersionSummary(created);
+    return summary;
   }
 
   // ---- Helpers -------------------------------------------------------------
@@ -939,34 +1029,39 @@ export class DocumentsService {
     return err as Error;
   }
 
-  private toVersionSummary(v: {
-    id: string;
-    versionNumber: number;
-    fileName: string;
-    mimeType: string;
-    sizeBytes: number;
-    checksum: string;
-    changeSummary: string | null;
-    status: string;
-    createdAt: Date;
-    extractedText: string | null;
-    renditionS3Key: string | null;
-    uploadedBy: { name: string } | null;
-  }): DocumentVersionSummary {
+  /**
+   * C8: when a document leaves active circulation (soft-delete / archive / retire)
+   * its OPEN review tasks and PENDING/OVERDUE acknowledgment assignments must stop
+   * being outstanding obligations. Cancel them; completed/cancelled rows are
+   * terminal evidence and left untouched. Idempotent.
+   */
+  private async deactivateWorkItems(documentId: string): Promise<void> {
+    await this.prisma.reviewTask.updateMany({
+      where: { documentId, status: { in: ['pending', 'in_progress', 'overdue'] } },
+      data: { status: 'cancelled' },
+    });
+    await this.prisma.acknowledgmentAssignment.updateMany({
+      where: { documentId, status: { in: ['pending', 'overdue'] } },
+      data: { status: 'cancelled' },
+    });
+  }
+
+  private toVersionSummary(v: VersionSummaryRow): DocumentVersionSummary {
     return {
       id: v.id,
       versionNumber: v.versionNumber,
       fileName: v.fileName,
       mimeType: v.mimeType,
-      sizeBytes: v.sizeBytes,
+      // D10: sizeBytes is a BigInt column; serialize to a JSON-safe number.
+      sizeBytes: Number(v.sizeBytes),
       checksum: v.checksum,
       changeSummary: v.changeSummary,
       status: v.status as DocumentVersionSummary['status'],
       createdAt: v.createdAt.toISOString(),
       uploadedByName: v.uploadedBy?.name ?? null,
-      // Expose ONLY existence — the extracted text itself is scope-gated and
-      // never returned by these endpoints (AGENTS.md §8).
-      hasExtractedText: !!v.extractedText && v.extractedText.length > 0,
+      // Expose ONLY existence (D2 — read from the persisted flag, never the text).
+      // The extracted text itself is scope-gated and never returned here (AGENTS.md §8).
+      hasExtractedText: v.hasExtractedText,
       // A version is viewable in-browser when it has a PDF rendition or is itself
       // a PDF/image; the UI uses this to decide whether to offer "View".
       hasRendition:
@@ -1017,4 +1112,23 @@ export class DocumentsService {
       currentVersion: doc.currentVersion ? this.toVersionSummary(doc.currentVersion) : null,
     };
   }
+}
+
+/** True when `err` is a Prisma unique-constraint violation (P2002). */
+function isP2002(err: unknown): boolean {
+  return err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
+}
+
+/**
+ * Maps a lost version-number race (unique `(documentId, versionNumber)`) to a clean
+ * 409 instead of a raw 500 (C1/D6). With the row-lock in place this should not
+ * normally fire, but it is a correctness backstop against any residual concurrency.
+ */
+function mapVersionConflict(err: unknown): Error {
+  if (isP2002(err)) {
+    return new ConflictException(
+      'A newer version was uploaded concurrently. Please reload and try again.',
+    );
+  }
+  return err as Error;
 }

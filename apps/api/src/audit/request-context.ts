@@ -17,20 +17,15 @@ interface RequestLike {
 }
 
 /**
- * Best-effort client IP resolution. Prefers the first hop of `X-Forwarded-For`
- * (set by a trusted proxy/load balancer), then Express's own `req.ip`, then the
- * raw socket address. Returns undefined rather than an empty string so the audit
- * column stays null when genuinely unknown.
+ * Client IP for the audit/attestation trail. We trust ONLY Express's computed
+ * `req.ip`, which honours the app's `trust proxy` hop count (TRUST_PROXY_HOPS,
+ * set in main.ts) — so behind N known proxies it is the real client, and with the
+ * default of 0 it is the direct socket peer. We deliberately DO NOT read
+ * `X-Forwarded-For` ourselves: an unconditional first-hop read let any client
+ * spoof the recorded IP on attestation evidence (SL1). Falls back to the raw
+ * socket address; returns undefined (not '') so the column stays null when unknown.
  */
 export function clientIp(req: RequestLike): string | undefined {
-  const fwd = req.headers?.['x-forwarded-for'];
-  if (typeof fwd === 'string' && fwd.length > 0) {
-    const first = fwd.split(',')[0]?.trim();
-    if (first) return first;
-  } else if (Array.isArray(fwd) && fwd.length > 0) {
-    const first = fwd[0]?.split(',')[0]?.trim();
-    if (first) return first;
-  }
   return req.ip || req.socket?.remoteAddress || undefined;
 }
 

@@ -1,11 +1,13 @@
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import type { AuthUser } from '@policymanager/shared';
 import type { RequestContext } from '../audit/request-context';
 import { AttestationService } from './attestation.service';
 
 /**
- * Business-behavior tests for the immutable attestation store. Prisma + audit are
- * mocked to assert the write shape, the IP/UA capture from request context, the
- * matching `attestation.*` audit, and the read (approval chain) filtering/order.
+ * Business-behavior tests for the immutable attestation store. Prisma, audit, and
+ * the access service are mocked to assert the write shape, the IP/UA capture, the
+ * matching `attestation.*` audit, the read (approval chain) filtering/order, and the
+ * access-enforced approval-chain surface (SH1).
  */
 describe('AttestationService', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -14,13 +16,16 @@ describe('AttestationService', () => {
       create: jest.fn(),
       findMany: jest.fn().mockResolvedValue([]),
     },
+    document: { findFirst: jest.fn() },
   });
   const makeAudit = () => ({ record: jest.fn().mockResolvedValue('ae-1') });
+  const makeAccess = () => ({ canAccess: jest.fn().mockResolvedValue(true) });
 
-  const build = (prisma = makePrisma(), audit = makeAudit()) => ({
+  const build = (prisma = makePrisma(), audit = makeAudit(), access = makeAccess()) => ({
     prisma,
     audit,
-    svc: new AttestationService(prisma as never, audit as never),
+    access,
+    svc: new AttestationService(prisma as never, audit as never, access as never),
   });
 
   const user: AuthUser = {
@@ -125,6 +130,44 @@ describe('AttestationService', () => {
       expect(args.where).toEqual({ documentId: 'doc-1', action: { in: ['reviewed', 'approved'] } });
       expect(args.orderBy).toEqual({ signedAt: 'desc' });
       expect(chain[0].action).toBe('approved');
+    });
+  });
+
+  describe('listApprovalChainForDocument (SH1 access-enforced)', () => {
+    const accessDoc = { id: 'doc-1', ownerId: 'owner-1', accessLevel: 'confidential', categoryId: null };
+
+    it('returns the chain when the caller has VIEW access', async () => {
+      const { svc, prisma, access } = build();
+      prisma.document.findFirst.mockResolvedValue(accessDoc);
+      prisma.attestation.findMany.mockResolvedValue([createdRow({ action: 'approved' })]);
+
+      const chain = await svc.listApprovalChainForDocument('doc-1', user, ctx);
+
+      expect(prisma.document.findFirst.mock.calls[0][0].where).toEqual({ id: 'doc-1', deletedAt: null });
+      expect(access.canAccess).toHaveBeenCalledWith(user, accessDoc, 'view');
+      expect(chain[0].action).toBe('approved');
+    });
+
+    it('403s + audits access.denied when the caller cannot view (no chain leaked)', async () => {
+      const { svc, prisma, access, audit } = build();
+      prisma.document.findFirst.mockResolvedValue(accessDoc);
+      access.canAccess.mockResolvedValue(false);
+
+      await expect(svc.listApprovalChainForDocument('doc-1', user, ctx)).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+      expect(prisma.attestation.findMany).not.toHaveBeenCalled();
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'access.denied', documentId: 'doc-1' }),
+      );
+    });
+
+    it('404s a missing/soft-deleted document', async () => {
+      const { svc, prisma } = build();
+      prisma.document.findFirst.mockResolvedValue(null);
+      await expect(svc.listApprovalChainForDocument('gone', user, ctx)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
     });
   });
 

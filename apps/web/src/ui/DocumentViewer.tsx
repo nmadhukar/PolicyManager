@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { AxiosError } from 'axios';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { getViewUrl } from '../api/documents';
 import { ErrorState, LoadingState } from './states';
+import { useFocusTrap } from './useFocusTrap';
 
 // Load the pdf.js worker from the bundled pdfjs-dist (versions are deduped with
 // react-pdf, so the API + worker match). Vite resolves this URL at build time.
@@ -27,14 +28,10 @@ export function DocumentViewer({
   onClose: () => void;
 }) {
   const [numPages, setNumPages] = useState(0);
+  const dialogRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  // Focus management + Escape-to-close (AGENTS.md §10c).
+  useFocusTrap(true, dialogRef, onClose);
 
   const ticketQuery = useQuery({
     queryKey: ['view-url', documentId, version.id],
@@ -47,7 +44,8 @@ export function DocumentViewer({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex flex-col bg-slate-900/70"
+      ref={dialogRef}
+      className="fixed inset-0 z-50 flex flex-col bg-slate-900/70 focus:outline-none"
       role="dialog"
       aria-modal="true"
       aria-label={`Viewing ${version.fileName}`}

@@ -10,6 +10,7 @@ import {
   type ImportItemResult,
   type ImportItemStatus,
 } from '@policymanager/shared';
+import { UPLOAD_ACCEPT } from '../api/documents';
 import {
   getImportBatch,
   listImportBatches,
@@ -211,11 +212,13 @@ function ImportManager() {
                 id="manifest-files"
                 type="file"
                 multiple
+                accept={UPLOAD_ACCEPT}
                 className="block w-full text-sm text-ink-soft file:mr-3 file:rounded-lg file:border-0 file:bg-brand-50 file:px-3 file:py-2 file:text-sm file:font-medium file:text-brand-700"
                 onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
               />
               <p className="mt-1 text-xs text-ink-muted">
-                Files are matched to manifest rows by file name. {files.length} selected.
+                Files are matched to manifest rows by file name. Accepted: PDF, Office, images, or
+                text. {files.length} selected.
               </p>
             </div>
           </div>
@@ -228,12 +231,13 @@ function ImportManager() {
               id="bulk-files"
               type="file"
               multiple
+              accept={UPLOAD_ACCEPT}
               className="block w-full text-sm text-ink-soft file:mr-3 file:rounded-lg file:border-0 file:bg-brand-50 file:px-3 file:py-2 file:text-sm file:font-medium file:text-brand-700"
               onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
             />
             <p className="mt-1 text-xs text-ink-muted">
-              Each file becomes a document titled from its file name. Identical files (same checksum)
-              are skipped. {files.length} selected.
+              Each file becomes a document titled from its file name. Accepted: PDF, Office, images,
+              or text. Identical files (same checksum) are skipped. {files.length} selected.
             </p>
           </div>
         )}

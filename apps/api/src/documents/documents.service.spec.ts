@@ -1,4 +1,10 @@
-import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import type { AuthUser } from '@policymanager/shared';
 import type { RequestContext } from '../audit/request-context';
 import { DocumentsService, type UploadedFile } from './documents.service';
@@ -23,6 +29,11 @@ const makePrisma = (): any => {
       findFirst: jest.fn(),
     },
     documentCategory: { findUnique: jest.fn() },
+    // C8: deactivateWorkItems cancels open review/ack rows on delete/archive.
+    reviewTask: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
+    acknowledgmentAssignment: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
+    // C1/D6: the version-write path row-locks the document with a raw query.
+    $executeRaw: jest.fn().mockResolvedValue(1),
     $transaction: jest.fn((arg: unknown) =>
       typeof arg === 'function' ? (arg as (tx: unknown) => unknown)(prisma) : Promise.all(arg as unknown[]),
     ),
@@ -60,6 +71,7 @@ const makeOnlyOffice = () => ({
 // enforcement. buildListWhere defaults to {} (an admin-style all-access clause).
 const makeAccess = () => ({
   canAccess: jest.fn().mockResolvedValue(true),
+  canAccessByUserId: jest.fn().mockResolvedValue(true),
   buildListWhere: jest.fn().mockResolvedValue({}),
 });
 
@@ -122,7 +134,7 @@ const versionRow = (over: Record<string, unknown> = {}) => ({
   changeSummary: null,
   status: 'draft',
   createdAt: new Date('2026-01-01T00:00:00Z'),
-  extractedText: 'extracted words',
+  hasExtractedText: true,
   renditionS3Key: null,
   uploadedBy: { name: 'Admin' },
   ...over,
@@ -213,17 +225,48 @@ describe('DocumentsService.addVersion', () => {
     expect(s3.putObject).not.toHaveBeenCalled();
   });
 
-  it('omits extractedText when extraction yields nothing', async () => {
+  it('omits extractedText but persists hasExtractedText=false when extraction yields nothing', async () => {
     const { svc, prisma, extractor } = build();
     prisma.document.findFirst.mockResolvedValue(accessDoc());
     prisma.documentVersion.aggregate.mockResolvedValue({ _max: { versionNumber: null } });
-    prisma.documentVersion.create.mockResolvedValue(versionRow({ extractedText: null }));
+    prisma.documentVersion.create.mockResolvedValue(versionRow({ hasExtractedText: false }));
     prisma.document.update.mockResolvedValue({});
     extractor.extract.mockResolvedValue('');
 
     await svc.addVersion('doc-1', file, {}, actor, reqCtx);
     const createArg = prisma.documentVersion.create.mock.calls[0][0];
+    // D2: the text column is omitted AND the persisted flag is false.
     expect(createArg.data.extractedText).toBeUndefined();
+    expect(createArg.data.hasExtractedText).toBe(false);
+  });
+
+  it('row-locks the document before allocating the version number (C1/D6)', async () => {
+    const { svc, prisma } = build();
+    prisma.document.findFirst.mockResolvedValue(accessDoc());
+    prisma.documentVersion.aggregate.mockResolvedValue({ _max: { versionNumber: 1 } });
+    prisma.documentVersion.create.mockResolvedValue(versionRow({ id: 'v-2', versionNumber: 2 }));
+    prisma.document.update.mockResolvedValue({});
+
+    await svc.addVersion('doc-1', file, {}, actor, reqCtx);
+
+    // The FOR UPDATE lock is taken inside the write transaction.
+    expect(prisma.$executeRaw).toHaveBeenCalled();
+  });
+
+  it('maps a lost version-number race (P2002) to a clean 409, not a 500 (C1/D6)', async () => {
+    const { svc, prisma } = build();
+    prisma.document.findFirst.mockResolvedValue(accessDoc());
+    prisma.documentVersion.aggregate.mockResolvedValue({ _max: { versionNumber: 1 } });
+    // Simulate the unique (documentId, versionNumber) collision on create.
+    const p2002 = new Prisma.PrismaClientKnownRequestError('dup', {
+      code: 'P2002',
+      clientVersion: 'x',
+    });
+    prisma.documentVersion.create.mockRejectedValue(p2002);
+
+    await expect(svc.addVersion('doc-1', file, {}, actor, reqCtx)).rejects.toBeInstanceOf(
+      ConflictException,
+    );
   });
 });
 
@@ -232,6 +275,7 @@ describe('DocumentsService.getVersionDownloadTicket', () => {
     const { svc, prisma, s3, access, audit } = build();
     prisma.documentVersion.findFirst.mockResolvedValue({
       s3Key: 'documents/doc-1/v1/policy.pdf',
+      s3VersionId: 's3v-dl',
       fileName: 'policy.pdf',
       document: accessDoc(),
     });
@@ -244,10 +288,12 @@ describe('DocumentsService.getVersionDownloadTicket', () => {
       document: { deletedAt: null },
     });
     expect(access.canAccess).toHaveBeenCalledWith(actor, accessDoc(), 'download');
+    // C7: presigned URL is pinned to the exact stored object version.
     expect(s3.getPresignedDownloadUrl).toHaveBeenCalledWith(
       'documents/doc-1/v1/policy.pdf',
       300,
       'policy.pdf',
+      's3v-dl',
     );
     expect(ticket).toEqual({
       url: 'https://minio.local/signed?x=1',
@@ -292,6 +338,7 @@ describe('DocumentsService.getVersionViewTicket', () => {
     const { svc, prisma, s3, audit } = build();
     prisma.documentVersion.findFirst.mockResolvedValue({
       s3Key: 'documents/doc-1/v1/policy.docx',
+      s3VersionId: 's3v-src',
       renditionS3Key: 'renditions/doc-1/v1/rendition.pdf',
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       document: accessDoc(),
@@ -304,9 +351,12 @@ describe('DocumentsService.getVersionViewTicket', () => {
       documentId: 'doc-1',
       document: { deletedAt: null },
     });
+    // Rendition is a derived object — presigned by key alone (no source version id).
     expect(s3.getPresignedDownloadUrl).toHaveBeenCalledWith(
       'renditions/doc-1/v1/rendition.pdf',
       300,
+      undefined,
+      undefined,
     );
     expect(ticket).toEqual({
       url: 'https://minio.local/signed?x=1',
@@ -340,12 +390,19 @@ describe('DocumentsService.getVersionViewTicket', () => {
     const { svc, prisma, s3 } = build();
     prisma.documentVersion.findFirst.mockResolvedValue({
       s3Key: 'documents/doc-1/v1/policy.pdf',
+      s3VersionId: 's3v-pdf',
       renditionS3Key: null,
       mimeType: 'application/pdf',
       document: accessDoc(),
     });
     const ticket = await svc.getVersionViewTicket('doc-1', 'v-1', actor, reqCtx);
-    expect(s3.getPresignedDownloadUrl).toHaveBeenCalledWith('documents/doc-1/v1/policy.pdf', 300);
+    // Source PDF served directly, pinned to the stored object version (C7).
+    expect(s3.getPresignedDownloadUrl).toHaveBeenCalledWith(
+      'documents/doc-1/v1/policy.pdf',
+      300,
+      undefined,
+      's3v-pdf',
+    );
     expect(ticket.mimeType).toBe('application/pdf');
   });
 
@@ -550,6 +607,26 @@ describe('DocumentsService.getVersionSource (OnlyOffice content route)', () => {
     await expect(svc.getVersionSource('doc-1', 'ghost')).rejects.toBeInstanceOf(NotFoundException);
     expect(s3.getObjectBuffer).not.toHaveBeenCalled();
   });
+
+  it('SH2: 403s (no S3 fetch) when the token-bound user lacks edit access', async () => {
+    const { svc, prisma, s3, access } = build();
+    prisma.documentVersion.findFirst.mockResolvedValue({
+      s3Key: 'documents/doc-1/v1/policy.docx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      fileName: 'policy.docx',
+      document: accessDoc({ accessLevel: 'confidential' }),
+    });
+    access.canAccessByUserId.mockResolvedValue(false);
+    await expect(svc.getVersionSource('doc-1', 'v-1', 'editor-x')).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+    expect(access.canAccessByUserId).toHaveBeenCalledWith(
+      'editor-x',
+      expect.objectContaining({ id: 'doc-1' }),
+      'edit',
+    );
+    expect(s3.getObjectBuffer).not.toHaveBeenCalled();
+  });
 });
 
 describe('DocumentsService.getVersionHtml (TipTap load)', () => {
@@ -590,12 +667,13 @@ describe('DocumentsService.getVersionHtml (TipTap load)', () => {
 
 describe('DocumentsService.regenerateRendition', () => {
   it('regenerates + persists the new rendition key on the version', async () => {
-    const { svc, prisma, renditions } = build();
+    const { svc, prisma, renditions, access } = build();
     prisma.documentVersion.findFirst.mockResolvedValue({
       versionNumber: 2,
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       fileName: 'policy.docx',
       s3Key: 'documents/doc-1/v2/policy.docx',
+      document: accessDoc(),
     });
     renditions.generateForVersion.mockResolvedValue({
       renditionS3Key: 'renditions/doc-1/v2/rendition.pdf',
@@ -605,8 +683,10 @@ describe('DocumentsService.regenerateRendition', () => {
       versionRow({ id: 'v-2', versionNumber: 2, renditionS3Key: 'renditions/doc-1/v2/rendition.pdf' }),
     );
 
-    const result = await svc.regenerateRendition('doc-1', 'v-2');
+    const result = await svc.regenerateRendition('doc-1', 'v-2', actor, reqCtx);
 
+    // SL2: edit access is enforced before regenerating.
+    expect(access.canAccess).toHaveBeenCalledWith(actor, accessDoc(), 'edit');
     expect(renditions.generateForVersion).toHaveBeenCalledWith({
       documentId: 'doc-1',
       versionNumber: 2,
@@ -623,8 +703,24 @@ describe('DocumentsService.regenerateRendition', () => {
   it('404s for a version not under the (non-deleted) document', async () => {
     const { svc, prisma, renditions } = build();
     prisma.documentVersion.findFirst.mockResolvedValue(null);
-    await expect(svc.regenerateRendition('doc-1', 'ghost')).rejects.toBeInstanceOf(
+    await expect(svc.regenerateRendition('doc-1', 'ghost', actor, reqCtx)).rejects.toBeInstanceOf(
       NotFoundException,
+    );
+    expect(renditions.generateForVersion).not.toHaveBeenCalled();
+  });
+
+  it('403s + audits access.denied when the caller cannot edit (no rendition)', async () => {
+    const { svc, prisma, renditions, access } = build();
+    prisma.documentVersion.findFirst.mockResolvedValue({
+      versionNumber: 2,
+      mimeType: 'application/pdf',
+      fileName: 'policy.pdf',
+      s3Key: 'documents/doc-1/v2/policy.pdf',
+      document: accessDoc({ accessLevel: 'confidential' }),
+    });
+    access.canAccess.mockResolvedValue(false);
+    await expect(svc.regenerateRendition('doc-1', 'v-2', actor, reqCtx)).rejects.toBeInstanceOf(
+      ForbiddenException,
     );
     expect(renditions.generateForVersion).not.toHaveBeenCalled();
   });
@@ -879,6 +975,25 @@ describe('DocumentsService.softDelete', () => {
     prisma.document.findFirst.mockResolvedValue(null);
     await expect(svc.softDelete('gone', actor, reqCtx)).rejects.toBeInstanceOf(NotFoundException);
     expect(prisma.document.update).not.toHaveBeenCalled();
+  });
+
+  it('C8: cancels the document\'s open review tasks + pending acknowledgments', async () => {
+    const { svc, prisma } = build();
+    prisma.document.findFirst
+      .mockResolvedValueOnce(accessDoc())
+      .mockResolvedValueOnce(fullDocRow({ deletedAt: new Date(), deletedBy: { name: 'Admin' } }));
+    prisma.document.update.mockResolvedValue({});
+
+    await svc.softDelete('doc-1', actor, reqCtx);
+
+    expect(prisma.reviewTask.updateMany).toHaveBeenCalledWith({
+      where: { documentId: 'doc-1', status: { in: ['pending', 'in_progress', 'overdue'] } },
+      data: { status: 'cancelled' },
+    });
+    expect(prisma.acknowledgmentAssignment.updateMany).toHaveBeenCalledWith({
+      where: { documentId: 'doc-1', status: { in: ['pending', 'overdue'] } },
+      data: { status: 'cancelled' },
+    });
   });
 });
 

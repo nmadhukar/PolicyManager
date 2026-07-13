@@ -4,6 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import {
   AUDIT_ACTIONS,
   type AuthUser,
@@ -327,11 +328,20 @@ export class ImportsService {
       throw err;
     }
 
-    if (file) {
-      await this.documents.addVersion(documentId, file, { changeSummary: 'Imported' }, user, ctx);
-    }
-    if (ownerId !== user.id) {
-      await this.prisma.document.update({ where: { id: documentId }, data: { ownerId } });
+    // C3/D5: the document exists but is not yet usable until its first version (and
+    // any ownership transfer) succeeds. If the version step fails, roll the document
+    // back so a headless, version-less orphan is never left behind — the row is
+    // reported as an error instead.
+    try {
+      if (file) {
+        await this.documents.addVersion(documentId, file, { changeSummary: 'Imported' }, user, ctx);
+      }
+      if (ownerId !== user.id) {
+        await this.prisma.document.update({ where: { id: documentId }, data: { ownerId } });
+      }
+    } catch (err) {
+      await this.prisma.document.delete({ where: { id: documentId } }).catch(() => undefined);
+      return { status: 'error', documentId: null, message: errorMessage(err) };
     }
 
     return {
@@ -404,20 +414,41 @@ export class ImportsService {
         parentId = cached;
         continue;
       }
-      const existing = await this.prisma.documentCategory.findFirst({
-        where: { name, parentId },
-        select: { id: true },
-      });
-      const category =
-        existing ??
-        (await this.prisma.documentCategory.create({
-          data: { name, parentId },
-          select: { id: true },
-        }));
-      cache.set(runningPath, category.id);
-      parentId = category.id;
+      const id = await this.findOrCreateCategory(name, parentId);
+      cache.set(runningPath, id);
+      parentId = id;
     }
     return parentId;
+  }
+
+  /**
+   * Race-safe get-or-create for one `(name, parentId)` category (D12/C10). The
+   * `@@unique([name, parentId])` + root partial unique index guarantee no duplicate
+   * siblings; on a lost race the P2002 is caught and the existing winner re-read,
+   * so concurrent imports never fail nor create a duplicate category.
+   */
+  private async findOrCreateCategory(name: string, parentId: string | null): Promise<string> {
+    const existing = await this.prisma.documentCategory.findFirst({
+      where: { name, parentId },
+      select: { id: true },
+    });
+    if (existing) return existing.id;
+    try {
+      const created = await this.prisma.documentCategory.create({
+        data: { name, parentId },
+        select: { id: true },
+      });
+      return created.id;
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        const found = await this.prisma.documentCategory.findFirst({
+          where: { name, parentId },
+          select: { id: true },
+        });
+        if (found) return found.id;
+      }
+      throw err;
+    }
   }
 
   /** Resolves an owner email (case-insensitive) to a user id; defaults to importer. */

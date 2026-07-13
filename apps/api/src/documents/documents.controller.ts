@@ -157,8 +157,13 @@ export class DocumentsController {
   @HttpCode(200)
   @RequirePermission(PERMISSIONS.DOCUMENT_WRITE)
   @ApiOperation({ summary: 'Regenerate the PDF rendition for a version (best-effort).' })
-  regenerateRendition(@Param('id') id: string, @Param('versionId') versionId: string) {
-    return this.documents.regenerateRendition(id, versionId);
+  regenerateRendition(
+    @Param('id') id: string,
+    @Param('versionId') versionId: string,
+    @CurrentUser() user: AuthUser,
+    @ReqContext() ctx: RequestContext,
+  ) {
+    return this.documents.regenerateRendition(id, versionId, user, ctx);
   }
 
   @Get(':id/versions/:versionId/html')

@@ -4,13 +4,43 @@ import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 
+/**
+ * SM4: CORS origin from an explicit allow-list (`WEB_APP_URL` / `FRONTEND_URL` /
+ * `CORS_ALLOWED_ORIGINS`, comma-split). When nothing is configured, reflect the
+ * request origin ONLY in non-production (dev convenience); production denies
+ * cross-origin. Credentials are OFF — auth is a bearer token, not a cookie, so
+ * `credentials: true` (which is incompatible with a reflected origin anyway) is
+ * never needed.
+ */
+function corsOrigin(): boolean | string[] {
+  const origins = [
+    process.env.WEB_APP_URL,
+    process.env.FRONTEND_URL,
+    process.env.CORS_ALLOWED_ORIGINS,
+  ]
+    .filter((v): v is string => !!v)
+    .flatMap((v) => v.split(','))
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (origins.length > 0) return Array.from(new Set(origins));
+  const isProd = (process.env.NODE_ENV ?? 'development') === 'production';
+  return !isProd; // dev: reflect; prod: deny cross-origin when unconfigured
+}
+
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.setGlobalPrefix('api', { exclude: ['health'] });
   app.useGlobalPipes(
     new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }),
   );
-  app.enableCors({ origin: true, credentials: true });
+
+  // SL1: trust exactly N proxy hops so `req.ip` is the real client (used for the
+  // audit + attestation trail), not a spoofable X-Forwarded-For. Default 0 = trust
+  // none (use the socket peer). Behind one LB/reverse proxy, set TRUST_PROXY_HOPS=1.
+  const hops = Number(process.env.TRUST_PROXY_HOPS ?? 0);
+  app.getHttpAdapter().getInstance().set('trust proxy', Number.isFinite(hops) ? hops : 0);
+
+  app.enableCors({ origin: corsOrigin(), credentials: false });
 
   const swaggerConfig = new DocumentBuilder()
     .setTitle('PolicyManager API')

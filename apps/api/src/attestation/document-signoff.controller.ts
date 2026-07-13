@@ -65,8 +65,13 @@ export class DocumentSignoffController {
   @Get(':id/attestations')
   @RequirePermission(PERMISSIONS.DOCUMENT_READ)
   @ApiOperation({ summary: 'The document approval chain (reviewed/approved sign-offs, newest first).' })
-  attestations(@Param('id') id: string) {
-    return this.attestation.listApprovalChain(id);
+  attestations(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthUser,
+    @ReqContext() ctx: RequestContext,
+  ) {
+    // SH1: enforce per-document VIEW access (confidential ACL), not just document.read.
+    return this.attestation.listApprovalChainForDocument(id, user, ctx);
   }
 
   @Get(':id/cover-page')

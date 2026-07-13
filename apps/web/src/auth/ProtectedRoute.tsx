@@ -24,7 +24,20 @@ export function ProtectedRoute({ children }: { children: ReactNode }) {
   }
 
   if (status === 'unauthenticated') {
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+    // Preserve the attempted path both in router state (SPA redirect) and as a
+    // ?from= query param, so it survives a full page reload after a refresh
+    // failure (state is lost on reload; the query param isn't).
+    const from = location.pathname + location.search;
+    return (
+      <Navigate
+        to={{
+          pathname: '/login',
+          search: from !== '/' ? `?from=${encodeURIComponent(from)}` : '',
+        }}
+        replace
+        state={{ from }}
+      />
+    );
   }
 
   if (user?.mustChangePassword && location.pathname !== '/change-password') {

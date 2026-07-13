@@ -10,9 +10,16 @@ import { DocumentApprovalService } from './document-approval.service';
  */
 describe('DocumentApprovalService', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const makePrisma = (): any => ({
-    document: { findFirst: jest.fn(), update: jest.fn().mockResolvedValue({}) },
-  });
+  const makePrisma = (): any => {
+    const prisma: any = {
+      document: { findFirst: jest.fn(), update: jest.fn().mockResolvedValue({}) },
+    };
+    // C6/D4: approve wraps the state change + sign-off in one transaction.
+    prisma.$transaction = jest.fn((arg: unknown) =>
+      typeof arg === 'function' ? (arg as (tx: unknown) => unknown)(prisma) : Promise.all(arg as unknown[]),
+    );
+    return prisma;
+  };
   const makeAudit = () => ({ record: jest.fn().mockResolvedValue('ae-1') });
   const makeAccess = () => ({ canAccess: jest.fn().mockResolvedValue(true) });
   const makeAttestation = () => ({
@@ -75,6 +82,7 @@ describe('DocumentApprovalService', () => {
       }),
       approver,
       { ipAddress: '10.0.0.1' },
+      expect.anything(), // tx client (C6/D4)
     );
     expect(prisma.document.update).toHaveBeenCalledWith({
       where: { id: 'doc-1' },

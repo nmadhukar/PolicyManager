@@ -14,27 +14,13 @@ import {
   listAttestations,
 } from '../api/signoff';
 import { useAuth } from '../auth/AuthContext';
+import { downloadBlob } from '../lib/download';
 import { formatDateTime } from '../lib/format';
 import { Modal } from '../ui/Modal';
 
-/** Opens a PDF blob in a new browser tab (preview). */
-function openBlob(blob: Blob): void {
-  const url = URL.createObjectURL(blob);
-  window.open(url, '_blank', 'noopener,noreferrer');
-  // Revoke a little later so the new tab has time to load.
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
-}
-
-/** Triggers a browser download for a PDF blob. */
-function downloadBlob(blob: Blob, fileName: string): void {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = fileName;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+/** Sanitizes a document identifier into a safe file-name stem. */
+function fileStem(doc: DocumentDetail): string {
+  return (doc.documentNumber || doc.title || 'document').replace(/[^A-Za-z0-9._-]+/g, '_');
 }
 
 /** Badge classes per attestation action. */
@@ -128,7 +114,8 @@ function CoverPageActions({ doc }: { doc: DocumentDetail }) {
     mutationFn: () => fetchCoverPage(doc.id),
     onSuccess: (blob) => {
       setError(null);
-      openBlob(blob);
+      // Hidden-anchor download (a post-await window.open would be popup-blocked).
+      downloadBlob(blob, `${fileStem(doc)}-cover.pdf`);
     },
     onError: () => setError('Could not generate the cover page.'),
   });
@@ -136,8 +123,7 @@ function CoverPageActions({ doc }: { doc: DocumentDetail }) {
     mutationFn: () => fetchExport(doc.id),
     onSuccess: (blob) => {
       setError(null);
-      const base = (doc.documentNumber || doc.title || 'document').replace(/[^A-Za-z0-9._-]+/g, '_');
-      downloadBlob(blob, `${base}-export.pdf`);
+      downloadBlob(blob, `${fileStem(doc)}-export.pdf`);
     },
     onError: () => setError('Could not export the document.'),
   });
@@ -153,7 +139,7 @@ function CoverPageActions({ doc }: { doc: DocumentDetail }) {
           onClick={() => preview.mutate()}
           disabled={preview.isPending}
         >
-          {preview.isPending ? 'Preparing…' : 'Preview cover page'}
+          {preview.isPending ? 'Preparing…' : 'Download cover page'}
         </button>
         <button
           className="btn-secondary !py-1.5 text-sm"
@@ -220,7 +206,7 @@ function ApproveModal({ doc, onClose }: { doc: DocumentDetail; onClose: () => vo
   };
 
   return (
-    <Modal open onClose={onClose} titleId="approve-title">
+    <Modal open onClose={onClose} titleId="approve-title" busy={mutation.isPending}>
       <form onSubmit={onSubmit} aria-label="Approve document">
         <h2 id="approve-title" className="text-base font-semibold text-ink">
           Approve document
