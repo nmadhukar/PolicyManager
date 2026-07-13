@@ -12,6 +12,7 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { label: 'Dashboard', to: '/', icon: '▚' },
+  { label: 'Library', to: '/library', icon: '▤', requires: PERMISSIONS.DOCUMENT_READ },
   { label: 'Users', to: '/admin/users', icon: '⚙', requires: PERMISSIONS.USER_MANAGE },
 ];
 

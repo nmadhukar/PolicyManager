@@ -37,6 +37,20 @@ export function DashboardPage() {
             </dl>
           </div>
 
+          {hasPermission(PERMISSIONS.DOCUMENT_READ) && (
+            <div className="card p-6">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-muted">
+                Documents
+              </h2>
+              <div className="mt-3 space-y-2 text-sm text-ink-soft">
+                <p>Search, version, and manage your clinic&apos;s controlled documents.</p>
+                <Link to="/library" className="btn-primary mt-2 inline-flex">
+                  Open library
+                </Link>
+              </div>
+            </div>
+          )}
+
           <div className="card p-6">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-muted">
               Administration

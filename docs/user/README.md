@@ -2,15 +2,16 @@
 
 This folder contains task-focused guides for non-technical users.
 
+Available guides:
+
+- [Using the Document Library](./document-library.md) — finding, creating,
+  versioning, downloading, and editing documents.
+
 Planned guides:
 
-- Finding and reading policies.
-- Downloading a controlled document.
 - Completing an acknowledgement.
 - Reviewing an assigned policy.
 - Approving a policy.
-- Understanding document status.
-- Viewing version history.
 
 Guides should be written in plain English and match the actual UI once it exists.
 

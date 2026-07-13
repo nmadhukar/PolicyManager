@@ -26,41 +26,43 @@ enum UserStatus {
 }
 
 model User {
-  id           String        @id @default(uuid())
-  email        String        @unique
+  id           String     @id @default(uuid())
+  email        String     @unique
   name         String
   title        String?
   passwordHash String?
-  status       UserStatus    @default(active)
+  status       UserStatus @default(active)
   mfaSecret    String?
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
 
-  roles        UserRole[]
-  identities   UserIdentity[]
+  roles            UserRole[]
+  identities       UserIdentity[]
+  ownedDocuments   Document[]        @relation("DocumentOwner")
+  uploadedVersions DocumentVersion[] @relation("VersionUploader")
 
   @@schema("policytracker")
 }
 
 model UserIdentity {
-  id        String   @id @default(uuid())
-  userId    String
-  provider  String // local | azure | google | okta | cognito ...
-  subject   String
-  email     String?
-  linkedAt  DateTime @default(now())
+  id       String   @id @default(uuid())
+  userId   String
+  provider String // local | azure | google | okta | cognito ...
+  subject  String
+  email    String?
+  linkedAt DateTime @default(now())
 
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([provider, subject])
   @@schema("policytracker")
 }
 
 model Role {
-  id          String           @id @default(uuid())
-  name        String           @unique
+  id          String  @id @default(uuid())
+  name        String  @unique
   description String?
-  isSystem    Boolean          @default(false)
+  isSystem    Boolean @default(false)
 
   users       UserRole[]
   permissions RolePermission[]
@@ -69,11 +71,11 @@ model Role {
 }
 
 model Permission {
-  id          String           @id @default(uuid())
-  key         String           @unique // e.g. document.read
+  id          String  @id @default(uuid())
+  key         String  @unique // e.g. document.read
   description String?
 
-  roles       RolePermission[]
+  roles RolePermission[]
 
   @@schema("policytracker")
 }
@@ -82,8 +84,8 @@ model UserRole {
   userId String
   roleId String
 
-  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role   Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
 
   @@id([userId, roleId])
   @@schema("policytracker")
@@ -93,21 +95,132 @@ model RolePermission {
   roleId       String
   permissionId String
 
-  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
-  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
 
   @@id([roleId, permissionId])
   @@schema("policytracker")
 }
 
 model RefreshToken {
-  id        String   @id @default(uuid())
+  id        String    @id @default(uuid())
   userId    String
-  tokenHash String   @unique
+  tokenHash String    @unique
   expiresAt DateTime
   revokedAt DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
   @@index([userId])
+  @@schema("policytracker")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 — Documents & Versioning
+// ---------------------------------------------------------------------------
+
+enum DocumentStatus {
+  draft
+  in_review
+  approved
+  published
+  archived
+  retired
+
+  @@schema("policytracker")
+}
+
+enum AccessLevel {
+  public
+  restricted
+  confidential
+
+  @@schema("policytracker")
+}
+
+enum ReviewCadence {
+  none
+  quarterly
+  annual
+  custom
+
+  @@schema("policytracker")
+}
+
+/// Hierarchical folder for documents (Policies & Procedures, Job Descriptions,
+/// IOP/PHP Curriculum, Forms…). `parentId` gives an arbitrary-depth tree.
+model DocumentCategory {
+  id          String   @id @default(uuid())
+  name        String
+  parentId    String?
+  description String?
+  createdAt   DateTime @default(now())
+
+  parent    DocumentCategory?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children  DocumentCategory[] @relation("CategoryTree")
+  documents Document[]
+
+  @@index([parentId])
+  @@schema("policytracker")
+}
+
+/// Stable logical document. The file bytes live in immutable DocumentVersion
+/// rows; `currentVersionId` points at the version currently surfaced.
+model Document {
+  id               String         @id @default(uuid())
+  title            String
+  documentNumber   String?        @unique
+  categoryId       String?
+  ownerId          String
+  description      String?
+  tags             String[]
+  status           DocumentStatus @default(draft)
+  accessLevel      AccessLevel    @default(restricted)
+  currentVersionId String?        @unique
+  reviewCadence    ReviewCadence  @default(none)
+  nextReviewDate   DateTime?
+  effectiveDate    DateTime?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  category       DocumentCategory? @relation(fields: [categoryId], references: [id])
+  owner          User              @relation("DocumentOwner", fields: [ownerId], references: [id])
+  // Nullable FK breaks the Document<->DocumentVersion cycle; NoAction avoids a
+  // referential-action loop that Postgres would otherwise reject.
+  currentVersion DocumentVersion?  @relation("CurrentVersion", fields: [currentVersionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  versions       DocumentVersion[] @relation("DocumentVersions")
+
+  @@index([title])
+  @@index([categoryId])
+  @@index([ownerId])
+  @@index([status])
+  @@index([nextReviewDate])
+  @@schema("policytracker")
+}
+
+/// Immutable snapshot of a document's bytes. Every upload creates a new row +
+/// new S3 object; prior version bytes are never overwritten (AGENTS.md §9).
+model DocumentVersion {
+  id             String         @id @default(uuid())
+  documentId     String
+  versionNumber  Int
+  s3Key          String
+  s3VersionId    String?
+  renditionS3Key String?
+  fileName       String
+  mimeType       String
+  sizeBytes      Int
+  checksum       String
+  uploadedById   String
+  changeSummary  String?
+  status         DocumentStatus @default(draft)
+  extractedText  String?        @db.Text
+  createdAt      DateTime       @default(now())
+
+  document   Document  @relation("DocumentVersions", fields: [documentId], references: [id], onDelete: Cascade)
+  currentOf  Document? @relation("CurrentVersion")
+  uploadedBy User      @relation("VersionUploader", fields: [uploadedById], references: [id])
+
+  @@unique([documentId, versionNumber])
+  @@index([documentId])
   @@schema("policytracker")
 }

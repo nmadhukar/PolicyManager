@@ -4,6 +4,15 @@ import { JwtService } from '@nestjs/jwt';
 import * as argon2 from 'argon2';
 import { AuthService, ttlToMs } from './auth.service';
 
+// `@prisma/client` (pulled in transitively via AuthService -> PrismaService)
+// loads the repo `.env` into `process.env` on import, and @nestjs/config's
+// ConfigService gives `process.env` PRECEDENCE over the constructor object.
+// Without this, JWT_ACCESS_SECRET resolves to the `.env` value at sign time but
+// the tests verify with the literals below -> "invalid signature". Pin the env
+// so config resolution is hermetic and matches the test's intended secrets.
+process.env.JWT_ACCESS_SECRET = 'test-access-secret';
+process.env.JWT_REFRESH_SECRET = 'test-refresh-secret';
+
 /**
  * Business-behavior unit tests for token/redemption + permission resolution.
  * Prisma is mocked; argon2 + JwtService are real (fast enough).

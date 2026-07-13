@@ -11,8 +11,8 @@ Sections to fill as the app is built:
 - Prisma and PostgreSQL `policytracker` schema.
 - Auth and RBAC.
 - Audit logging.
-- Document versioning.
-- S3/MinIO storage.
+- Document versioning. See [Documents & Versioning](./documents-and-versioning.md).
+- S3/MinIO storage. See [Documents & Versioning](./documents-and-versioning.md).
 - Review workflow.
 - Attestation workflow.
 - Cover page generation.

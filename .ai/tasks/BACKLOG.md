@@ -85,6 +85,7 @@ Tickets:
 - PM-0313 - Add Storage Admin UI (create/list buckets and prefixes/folders) behind `storage.manage`; no destructive object/bucket ops in v1.
 - PM-0314 - Add Gotenberg + OnlyOffice services to Docker Compose and env config.
 - PM-0315 - Add quick tags and classification: inline tag add/remove on documents, classification via category tree, and filter/search by tag + category in the library UI.
+- PM-0316 - Require a title on every document. Add library search + filters: free-text search by title/name, and filters by classification/category, owner, tag, status, and last-review / next-review date range. Server-side paginated + sortable list endpoint; debounced search UI with clear/active-filter chips.
 
 ## Phase 4: Access Control And Audit
 
