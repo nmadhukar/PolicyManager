@@ -11,6 +11,7 @@ COPY prisma ./prisma
 COPY packages/shared ./packages/shared
 COPY apps/api ./apps/api
 RUN npx prisma generate
+RUN npm run build --workspace @policymanager/shared
 RUN npm run build --workspace @policymanager/api
 
 # ---- Production stage ----

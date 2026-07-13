@@ -4,7 +4,7 @@ PolicyManager ships as two images (`apps/api`, `apps/web`) plus infrastructure: 
 
 ## Images
 
-- **API** — `apps/api/Dockerfile` (multi-stage Node 20). Entrypoint runs `prisma migrate deploy` (applies migrations to the `policytracker` schema) then starts NestJS on `:3000`. Set `SEED_ON_START=true` on the very first deploy to seed roles/permissions/admin.
+- **API** — `apps/api/Dockerfile` (multi-stage Node 20). Entrypoint runs `prisma migrate deploy` (applies migrations to the `policytracker` schema) then starts NestJS on `:3000` from `dist/main.js`. The build compiles `@policymanager/shared` to JS first so the runtime never loads TypeScript.
 - **Web** — `apps/web/Dockerfile` (Vite build → nginx). Build with `VITE_API_BASE_URL=__API_BASE_URL__`; the container entrypoint replaces that sentinel with the runtime `API_BASE_URL` env, so one image serves any environment. Health at `/healthz`.
 
 ## Required environment (production)
@@ -32,6 +32,7 @@ Secrets come from the platform secret store / env — never committed. `APP_ENCR
 
 1. Provision PostgreSQL + create the database (the app owns `policytracker`; migrations create the schema).
 2. Provision the S3 bucket (or let `S3_AUTO_CREATE=true` create it) and Gotenberg/OnlyOffice/SMTP.
-3. Deploy the API with `SEED_ON_START=true`; confirm `/health` and `/api/docs`.
-4. Deploy the web with `API_BASE_URL` set to the public API origin.
-5. Log in as the seeded admin (`admin@policymanager.local` / seed password) and immediately change the password.
+3. Deploy the API; confirm `/health` and `/api/docs`.
+4. Seed baseline roles/permissions/admin once (one-off job against the prod `DATABASE_URL`): `npm run db:seed` from a checkout, or a Coolify one-off command. Idempotent.
+5. Deploy the web with `API_BASE_URL` set to the public API origin.
+6. Log in as the seeded admin (`admin@policymanager.local` / seed password) and immediately change the password.

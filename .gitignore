@@ -15,3 +15,5 @@ apps/web/dist/
 apps/api/dist/
 prisma/*.db
 .turbo/
+*.tsbuildinfo
+packages/shared/dist/
