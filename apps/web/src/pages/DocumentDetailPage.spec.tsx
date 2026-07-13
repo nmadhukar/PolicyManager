@@ -62,6 +62,11 @@ vi.mock('../api/users', () => ({
   listRoles: vi.fn().mockResolvedValue([]),
   listUsers: vi.fn().mockResolvedValue([]),
 }));
+vi.mock('../api/reviews', () => ({
+  listReviewers: vi.fn().mockResolvedValue([]),
+  assignReviewer: vi.fn(),
+  removeReviewer: vi.fn(),
+}));
 
 function version(over: Record<string, unknown> = {}) {
   return {

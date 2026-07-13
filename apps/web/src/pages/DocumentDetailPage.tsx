@@ -24,6 +24,7 @@ import {
 } from '../api/documents';
 import { flattenCategories, listCategoryTree } from '../api/categories';
 import { DocumentAclPanel } from './DocumentAclPanel';
+import { DocumentReviewersPanel } from './DocumentReviewersPanel';
 import { useAuth } from '../auth/AuthContext';
 import { formatBytes, formatDate, statusBadgeClasses, statusLabel } from '../lib/format';
 import { AppShell } from '../ui/AppShell';
@@ -82,6 +83,7 @@ export function DocumentDetailPage() {
 function Detail({ id }: { id: string }) {
   const { hasPermission } = useAuth();
   const canWrite = hasPermission(PERMISSIONS.DOCUMENT_WRITE);
+  const canManageReviews = hasPermission(PERMISSIONS.REVIEW_MANAGE);
 
   const query = useQuery({ queryKey: ['document', id], queryFn: () => getDocument(id), enabled: !!id });
   const status = (query.error as AxiosError | null)?.response?.status;
@@ -138,6 +140,7 @@ function Detail({ id }: { id: string }) {
         <div className="space-y-6">
           <MetadataCard doc={doc} canWrite={canWrite} />
           {canWrite && <QuickTags doc={doc} />}
+          {canManageReviews && <DocumentReviewersPanel doc={doc} />}
           {canWrite && <DocumentAclPanel doc={doc} />}
         </div>
       </div>

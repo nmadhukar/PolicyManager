@@ -4,10 +4,12 @@ import { AuditLogPage } from './pages/AuditLogPage';
 import { ChangePasswordPage } from './pages/ChangePasswordPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { DocumentDetailPage } from './pages/DocumentDetailPage';
+import { EmailAdminPage } from './pages/EmailAdminPage';
 import { ForgotPasswordPage } from './pages/ForgotPasswordPage';
 import { LibraryPage } from './pages/LibraryPage';
 import { LoginPage } from './pages/LoginPage';
 import { ResetPasswordPage } from './pages/ResetPasswordPage';
+import { ReviewsPage } from './pages/ReviewsPage';
 import { StorageAdminPage } from './pages/StorageAdminPage';
 import { UsersPage } from './pages/UsersPage';
 
@@ -46,6 +48,22 @@ export default function App() {
         element={
           <ProtectedRoute>
             <DocumentDetailPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/reviews"
+        element={
+          <ProtectedRoute>
+            <ReviewsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/email"
+        element={
+          <ProtectedRoute>
+            <EmailAdminPage />
           </ProtectedRoute>
         }
       />

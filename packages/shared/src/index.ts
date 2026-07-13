@@ -296,6 +296,12 @@ export const AUDIT_ACTIONS = {
   USER_LOGIN: 'user.login',
   USER_LOGIN_FAILED: 'user.login_failed',
   USER_PASSWORD_RESET: 'user.password_reset',
+  // Phase 5 — QC review scheduling + SMTP admin.
+  REVIEW_ASSIGNED: 'review.assigned',
+  REVIEW_TASK_CREATED: 'review.task_created',
+  REVIEW_COMPLETED: 'review.completed',
+  SMTP_CONFIG_CHANGED: 'smtp.config_changed',
+  SMTP_TEST_SENT: 'smtp.test_sent',
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
@@ -319,6 +325,11 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   [AUDIT_ACTIONS.USER_LOGIN]: 'Sign-in',
   [AUDIT_ACTIONS.USER_LOGIN_FAILED]: 'Failed sign-in',
   [AUDIT_ACTIONS.USER_PASSWORD_RESET]: 'Password reset',
+  [AUDIT_ACTIONS.REVIEW_ASSIGNED]: 'Reviewer assigned',
+  [AUDIT_ACTIONS.REVIEW_TASK_CREATED]: 'Review task created',
+  [AUDIT_ACTIONS.REVIEW_COMPLETED]: 'Review completed',
+  [AUDIT_ACTIONS.SMTP_CONFIG_CHANGED]: 'Email settings changed',
+  [AUDIT_ACTIONS.SMTP_TEST_SENT]: 'Test email sent',
 };
 
 /** One row of the audit trail as surfaced to the audit query API + UI. */
@@ -337,5 +348,162 @@ export interface AuditEventItem {
   ipAddress: string | null;
   userAgent: string | null;
   metadata: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// QC Review scheduling + Email/SMTP admin (Phase 5, PM-0501..PM-0509)
+// ---------------------------------------------------------------------------
+
+/** Lifecycle of a scheduled review task. */
+export type ReviewTaskStatus =
+  | 'pending'
+  | 'in_progress'
+  | 'completed'
+  | 'overdue'
+  | 'cancelled';
+
+export const REVIEW_TASK_STATUSES: readonly ReviewTaskStatus[] = [
+  'pending',
+  'in_progress',
+  'completed',
+  'overdue',
+  'cancelled',
+] as const;
+
+/** Task statuses that still require action (not completed/cancelled). */
+export const OPEN_REVIEW_TASK_STATUSES: readonly ReviewTaskStatus[] = [
+  'pending',
+  'in_progress',
+  'overdue',
+] as const;
+
+/** Human labels for review-task statuses (UI badges). */
+export const REVIEW_TASK_STATUS_LABELS: Record<ReviewTaskStatus, string> = {
+  pending: 'Pending',
+  in_progress: 'In progress',
+  completed: 'Completed',
+  overdue: 'Overdue',
+  cancelled: 'Cancelled',
+};
+
+/** Default lead time (days) before a document's next review that a task is raised. */
+export const DEFAULT_REVIEW_LEAD_DAYS = 14;
+
+/** An assigned reviewer on a document (from ReviewAssignment). */
+export interface ReviewerAssignment {
+  userId: string;
+  name: string | null;
+  email: string | null;
+  assignedAt: string;
+}
+
+/** One scheduled review task as surfaced to the review API + dashboard. */
+export interface ReviewTaskItem {
+  id: string;
+  documentId: string;
+  documentTitle: string | null;
+  documentNumber: string | null;
+  versionId: string | null;
+  dueDate: string;
+  status: ReviewTaskStatus;
+  assignedToId: string;
+  assignedToName: string | null;
+  completedAt: string | null;
+  completedByName: string | null;
+  notes: string | null;
+  createdAt: string;
+  /** The parent document's cadence — lets the complete modal decide next-date UX. */
+  reviewCadence: ReviewCadence;
+}
+
+/** Body for completing a review task. */
+export interface CompleteReviewInput {
+  notes?: string;
+  /** Required when the document cadence is `none`/`custom`; overrides otherwise. */
+  newNextReviewDate?: string;
+}
+
+/** Result of a review sweep run (cron or manual trigger). */
+export interface ReviewSweepResult {
+  tasksCreated: number;
+  overdueMarked: number;
+  documentsConsidered: number;
+}
+
+/** Clinic-wide review-compliance snapshot for the report cards. */
+export interface ComplianceSummary {
+  totalDocuments: number;
+  current: number;
+  dueSoon: number;
+  overdue: number;
+  /** Whole-number percent (0–100) of in-force documents not overdue. */
+  percentCurrent: number;
+}
+
+// ---- Email / SMTP admin --------------------------------------------------
+
+/** Category of a sent notification, for the log + filters. */
+export type NotificationType =
+  | 'review_reminder'
+  | 'review_overdue'
+  | 'password_reset'
+  | 'account_locked'
+  | 'smtp_test'
+  | 'other';
+
+export const NOTIFICATION_TYPES: readonly NotificationType[] = [
+  'review_reminder',
+  'review_overdue',
+  'password_reset',
+  'account_locked',
+  'smtp_test',
+  'other',
+] as const;
+
+/** Delivery outcome recorded for each attempted send. */
+export type NotificationStatus = 'sent' | 'failed';
+
+/**
+ * SMTP settings as surfaced to the admin UI. The stored password is NEVER
+ * returned — only `hasPassword` indicates whether one is set. `source` says
+ * whether these values come from a saved DB row (`db`) or the env fallback (`env`).
+ */
+export interface SmtpConfigView {
+  host: string;
+  port: number;
+  secure: boolean;
+  username: string | null;
+  fromAddress: string;
+  fromName: string;
+  enabled: boolean;
+  hasPassword: boolean;
+  updatedAt: string | null;
+  source: 'db' | 'env';
+}
+
+/** Body for PUT /smtp/config. `password` is write-only (never echoed back). */
+export interface UpdateSmtpConfigInput {
+  host: string;
+  port: number;
+  secure: boolean;
+  username?: string | null;
+  /** Omit to keep the existing password; empty string clears it. */
+  password?: string;
+  fromAddress: string;
+  fromName: string;
+  enabled: boolean;
+}
+
+/** One recorded notification send (review reminder, password reset, test…). */
+export interface NotificationLogItem {
+  id: string;
+  toEmail: string;
+  toUserId: string | null;
+  subject: string;
+  type: string;
+  reviewTaskId: string | null;
+  status: NotificationStatus;
+  error: string | null;
   createdAt: string;
 }

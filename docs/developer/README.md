@@ -13,7 +13,7 @@ Sections to fill as the app is built:
 - Audit logging.
 - Document versioning. See [Documents & Versioning](./documents-and-versioning.md).
 - S3/MinIO storage. See [Documents & Versioning](./documents-and-versioning.md).
-- Review workflow.
+- Review workflow and Email/SMTP. See [QC Review Scheduling & Email/SMTP](./review-and-email.md).
 - Attestation workflow.
 - Cover page generation.
 - Public API.
