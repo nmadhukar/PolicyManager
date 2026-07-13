@@ -67,6 +67,26 @@ vi.mock('../api/reviews', () => ({
   assignReviewer: vi.fn(),
   removeReviewer: vi.fn(),
 }));
+// Phase 6 sign-off / acknowledgment panels — stub their reads so these detail-page
+// tests stay focused on lifecycle actions and never hit the network.
+vi.mock('../api/signoff', () => ({
+  listAttestations: vi.fn().mockResolvedValue([]),
+  approveDocument: vi.fn(),
+  distributeAcknowledgment: vi.fn(),
+  getAcknowledgmentStatus: vi.fn().mockResolvedValue({
+    documentId: 'doc-1',
+    versionId: null,
+    versionNumber: null,
+    total: 0,
+    completed: 0,
+    pending: 0,
+    overdue: 0,
+    percentComplete: 100,
+    rows: [],
+  }),
+  fetchCoverPage: vi.fn(),
+  fetchExport: vi.fn(),
+}));
 
 function version(over: Record<string, unknown> = {}) {
   return {

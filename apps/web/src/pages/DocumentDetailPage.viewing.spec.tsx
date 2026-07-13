@@ -37,6 +37,25 @@ vi.mock('../api/categories', () => ({
   listCategoryTree: vi.fn().mockResolvedValue([]),
   flattenCategories: () => [],
 }));
+// Phase 6 sign-off / acknowledgment panels — stub their reads (no network in tests).
+vi.mock('../api/signoff', () => ({
+  listAttestations: vi.fn().mockResolvedValue([]),
+  approveDocument: vi.fn(),
+  distributeAcknowledgment: vi.fn(),
+  getAcknowledgmentStatus: vi.fn().mockResolvedValue({
+    documentId: 'doc-1',
+    versionId: null,
+    versionNumber: null,
+    total: 0,
+    completed: 0,
+    pending: 0,
+    overdue: 0,
+    percentComplete: 100,
+    rows: [],
+  }),
+  fetchCoverPage: vi.fn(),
+  fetchExport: vi.fn(),
+}));
 
 // Stub the heavy lazy surfaces so we test the page's gating/wiring, not pdf.js/OnlyOffice/TipTap.
 vi.mock('../ui/DocumentViewer', () => ({

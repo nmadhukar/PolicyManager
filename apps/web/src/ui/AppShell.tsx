@@ -15,6 +15,8 @@ const NAV: NavItem[] = [
   { label: 'Library', to: '/library', icon: '▤', requires: PERMISSIONS.DOCUMENT_READ },
   // Reviews is a personal dashboard: any signed-in user may be assigned as a reviewer.
   { label: 'Reviews', to: '/reviews', icon: '✔' },
+  // Acknowledgments is personal too: any signed-in user may be assigned to read & sign.
+  { label: 'Acknowledgments', to: '/acknowledgments', icon: '✍' },
   { label: 'Audit Log', to: '/admin/audit', icon: '▧', requires: PERMISSIONS.AUDIT_READ },
   { label: 'Users', to: '/admin/users', icon: '⚙', requires: PERMISSIONS.USER_MANAGE },
   { label: 'Storage', to: '/admin/storage', icon: '▦', requires: PERMISSIONS.STORAGE_MANAGE },

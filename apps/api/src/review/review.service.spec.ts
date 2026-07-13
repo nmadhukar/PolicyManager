@@ -33,12 +33,29 @@ describe('ReviewService', () => {
   });
   const makeMail = () => ({ sendReviewReminder: jest.fn().mockResolvedValue(true) });
   const makeAudit = () => ({ record: jest.fn().mockResolvedValue('ae-1') });
+  const makeAttestation = () => ({ record: jest.fn().mockResolvedValue({ id: 'att-1' }) });
+  const makeAcknowledgment = () => ({ markOverdue: jest.fn().mockResolvedValue(0) });
 
-  const build = (prisma = makePrisma(), mail = makeMail(), audit = makeAudit()) => ({
+  const build = (
+    prisma = makePrisma(),
+    mail = makeMail(),
+    audit = makeAudit(),
+    attestation = makeAttestation(),
+    acknowledgment = makeAcknowledgment(),
+  ) => ({
     prisma,
     mail,
     audit,
-    svc: new ReviewService(prisma as never, config, mail as never, audit as never),
+    attestation,
+    acknowledgment,
+    svc: new ReviewService(
+      prisma as never,
+      config,
+      mail as never,
+      audit as never,
+      attestation as never,
+      acknowledgment as never,
+    ),
   });
 
   const manager: AuthUser = {
@@ -180,7 +197,7 @@ describe('ReviewService', () => {
       completedById: null,
       notes: null,
       createdAt: new Date('2026-06-20T00:00:00Z'),
-      document: { title: 'Doc', documentNumber: 'D-1', reviewCadence: 'quarterly' },
+      document: { title: 'Doc', documentNumber: 'D-1', reviewCadence: 'quarterly', currentVersionId: 'v1' },
       assignedTo: { name: 'Staff' },
       completedBy: null,
       ...over,
@@ -210,6 +227,43 @@ describe('ReviewService', () => {
         expect.objectContaining({ action: 'review.completed', actorUserId: 'staff-1' }),
       );
       expect(item.status).toBe('completed');
+    });
+
+    it('records an immutable reviewed attestation tied to the task + version', async () => {
+      const { svc, prisma, attestation } = build();
+      prisma.reviewTask.findUnique
+        .mockResolvedValueOnce(taskRow())
+        .mockResolvedValueOnce(taskRow({ status: 'completed' }));
+      prisma.reviewTask.update.mockResolvedValue({});
+      prisma.document.update.mockResolvedValue({});
+
+      await svc.completeTask('task-1', { notes: 'ok', signatureRole: 'RN' }, staff, {}, NOW);
+
+      expect(attestation.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          documentId: 'doc-1',
+          versionId: 'v1',
+          action: 'reviewed',
+          reviewTaskId: 'task-1',
+          signatureName: 'Staff', // defaulted to the acting user's name
+          signatureRole: 'RN',
+          comments: 'ok',
+        }),
+        staff,
+        {},
+      );
+    });
+
+    it('honours an explicit signatureName on the sign-off', async () => {
+      const { svc, prisma, attestation } = build();
+      prisma.reviewTask.findUnique
+        .mockResolvedValueOnce(taskRow())
+        .mockResolvedValueOnce(taskRow({ status: 'completed' }));
+      prisma.reviewTask.update.mockResolvedValue({});
+      prisma.document.update.mockResolvedValue({});
+
+      await svc.completeTask('task-1', { signatureName: 'Dr. Staff' }, staff, {}, NOW);
+      expect(attestation.record.mock.calls[0][0].signatureName).toBe('Dr. Staff');
     });
 
     it('lets a review.manage user complete someone else\'s task', async () => {

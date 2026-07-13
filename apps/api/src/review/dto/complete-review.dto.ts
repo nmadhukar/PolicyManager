@@ -18,4 +18,16 @@ export class CompleteReviewDto implements CompleteReviewInput {
   @IsOptional()
   @IsISO8601()
   newNextReviewDate?: string;
+
+  @ApiPropertyOptional({ description: 'Typed sign-off name (defaults to the acting user).' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  signatureName?: string;
+
+  @ApiPropertyOptional({ description: "Reviewer's role/title recorded with the sign-off." })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  signatureRole?: string;
 }

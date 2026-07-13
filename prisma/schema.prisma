@@ -53,6 +53,9 @@ model User {
   createdReviewAssignments ReviewAssignment[] @relation("ReviewAssignmentCreator")
   assignedReviewTasks  ReviewTask[]       @relation("ReviewTaskAssignee")
   completedReviewTasks ReviewTask[]       @relation("ReviewTaskCompleter")
+  attestations              Attestation[]              @relation("AttestationUser")
+  acknowledgmentAssignments AcknowledgmentAssignment[] @relation("AckAssignee")
+  assignedAcknowledgments   AcknowledgmentAssignment[] @relation("AckAssignedBy")
 
   @@schema("policytracker")
 }
@@ -230,6 +233,8 @@ model Document {
   auditEvents    AuditEvent[]      @relation("AuditDoc")
   reviewAssignments ReviewAssignment[] @relation("ReviewAssignmentDoc")
   reviewTasks       ReviewTask[]       @relation("ReviewTaskDoc")
+  attestations              Attestation[]              @relation("AttestationDoc")
+  acknowledgmentAssignments AcknowledgmentAssignment[] @relation("AckDoc")
 
   @@index([title])
   @@index([categoryId])
@@ -262,6 +267,8 @@ model DocumentVersion {
   document   Document  @relation("DocumentVersions", fields: [documentId], references: [id], onDelete: Cascade)
   currentOf  Document? @relation("CurrentVersion")
   uploadedBy User      @relation("VersionUploader", fields: [uploadedById], references: [id])
+  attestations              Attestation[]              @relation("AttestationVersion")
+  acknowledgmentAssignments AcknowledgmentAssignment[] @relation("AckVersion")
 
   @@unique([documentId, versionNumber])
   @@index([documentId])
@@ -413,6 +420,7 @@ model ReviewTask {
   document    Document @relation("ReviewTaskDoc", fields: [documentId], references: [id], onDelete: Cascade)
   assignedTo  User     @relation("ReviewTaskAssignee", fields: [assignedToId], references: [id])
   completedBy User?    @relation("ReviewTaskCompleter", fields: [completedById], references: [id])
+  attestations Attestation[] @relation("AttestationReviewTask")
 
   @@index([documentId])
   @@index([assignedToId])
@@ -459,5 +467,100 @@ model NotificationLog {
 
   @@index([createdAt])
   @@index([type])
+  @@schema("policytracker")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6 — Attestation (sign-off) + staff acknowledgment distribution
+// ---------------------------------------------------------------------------
+
+/// The compliance action an Attestation records:
+///  - `reviewed`     — a QC reviewer signed off on a review task,
+///  - `approved`     — an approver published/approved the document,
+///  - `acknowledged` — a staff member confirmed "I have read and understand".
+enum AttestationAction {
+  reviewed
+  approved
+  acknowledged
+
+  @@schema("policytracker")
+}
+
+/// Lifecycle of a staff acknowledgment assignment. `pending`/`overdue` are the
+/// open states; `completed`/`cancelled` are terminal. A new published version
+/// re-opens acknowledgment by creating a fresh `pending` assignment.
+enum AckStatus {
+  pending
+  completed
+  overdue
+  cancelled
+
+  @@schema("policytracker")
+}
+
+/// IMMUTABLE compliance sign-off evidence (AGENTS.md §8/§10b): reviewer/approver
+/// e-attestation and staff read-and-acknowledge. Captures the signer, the exact
+/// document version, a typed signature (name + role), the action, and the network
+/// context (IP + user-agent) at sign time. There is NO update/delete route — a
+/// correction is a new record, never a mutation (AGENTS.md §8).
+model Attestation {
+  id                         String            @id @default(uuid())
+  documentId                 String
+  // Nullable so a reviewer can still sign off on a metadata-only (no-file-yet)
+  // document; approve/acknowledge always carry the current/published versionId.
+  versionId                  String?
+  reviewTaskId               String?
+  acknowledgmentAssignmentId String?
+  userId                     String
+  action                     AttestationAction
+  signatureName              String
+  signatureRole              String?
+  comments                   String?
+  ipAddress                  String?
+  userAgent                  String?
+  signedAt                   DateTime          @default(now())
+  createdAt                  DateTime          @default(now())
+
+  document                 Document                  @relation("AttestationDoc", fields: [documentId], references: [id], onDelete: Cascade)
+  version                  DocumentVersion?          @relation("AttestationVersion", fields: [versionId], references: [id], onDelete: SetNull)
+  user                     User                      @relation("AttestationUser", fields: [userId], references: [id])
+  reviewTask               ReviewTask?               @relation("AttestationReviewTask", fields: [reviewTaskId], references: [id], onDelete: SetNull)
+  acknowledgmentAssignment AcknowledgmentAssignment? @relation("AckAttestation", fields: [acknowledgmentAssignmentId], references: [id], onDelete: SetNull)
+
+  @@index([documentId])
+  @@index([versionId])
+  @@index([userId])
+  @@index([action])
+  @@schema("policytracker")
+}
+
+/// Staff read-and-acknowledge distribution (AGENTS.md §10b). One row per
+/// (published version, assignee). The unique constraint makes distribution
+/// idempotent and lets a NEW version create fresh pending rows while prior
+/// completed rows stay as historical evidence. Completion is proven by the linked
+/// immutable `Attestation(action=acknowledged)`.
+model AcknowledgmentAssignment {
+  id           String    @id @default(uuid())
+  documentId   String
+  versionId    String
+  assigneeId   String
+  assignedById String
+  dueDate      DateTime?
+  status       AckStatus @default(pending)
+  completedAt  DateTime?
+  createdAt    DateTime  @default(now())
+
+  document     Document        @relation("AckDoc", fields: [documentId], references: [id], onDelete: Cascade)
+  version      DocumentVersion @relation("AckVersion", fields: [versionId], references: [id], onDelete: Cascade)
+  assignee     User            @relation("AckAssignee", fields: [assigneeId], references: [id])
+  assignedBy   User            @relation("AckAssignedBy", fields: [assignedById], references: [id])
+  attestations Attestation[]   @relation("AckAttestation")
+
+  // At most one assignment per (version, assignee) — distribution is idempotent
+  // and a new versionId is what re-triggers acknowledgment.
+  @@unique([versionId, assigneeId])
+  @@index([documentId])
+  @@index([assigneeId])
+  @@index([status])
   @@schema("policytracker")
 }

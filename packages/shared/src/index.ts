@@ -302,6 +302,13 @@ export const AUDIT_ACTIONS = {
   REVIEW_COMPLETED: 'review.completed',
   SMTP_CONFIG_CHANGED: 'smtp.config_changed',
   SMTP_TEST_SENT: 'smtp.test_sent',
+  // Phase 6 — Attestation (sign-off), approval, and acknowledgment distribution.
+  ATTESTATION_REVIEWED: 'attestation.reviewed',
+  ATTESTATION_APPROVED: 'attestation.approved',
+  ATTESTATION_ACKNOWLEDGED: 'attestation.acknowledged',
+  DOCUMENT_APPROVED: 'document.approved',
+  DOCUMENT_PUBLISHED: 'document.published',
+  ACKNOWLEDGMENT_ASSIGNED: 'acknowledgment.assigned',
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
@@ -330,6 +337,12 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   [AUDIT_ACTIONS.REVIEW_COMPLETED]: 'Review completed',
   [AUDIT_ACTIONS.SMTP_CONFIG_CHANGED]: 'Email settings changed',
   [AUDIT_ACTIONS.SMTP_TEST_SENT]: 'Test email sent',
+  [AUDIT_ACTIONS.ATTESTATION_REVIEWED]: 'Reviewed (signed off)',
+  [AUDIT_ACTIONS.ATTESTATION_APPROVED]: 'Approved (signed off)',
+  [AUDIT_ACTIONS.ATTESTATION_ACKNOWLEDGED]: 'Acknowledged (read & understood)',
+  [AUDIT_ACTIONS.DOCUMENT_APPROVED]: 'Document approved',
+  [AUDIT_ACTIONS.DOCUMENT_PUBLISHED]: 'Document published',
+  [AUDIT_ACTIONS.ACKNOWLEDGMENT_ASSIGNED]: 'Distributed for acknowledgment',
 };
 
 /** One row of the audit trail as surfaced to the audit query API + UI. */
@@ -422,6 +435,13 @@ export interface CompleteReviewInput {
   notes?: string;
   /** Required when the document cadence is `none`/`custom`; overrides otherwise. */
   newNextReviewDate?: string;
+  /**
+   * Typed sign-off name captured on the immutable `reviewed` Attestation. Defaults
+   * to the acting user's name server-side when omitted (AGENTS.md §10b).
+   */
+  signatureName?: string;
+  /** Optional role/title recorded alongside the sign-off signature. */
+  signatureRole?: string;
 }
 
 /** Result of a review sweep run (cron or manual trigger). */
@@ -506,4 +526,184 @@ export interface NotificationLogItem {
   status: NotificationStatus;
   error: string | null;
   createdAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Attestation (sign-off) + acknowledgment distribution (Phase 6, PM-0601..PM-0609)
+// ---------------------------------------------------------------------------
+
+/** The compliance action an immutable Attestation records. */
+export type AttestationAction = 'reviewed' | 'approved' | 'acknowledged';
+
+export const ATTESTATION_ACTIONS: readonly AttestationAction[] = [
+  'reviewed',
+  'approved',
+  'acknowledged',
+] as const;
+
+/** Human labels for attestation actions (approval-chain UI). */
+export const ATTESTATION_ACTION_LABELS: Record<AttestationAction, string> = {
+  reviewed: 'Reviewed',
+  approved: 'Approved',
+  acknowledged: 'Acknowledged',
+};
+
+/** Lifecycle of a staff acknowledgment assignment. */
+export type AckStatus = 'pending' | 'completed' | 'overdue' | 'cancelled';
+
+export const ACK_STATUSES: readonly AckStatus[] = [
+  'pending',
+  'completed',
+  'overdue',
+  'cancelled',
+] as const;
+
+/** Human labels for acknowledgment statuses (badges). */
+export const ACK_STATUS_LABELS: Record<AckStatus, string> = {
+  pending: 'Pending',
+  completed: 'Completed',
+  overdue: 'Overdue',
+  cancelled: 'Cancelled',
+};
+
+/**
+ * One immutable attestation as surfaced to the approval-chain panel + evidence
+ * views. `versionNumber` is the resolved number of `versionId` (null when the
+ * sign-off predates any file). Never carries the raw signature bytes — this IS
+ * the signature (typed name + role + timestamp + IP).
+ */
+export interface AttestationItem {
+  id: string;
+  documentId: string;
+  versionId: string | null;
+  versionNumber: number | null;
+  reviewTaskId: string | null;
+  acknowledgmentAssignmentId: string | null;
+  userId: string;
+  userName: string | null;
+  action: AttestationAction;
+  signatureName: string;
+  signatureRole: string | null;
+  comments: string | null;
+  ipAddress: string | null;
+  signedAt: string;
+}
+
+/** Body for POST /documents/:id/approve. */
+export interface ApproveDocumentInput {
+  /** Typed sign-off name; defaults to the acting user's name when omitted. */
+  signatureName?: string;
+  signatureRole?: string;
+  comments?: string;
+  /**
+   * When true, the document is set to `published` (and acknowledgment is
+   * re-triggered for the current version); otherwise it is set to `approved`.
+   */
+  publish?: boolean;
+}
+
+/** Result of an approve/publish sign-off. */
+export interface ApproveDocumentResult {
+  documentId: string;
+  status: DocumentStatus;
+  attestation: AttestationItem;
+  /** Fresh pending acknowledgments created by a publish re-trigger (0 otherwise). */
+  acknowledgmentsRetriggered: number;
+}
+
+/**
+ * Body for POST /documents/:id/acknowledgments — distribute the current version
+ * for read-and-acknowledge. Supply explicit user ids and/or role names (expanded
+ * to their members); the union is de-duplicated and assigned idempotently.
+ */
+export interface DistributeAcknowledgmentInput {
+  assigneeIds?: string[];
+  roleNames?: string[];
+  /** Optional ISO due date applied to every created/updated assignment. */
+  dueDate?: string;
+}
+
+/** One assignee's acknowledgment status for a document version (manager view). */
+export interface AcknowledgmentStatusRow {
+  assignmentId: string;
+  assigneeId: string;
+  assigneeName: string | null;
+  assigneeEmail: string | null;
+  status: AckStatus;
+  dueDate: string | null;
+  completedAt: string | null;
+}
+
+/**
+ * Per-version acknowledgment status + completion percentage for the manager view.
+ * `versionId` is null when the document has never been distributed.
+ */
+export interface AcknowledgmentStatusSummary {
+  documentId: string;
+  versionId: string | null;
+  versionNumber: number | null;
+  total: number;
+  completed: number;
+  pending: number;
+  overdue: number;
+  /** Whole-number percent (0–100) of assignees who have acknowledged. */
+  percentComplete: number;
+  rows: AcknowledgmentStatusRow[];
+}
+
+/** One of my acknowledgment assignments (the staff "My Acknowledgments" list). */
+export interface MyAcknowledgmentItem {
+  id: string;
+  documentId: string;
+  documentTitle: string | null;
+  documentNumber: string | null;
+  versionId: string;
+  versionNumber: number | null;
+  status: AckStatus;
+  dueDate: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  assignedByName: string | null;
+}
+
+/**
+ * Body for POST /acknowledgments/:id/acknowledge. `hasViewed` MUST be true — the
+ * assignee has to open and read the document first (AGENTS.md §10b).
+ */
+export interface AcknowledgeInput {
+  hasViewed: boolean;
+  /** Typed sign-off name; defaults to the acting user's name when omitted. */
+  signatureName?: string;
+  signatureRole?: string;
+  comments?: string;
+}
+
+/**
+ * The data model that feeds cover-page PDF generation (pdf-lib). Assembled purely
+ * from live metadata so the source version bytes are never mutated (AGENTS.md §10).
+ * Unit-tested independently of the PDF rendering.
+ */
+export interface CoverPageData {
+  title: string;
+  documentNumber: string | null;
+  version: number | null;
+  status: DocumentStatus;
+  category: string | null;
+  owner: string | null;
+  effectiveDate: string | null;
+  reviewCadence: ReviewCadence;
+  nextReviewDate: string | null;
+  approvalChain: {
+    action: AttestationAction;
+    signatureName: string;
+    signatureRole: string | null;
+    signedAt: string;
+  }[];
+  revisionHistory: {
+    version: number;
+    date: string;
+    uploadedBy: string | null;
+    changeSummary: string | null;
+  }[];
+  generatedAt: string;
 }

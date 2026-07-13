@@ -25,6 +25,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import type { RequestContext } from '../audit/request-context';
 import { MailService } from '../mail/mail.service';
+import { AttestationService } from '../attestation/attestation.service';
+import { AcknowledgmentService } from '../attestation/acknowledgment.service';
 import { addDays, advanceReviewDate } from './review-cadence.util';
 
 /** Filters for the review-task listing (already validated in the DTO). */
@@ -47,7 +49,10 @@ const INACTIVE_STATUSES: Prisma.DocumentWhereInput['status'] = { notIn: ['archiv
 
 /** Task fields + joins needed to build a {@link ReviewTaskItem}. */
 const taskInclude = {
-  document: { select: { title: true, documentNumber: true, reviewCadence: true } },
+  // currentVersionId lets completion attach the sign-off to the exact version.
+  document: {
+    select: { title: true, documentNumber: true, reviewCadence: true, currentVersionId: true },
+  },
   assignedTo: { select: { name: true } },
   completedBy: { select: { name: true } },
 } satisfies Prisma.ReviewTaskInclude;
@@ -78,6 +83,8 @@ export class ReviewService {
     private readonly config: ConfigService,
     private readonly mail: MailService,
     private readonly audit: AuditService,
+    private readonly attestation: AttestationService,
+    private readonly acknowledgment: AcknowledgmentService,
   ) {}
 
   // ---- Reviewer assignment -------------------------------------------------
@@ -256,8 +263,12 @@ export class ReviewService {
       data: { status: 'overdue' },
     });
 
+    // Phase 6: also flip past-due staff acknowledgment assignments to overdue.
+    const acksOverdue = await this.acknowledgment.markOverdue(now);
+
     this.logger.log(
-      `Sweep: considered ${docs.length} due docs, created ${tasksCreated} tasks, marked ${overdue.count} overdue`,
+      `Sweep: considered ${docs.length} due docs, created ${tasksCreated} tasks, ` +
+        `marked ${overdue.count} review tasks + ${acksOverdue} acknowledgments overdue`,
     );
     return { tasksCreated, overdueMarked: overdue.count, documentsConsidered: docs.length };
   }
@@ -270,9 +281,10 @@ export class ReviewService {
    * Authorized for the task's assignee OR a `review.manage` holder. `now` is
    * injected for testable, deterministic date math.
    *
-   * Phase 6 SEAM: an {@link Attestation} (reviewed/approved, name+role+timestamp+IP)
-   * will be recorded here, linked to this task via `reviewTaskId`. Intentionally not
-   * implemented yet — this method is the single completion entry point it will hook.
+   * Phase 6 (seam filled): completion records an IMMUTABLE `reviewed`
+   * {@link Attestation} (name + role + timestamp + IP), linked to this task via
+   * `reviewTaskId` and to the version under review. `signatureName` defaults to the
+   * acting user's name; the sign-off is the compliance evidence of the review.
    */
   async completeTask(
     taskId: string,
@@ -331,6 +343,21 @@ export class ReviewService {
       ...ctx,
       metadata: { taskId, newNextReviewDate: newNextReviewDate.toISOString() },
     });
+
+    // Phase 6: record the immutable reviewer sign-off tied to this task + version.
+    await this.attestation.record(
+      {
+        documentId: task.documentId,
+        versionId: task.versionId ?? task.document.currentVersionId ?? null,
+        action: 'reviewed',
+        signatureName: dto.signatureName?.trim() || user.name,
+        signatureRole: dto.signatureRole,
+        comments: dto.notes,
+        reviewTaskId: taskId,
+      },
+      user,
+      ctx,
+    );
 
     return this.getTask(taskId, user);
   }

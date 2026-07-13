@@ -11,6 +11,7 @@ import { StorageAdminModule } from './storage-admin/storage-admin.module';
 import { DocumentsModule } from './documents/documents.module';
 import { AuditModule } from './audit/audit.module';
 import { ReviewModule } from './review/review.module';
+import { AttestationModule } from './attestation/attestation.module';
 import { SmtpModule } from './smtp/smtp.module';
 
 @Module({
@@ -27,6 +28,7 @@ import { SmtpModule } from './smtp/smtp.module';
     StorageModule,
     StorageAdminModule,
     DocumentsModule,
+    AttestationModule,
     ReviewModule,
     SmtpModule,
   ],

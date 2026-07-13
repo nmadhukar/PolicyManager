@@ -25,6 +25,8 @@ import {
 import { flattenCategories, listCategoryTree } from '../api/categories';
 import { DocumentAclPanel } from './DocumentAclPanel';
 import { DocumentReviewersPanel } from './DocumentReviewersPanel';
+import { DocumentSignoffPanel } from './DocumentSignoffPanel';
+import { DocumentAcknowledgmentPanel } from './DocumentAcknowledgmentPanel';
 import { useAuth } from '../auth/AuthContext';
 import { formatBytes, formatDate, statusBadgeClasses, statusLabel } from '../lib/format';
 import { AppShell } from '../ui/AppShell';
@@ -139,6 +141,8 @@ function Detail({ id }: { id: string }) {
         </div>
         <div className="space-y-6">
           <MetadataCard doc={doc} canWrite={canWrite} />
+          <DocumentSignoffPanel doc={doc} />
+          {canManageReviews && <DocumentAcknowledgmentPanel doc={doc} />}
           {canWrite && <QuickTags doc={doc} />}
           {canManageReviews && <DocumentReviewersPanel doc={doc} />}
           {canWrite && <DocumentAclPanel doc={doc} />}

@@ -288,10 +288,13 @@ function previewNextDate(cadence: ReviewTaskItem['reviewCadence']): string | nul
 }
 
 function CompleteModal({ task, onClose }: { task: ReviewTaskItem; onClose: () => void }) {
+  const { user } = useAuth();
   const queryClient = useQueryClient();
   const requiresDate = task.reviewCadence === 'none' || task.reviewCadence === 'custom';
   const [notes, setNotes] = useState('');
   const [nextDate, setNextDate] = useState(requiresDate ? '' : (previewNextDate(task.reviewCadence) ?? ''));
+  const [signatureName, setSignatureName] = useState(user?.name ?? '');
+  const [signatureRole, setSignatureRole] = useState(user?.roles?.[0] ?? '');
   const [error, setError] = useState<string | null>(null);
 
   const mutation = useMutation({
@@ -300,6 +303,9 @@ function CompleteModal({ task, onClose }: { task: ReviewTaskItem; onClose: () =>
         notes: notes.trim() || undefined,
         // Only send an explicit date when the user set one (override / required).
         newNextReviewDate: nextDate ? nextDate : undefined,
+        // Sign-off signature captured on the immutable reviewed attestation.
+        signatureName: signatureName.trim() || undefined,
+        signatureRole: signatureRole.trim() || undefined,
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['review-tasks'] });
@@ -323,6 +329,10 @@ function CompleteModal({ task, onClose }: { task: ReviewTaskItem; onClose: () =>
     e.preventDefault();
     if (requiresDate && !nextDate) {
       setError('This document uses a custom cadence — choose the next review date.');
+      return;
+    }
+    if (!signatureName.trim()) {
+      setError('Enter your name to sign off on this review.');
       return;
     }
     setError(null);
@@ -378,6 +388,38 @@ function CompleteModal({ task, onClose }: { task: ReviewTaskItem; onClose: () =>
               Leave as-is to advance automatically by the {task.reviewCadence} cadence, or override.
             </p>
           )}
+        </div>
+
+        <div className="mt-4 border-t border-slate-100 pt-4">
+          <p className="mb-2 text-xs text-ink-muted">
+            Completing this review records an immutable sign-off (name, role, timestamp, IP) as
+            compliance evidence.
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label htmlFor="cr-sig" className="label">
+                Signature (your name) <span className="text-red-600">*</span>
+              </label>
+              <input
+                id="cr-sig"
+                className="input"
+                value={signatureName}
+                onChange={(e) => setSignatureName(e.target.value)}
+                required
+              />
+            </div>
+            <div>
+              <label htmlFor="cr-role" className="label">
+                Role / title <span className="font-normal text-ink-muted">(optional)</span>
+              </label>
+              <input
+                id="cr-role"
+                className="input"
+                value={signatureRole}
+                onChange={(e) => setSignatureRole(e.target.value)}
+              />
+            </div>
+          </div>
         </div>
 
         <div className="mt-5 flex justify-end gap-2">
