@@ -1289,7 +1289,11 @@ export class DocumentsService {
     doc: AccessDocument,
     ctx: RequestContext,
   ): Promise<void> {
-    if (await this.access.canAccess(user, doc, 'view')) return;
+    // Setting a review cadence/next-review date is a WRITE — require EDIT access,
+    // matching `update()` and the other write paths. `view` would let a user with a
+    // view-only ACL grant (but global document.write) mutate a confidential doc's
+    // schedule they cannot otherwise edit.
+    if (await this.access.canAccess(user, doc, 'edit')) return;
     await this.audit.record({
       action: AUDIT_ACTIONS.ACCESS_DENIED,
       actorUserId: user.id,

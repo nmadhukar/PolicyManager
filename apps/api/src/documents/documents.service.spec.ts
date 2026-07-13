@@ -964,7 +964,7 @@ describe('DocumentsService.update', () => {
 });
 
 describe('DocumentsService.bulkUpdateReviewSchedule', () => {
-  it('updates one document through the review-schedule path with view access', async () => {
+  it('updates one document through the review-schedule path with edit access', async () => {
     const { svc, prisma, access, audit } = build();
     prisma.document.findFirst
       .mockResolvedValueOnce(accessDoc())
@@ -978,7 +978,8 @@ describe('DocumentsService.bulkUpdateReviewSchedule', () => {
       reqCtx,
     );
 
-    expect(access.canAccess).toHaveBeenCalledWith(actor, accessDoc(), 'view');
+    // Setting a schedule is a write — EDIT access is required (not just view).
+    expect(access.canAccess).toHaveBeenCalledWith(actor, accessDoc(), 'edit');
     expect(prisma.document.update).toHaveBeenCalledWith({
       where: { id: 'doc-1' },
       data: {
@@ -1038,8 +1039,8 @@ describe('DocumentsService.bulkUpdateReviewSchedule', () => {
       reqCtx,
     );
 
-    expect(access.canAccess).toHaveBeenCalledWith(actor, accessDoc({ id: 'doc-1' }), 'view');
-    expect(access.canAccess).toHaveBeenCalledWith(actor, accessDoc({ id: 'doc-2' }), 'view');
+    expect(access.canAccess).toHaveBeenCalledWith(actor, accessDoc({ id: 'doc-1' }), 'edit');
+    expect(access.canAccess).toHaveBeenCalledWith(actor, accessDoc({ id: 'doc-2' }), 'edit');
     const updateArg = prisma.document.updateMany.mock.calls[0][0];
     expect(updateArg.where).toEqual({ id: { in: ['doc-1', 'doc-2'] }, deletedAt: null });
     expect(updateArg.data.reviewCadence).toBe('quarterly');
