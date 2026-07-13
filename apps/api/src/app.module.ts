@@ -15,6 +15,7 @@ import { AttestationModule } from './attestation/attestation.module';
 import { SmtpModule } from './smtp/smtp.module';
 import { ApiClientsModule } from './api-clients/api-clients.module';
 import { PublicApiModule } from './public-api/public-api.module';
+import { ImportsModule } from './imports/imports.module';
 
 @Module({
   imports: [
@@ -36,6 +37,8 @@ import { PublicApiModule } from './public-api/public-api.module';
     // Phase 7 — public read-only API + its (JWT-guarded) client management.
     ApiClientsModule,
     PublicApiModule,
+    // Phase 8 — bulk import & consolidation (CSV manifest + bulk upload).
+    ImportsModule,
   ],
 })
 export class AppModule {}

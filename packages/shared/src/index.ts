@@ -320,6 +320,8 @@ export const AUDIT_ACTIONS = {
   API_DOWNLOAD_ISSUED: 'api.download.issued',
   API_VERSIONS_READ: 'api.versions.read',
   API_SEARCH: 'api.search',
+  // Phase 8 — bulk import & consolidation.
+  IMPORT_COMPLETED: 'import.completed',
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
@@ -364,6 +366,7 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   [AUDIT_ACTIONS.API_DOWNLOAD_ISSUED]: 'API: download issued',
   [AUDIT_ACTIONS.API_VERSIONS_READ]: 'API: versions read',
   [AUDIT_ACTIONS.API_SEARCH]: 'API: search',
+  [AUDIT_ACTIONS.IMPORT_COMPLETED]: 'Bulk import completed',
 };
 
 /** One row of the audit trail as surfaced to the audit query API + UI. */
@@ -864,4 +867,98 @@ export interface ApiSearchResponse {
   page: number;
   pageSize: number;
   items: ApiSearchHit[];
+}
+
+// ---------------------------------------------------------------------------
+// Import & Consolidation — bulk upload + CSV manifest importer (Phase 8, PM-0801..PM-0806)
+// ---------------------------------------------------------------------------
+
+/** Outcome of processing one manifest row / bulk file. */
+export type ImportItemStatus = 'pending' | 'created' | 'duplicate' | 'error' | 'skipped';
+
+export const IMPORT_ITEM_STATUSES: readonly ImportItemStatus[] = [
+  'pending',
+  'created',
+  'duplicate',
+  'error',
+  'skipped',
+] as const;
+
+/** Human labels for import row outcomes (report badges). */
+export const IMPORT_ITEM_STATUS_LABELS: Record<ImportItemStatus, string> = {
+  pending: 'Pending',
+  created: 'Created',
+  duplicate: 'Duplicate',
+  error: 'Error',
+  skipped: 'Skipped',
+};
+
+/** Coarse lifecycle of a whole import batch. */
+export type ImportBatchStatus = 'processing' | 'completed' | 'failed';
+
+/**
+ * The exact, ordered manifest columns. `title` is REQUIRED; every other column is
+ * optional. A `category` may be a `/`-separated path (auto-created, reused if it
+ * already exists). `tags` are separated by `;` or `|` within the single CSV cell.
+ * `owner` is an email (defaults to the importer when blank or unknown).
+ */
+export const IMPORT_MANIFEST_COLUMNS = [
+  'fileName',
+  'title',
+  'category',
+  'documentNumber',
+  'owner',
+  'tags',
+  'accessLevel',
+  'reviewCadence',
+  'description',
+] as const;
+
+export type ImportManifestColumn = (typeof IMPORT_MANIFEST_COLUMNS)[number];
+
+/**
+ * A ready-to-download sample manifest (header + two example rows) offered by the
+ * Import UI so non-technical staff have a correct template to fill in. Kept in the
+ * shared package so the header can never drift from {@link IMPORT_MANIFEST_COLUMNS}.
+ */
+export const SAMPLE_MANIFEST_CSV = [
+  IMPORT_MANIFEST_COLUMNS.join(','),
+  'seclusion-policy.pdf,Seclusion & Restraint Policy,Policies & Procedures/Clinical,PP-042,jane@clinic.org,CARF;safety,restricted,annual,Governs seclusion and restraint use',
+  'rn-job-description.docx,Registered Nurse Job Description,Job Descriptions,JD-011,,HR,restricted,none,',
+  '',
+].join('\n');
+
+/** One line of the import report (per manifest row / bulk file). */
+export interface ImportItemResult {
+  id: string;
+  rowNumber: number;
+  title: string | null;
+  documentNumber: string | null;
+  categoryName: string | null;
+  fileName: string | null;
+  status: ImportItemStatus;
+  /** The created OR matched (duplicate) document, when there is one. */
+  documentId: string | null;
+  /** Human-readable detail: duplicate reason, error cause, or a note. */
+  message: string | null;
+}
+
+/** Rollup summary of an import batch (list view + report header). */
+export interface ImportBatchSummary {
+  id: string;
+  fileName: string | null;
+  totalRows: number;
+  createdCount: number;
+  duplicateCount: number;
+  errorCount: number;
+  status: ImportBatchStatus;
+  createdById: string;
+  createdByName: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+/** A batch plus its full per-row report (GET /imports/:id). */
+export interface ImportBatchDetail extends ImportBatchSummary {
+  items: ImportItemResult[];
 }

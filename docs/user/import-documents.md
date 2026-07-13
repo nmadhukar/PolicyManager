@@ -1,0 +1,52 @@
+# Importing documents
+
+Bring existing policies, job descriptions, and curriculums into PolicyManager in
+one step. You need the **document.write** permission; open **Import** in the left
+navigation (`/library/import`).
+
+## Two ways to import
+
+### 1. With a CSV manifest (recommended)
+
+A manifest lets you set the title, category, document number, owner, tags, and more
+for each file.
+
+1. Click **Download sample manifest** to get a correctly-formatted template.
+2. Fill in one row per document. **Title is required**; everything else is optional.
+   - **fileName** — the exact name of the file you will upload for that row.
+   - **category** — a folder path like `Policies & Procedures/Clinical`. Missing
+     folders are created for you (existing ones are reused).
+   - **tags** — separate several tags with `;` or `|` (for example `CARF;safety`).
+   - **owner** — the person's email; if blank or unrecognized, you become the owner.
+   - **accessLevel** — `public`, `restricted`, or `confidential`.
+   - **reviewCadence** — `none`, `quarterly`, `annual`, or `custom`.
+3. On the **CSV manifest** tab, choose your filled-in manifest, then choose all the
+   files it references.
+4. The preview shows the detected columns and row count, and warns if the required
+   `title` column is missing.
+5. Click **Run import**.
+
+### 2. Files only (no manifest)
+
+On the **Files only** tab, choose one or more files and click **Run import**. Each
+file becomes a document titled from its file name. Use this for a quick bulk load
+when you do not need to set categories or numbers up front.
+
+## The import report
+
+After running, you get a report with a line for every row:
+
+- **Created** — a new document (and its first version) was added. Click **View
+  document** to open it.
+- **Duplicate** — skipped because a matching document already exists (same document
+  number, the same file, or the same title + file name). Click **View existing** to
+  see it.
+- **Error** — the row could not be imported; the message explains why (for example,
+  a referenced file was not uploaded, or the title was blank). Other rows are
+  unaffected.
+
+Summary tiles show the totals. Re-running the same import is safe: already-imported
+documents are detected as duplicates and skipped, so nothing is created twice.
+
+Past imports appear under **Recent imports**; click **View report** to reopen any of
+them.

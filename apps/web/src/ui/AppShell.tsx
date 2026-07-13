@@ -13,6 +13,7 @@ interface NavItem {
 const NAV: NavItem[] = [
   { label: 'Dashboard', to: '/', icon: '▚' },
   { label: 'Library', to: '/library', icon: '▤', requires: PERMISSIONS.DOCUMENT_READ },
+  { label: 'Import', to: '/library/import', icon: '⇪', requires: PERMISSIONS.DOCUMENT_WRITE },
   // Reviews is a personal dashboard: any signed-in user may be assigned as a reviewer.
   { label: 'Reviews', to: '/reviews', icon: '✔' },
   // Acknowledgments is personal too: any signed-in user may be assigned to read & sign.

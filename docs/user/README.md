@@ -6,6 +6,8 @@ Available guides:
 
 - [Using the Document Library](./document-library.md) — finding, creating,
   versioning, downloading, and editing documents.
+- [Importing documents](./import-documents.md) — bulk-onboard existing files with a
+  CSV manifest or a manifest-less upload, and read the import report.
 
 Planned guides:
 

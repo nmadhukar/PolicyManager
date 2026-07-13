@@ -57,6 +57,7 @@ model User {
   acknowledgmentAssignments AcknowledgmentAssignment[] @relation("AckAssignee")
   assignedAcknowledgments   AcknowledgmentAssignment[] @relation("AckAssignedBy")
   createdApiClients         ApiClient[]                @relation("ApiClientCreator")
+  importBatches             ImportBatch[]              @relation("ImportBatchCreator")
 
   @@schema("policytracker")
 }
@@ -236,6 +237,7 @@ model Document {
   reviewTasks               ReviewTask[]               @relation("ReviewTaskDoc")
   attestations              Attestation[]              @relation("AttestationDoc")
   acknowledgmentAssignments AcknowledgmentAssignment[] @relation("AckDoc")
+  importItems               ImportItem[]               @relation("ImportItemDocument")
 
   @@index([title])
   @@index([categoryId])
@@ -593,5 +595,77 @@ model ApiClient {
 
   createdBy User? @relation("ApiClientCreator", fields: [createdById], references: [id], onDelete: SetNull)
 
+  @@schema("policytracker")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8 — Import & Consolidation (bulk upload + CSV manifest importer)
+// ---------------------------------------------------------------------------
+
+/// Outcome of processing one manifest row / bulk file. `pending` is the transient
+/// state before a row is resolved; terminal states are `created` (a new Document +
+/// version were made), `duplicate` (matched an existing document by number/
+/// checksum/title+fileName — creation skipped), `error` (the row failed in
+/// isolation without failing the batch), and `skipped` (reserved for rows a future
+/// dry-run/preview mode chooses not to import).
+enum ImportItemStatus {
+  pending
+  created
+  duplicate
+  error
+  skipped
+
+  @@schema("policytracker")
+}
+
+/// One bulk-import run (a CSV manifest upload or a manifest-less bulk file upload).
+/// Aggregates per-row outcomes into rollup counters so the report can be shown
+/// without re-scanning every item. `status` is the coarse batch lifecycle
+/// (processing → completed, or failed if the whole run aborted). Counters are
+/// authoritative — they equal the number of `ImportItem`s in each terminal state.
+model ImportBatch {
+  id             String    @id @default(uuid())
+  createdById    String
+  // Manifest file name for a CSV import; null for a manifest-less bulk upload.
+  fileName       String?
+  totalRows      Int
+  createdCount   Int       @default(0)
+  duplicateCount Int       @default(0)
+  errorCount     Int       @default(0)
+  // processing | completed | failed
+  status         String    @default("processing")
+  createdAt      DateTime  @default(now())
+  completedAt    DateTime?
+
+  createdBy User         @relation("ImportBatchCreator", fields: [createdById], references: [id])
+  items     ImportItem[] @relation("ImportBatchItems")
+
+  @@index([createdById])
+  @@index([createdAt])
+  @@schema("policytracker")
+}
+
+/// The immutable per-row result of an import (the "import report" line). Records
+/// the source row's key fields for the report even when no Document was created,
+/// plus a human-readable `message` (e.g. the duplicate reason or the error). Points
+/// at the created OR matched Document via `documentId` (SetNull if that document is
+/// later hard-removed — which the app never does, but the FK stays safe).
+model ImportItem {
+  id             String           @id @default(uuid())
+  batchId        String
+  rowNumber      Int
+  title          String?
+  documentNumber String?
+  categoryName   String?
+  fileName       String?
+  status         ImportItemStatus @default(pending)
+  documentId     String?
+  message        String?
+  createdAt      DateTime         @default(now())
+
+  batch    ImportBatch @relation("ImportBatchItems", fields: [batchId], references: [id], onDelete: Cascade)
+  document Document?   @relation("ImportItemDocument", fields: [documentId], references: [id], onDelete: SetNull)
+
+  @@index([batchId])
   @@schema("policytracker")
 }

@@ -17,6 +17,7 @@ Sections to fill as the app is built:
 - Attestation workflow.
 - Cover page generation.
 - Public API.
+- Import & consolidation. See [Import & Consolidation](./import-consolidation.md).
 - Testing strategy.
 - Code comment standards.
 
