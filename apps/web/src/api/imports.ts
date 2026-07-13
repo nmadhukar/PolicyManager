@@ -24,10 +24,19 @@ export async function runManifestImport(
   return data;
 }
 
-/** Uploads files with no manifest; each becomes a document (dedupe by checksum). */
-export async function runBulkImport(files: File[]): Promise<ImportBatchDetail> {
+/**
+ * Uploads files with no manifest; each becomes a document (dedupe by checksum).
+ * `relativePaths`, when supplied by folder upload/drop, must align with `files`.
+ */
+export async function runBulkImport(
+  files: File[],
+  relativePaths?: string[],
+): Promise<ImportBatchDetail> {
   const form = new FormData();
   for (const file of files) form.append('files', file);
+  if (relativePaths && relativePaths.length > 0) {
+    form.append('relativePaths', JSON.stringify(relativePaths));
+  }
   const { data } = await http.post<ImportBatchDetail>('/imports/bulk', form);
   return data;
 }

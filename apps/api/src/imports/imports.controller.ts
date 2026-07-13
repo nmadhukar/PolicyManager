@@ -1,4 +1,6 @@
 import {
+  BadRequestException,
+  Body,
   Controller,
   Get,
   Param,
@@ -29,6 +31,11 @@ const MAX_FILES = 200;
 interface ManifestUpload {
   manifest?: UploadedFile[];
   files?: UploadedFile[];
+}
+
+/** Multipart text fields accepted by the bulk import endpoint. */
+interface BulkUploadBody {
+  relativePaths?: string | string[];
 }
 
 /**
@@ -100,20 +107,30 @@ export class ImportsController {
         files: {
           type: 'array',
           items: { type: 'string', format: 'binary' },
-          description: 'Files to import; each becomes a document titled from its name',
+          description:
+            'Files to import. ZIP files are expanded server-side; normal files become one document each.',
+        },
+        relativePaths: {
+          type: 'string',
+          description:
+            'Optional JSON array of browser folder-relative paths aligned with files[] order.',
         },
       },
     },
   })
   @ApiOperation({
-    summary: 'Bulk-upload files with no manifest (each file becomes a document; dedupe by checksum).',
+    summary:
+      'Bulk-upload files, ZIP archives, or browser folder selections with no manifest.',
   })
   importBulk(
     @UploadedFiles() files: UploadedFile[] | undefined,
+    @Body() body: BulkUploadBody | undefined,
     @CurrentUser() user: AuthUser,
     @ReqContext() ctx: RequestContext,
   ) {
-    return this.imports.runBulkImport(files ?? [], user, ctx);
+    return this.imports.runBulkImport(files ?? [], user, ctx, {
+      relativePaths: parseRelativePaths(body?.relativePaths),
+    });
   }
 
   @Get()
@@ -127,4 +144,25 @@ export class ImportsController {
   get(@Param('id') id: string) {
     return this.imports.getBatch(id);
   }
+}
+
+function parseRelativePaths(input: string | string[] | undefined): string[] {
+  if (input === undefined) return [];
+  const values = Array.isArray(input) ? input : [input];
+  if (values.length === 1) {
+    const value = values[0].trim();
+    if (!value) return [];
+    if (value.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(value) as unknown;
+        if (Array.isArray(parsed) && parsed.every((p) => typeof p === 'string')) {
+          return parsed;
+        }
+      } catch {
+        throw new BadRequestException('relativePaths must be a JSON string array.');
+      }
+      throw new BadRequestException('relativePaths must be a JSON string array.');
+    }
+  }
+  return values.map((v) => v.trim());
 }

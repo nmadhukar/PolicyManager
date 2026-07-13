@@ -7,7 +7,8 @@ Available guides:
 - [Using the Document Library](./document-library.md) — finding, creating,
   versioning, downloading, and editing documents.
 - [Importing documents](./import-documents.md) — bulk-onboard existing files with a
-  CSV manifest or a manifest-less upload, and read the import report.
+  CSV manifest, selected files, ZIP archives, folder uploads, or drag/drop, and read
+  the import report.
 
 - [Compare, evidence binder, search, and notifications](./compare-binder-search-notifications.md) - review redlines,
   export audit binders, save searches, and manage notifications.

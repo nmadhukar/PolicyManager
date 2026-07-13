@@ -10,7 +10,7 @@ import { ImportsService } from './imports.service';
  *  - a referenced-but-missing file is an error; a duplicate is skipped,
  *  - category resolution is idempotent (find-or-create, no duplicates),
  *  - owner is resolved by email and ownership transferred; unknown → importer,
- *  - the bulk path de-duplicates by checksum,
+ *  - the bulk path de-duplicates by checksum and can map folder paths to categories,
  *  - every run is audited as import.completed and reuses DocumentsService.
  */
 describe('ImportsService', () => {
@@ -257,6 +257,31 @@ describe('ImportsService', () => {
       expect.objectContaining({ metadata: expect.objectContaining({ kind: 'bulk' }) }),
     );
     expect(detail.id).toBe('batch-1');
+  });
+
+  it('bulk mode maps browser folder relative paths to category paths', async () => {
+    const { svc, prisma, documents } = build();
+
+    await svc.runBulkImport(
+      [file('Treatment Plan.pdf')],
+      importer,
+      {},
+      { relativePaths: ['Policies/Clinical/Treatment Plan.pdf'] },
+    );
+
+    expect(prisma.documentCategory.create).toHaveBeenCalledTimes(2);
+    expect(documents.create).toHaveBeenCalledWith(
+      { title: 'Treatment Plan', categoryId: 'cat-Clinical' },
+      importer,
+      {},
+    );
+    const item = prisma.importItem.create.mock.calls[0][0].data;
+    expect(item).toMatchObject({
+      title: 'Treatment Plan',
+      categoryName: 'Policies/Clinical',
+      fileName: 'Policies/Clinical/Treatment Plan.pdf',
+      status: 'created',
+    });
   });
 
   it('rejects a manifest import with no manifest file (400)', async () => {

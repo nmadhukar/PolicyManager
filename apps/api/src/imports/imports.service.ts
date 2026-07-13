@@ -25,9 +25,9 @@ import { duplicateMessage, findDuplicate, type DedupeResult } from './dedupe';
 import {
   parseManifest,
   splitCategoryPath,
-  titleFromFileName,
   type ManifestRow,
 } from './manifest';
+import { prepareBulkImportFiles } from './zip-import';
 
 /** The resolved outcome of processing one row/file, before it is persisted. */
 interface RowOutcome {
@@ -41,6 +41,11 @@ interface Counters {
   created: number;
   duplicate: number;
   error: number;
+}
+
+/** Optional multipart metadata supplied by browser folder uploads. */
+interface BulkImportOptions {
+  relativePaths?: string[];
 }
 
 /** The fields of one persisted report line. */
@@ -147,36 +152,68 @@ export class ImportsService {
     files: UploadedFile[],
     user: AuthUser,
     ctx: RequestContext = {},
+    options: BulkImportOptions = {},
   ): Promise<ImportBatchDetail> {
     if (!files || files.length === 0) {
       throw new BadRequestException('At least one file is required (field "files").');
     }
+    const prepared = await prepareBulkImportFiles(files, options.relativePaths ?? []);
+    if (prepared.items.length === 0) {
+      throw new BadRequestException('No importable files were found.');
+    }
 
     const batch = await this.prisma.importBatch.create({
-      data: { createdById: user.id, fileName: null, totalRows: files.length, status: 'processing' },
+      data: {
+        createdById: user.id,
+        fileName: prepared.sourceName,
+        totalRows: prepared.items.length,
+        status: 'processing',
+      },
       select: { id: true },
     });
 
     const counters: Counters = { created: 0, duplicate: 0, error: 0 };
+    const categoryCache = new Map<string, string | null>();
     let rowNumber = 0;
-    for (const file of files) {
+    for (const item of prepared.items) {
       rowNumber += 1;
-      const title = titleFromFileName(file.originalname);
-      const outcome = await this.processBulkFileSafely(title, file, user, ctx);
+      if (item.kind === 'error') {
+        counters.error += 1;
+        await this.recordItem(batch.id, {
+          rowNumber,
+          title: null,
+          documentNumber: null,
+          categoryName: item.categoryPath,
+          fileName: item.displayPath,
+          status: 'error',
+          documentId: null,
+          message: item.message,
+        });
+        continue;
+      }
+
+      const outcome = await this.processBulkFileSafely(
+        item.title,
+        item.file,
+        item.categoryPath,
+        categoryCache,
+        user,
+        ctx,
+      );
       counters[outcome.status] += 1;
       await this.recordItem(batch.id, {
         rowNumber,
-        title,
+        title: item.title,
         documentNumber: null,
-        categoryName: null,
-        fileName: file.originalname,
+        categoryName: item.categoryPath,
+        fileName: item.displayPath,
         status: outcome.status,
         documentId: outcome.documentId,
         message: outcome.message,
       });
     }
 
-    return this.finalize(batch.id, counters, user, ctx, 'bulk');
+    return this.finalize(batch.id, counters, user, ctx, bulkKind(files, options.relativePaths));
   }
 
   /** Paginated, newest-first batch history for the report list. */
@@ -280,6 +317,8 @@ export class ImportsService {
   private async processBulkFileSafely(
     title: string,
     file: UploadedFile,
+    categoryPath: string | null,
+    categoryCache: Map<string, string | null>,
     user: AuthUser,
     ctx: RequestContext,
   ): Promise<RowOutcome> {
@@ -293,7 +332,16 @@ export class ImportsService {
           message: duplicateMessage(dup.reason),
         };
       }
-      return this.createDocumentWithOptionalFile({ title }, file, user.id, user, ctx);
+      const categoryId = categoryPath
+        ? await this.resolveCategoryPath(categoryPath, categoryCache)
+        : null;
+      return this.createDocumentWithOptionalFile(
+        { title, categoryId: categoryId ?? undefined },
+        file,
+        user.id,
+        user,
+        ctx,
+      );
     } catch (err) {
       return { status: 'error', documentId: null, message: errorMessage(err) };
     }
@@ -473,7 +521,7 @@ export class ImportsService {
     counters: Counters,
     user: AuthUser,
     ctx: RequestContext,
-    kind: 'manifest' | 'bulk',
+    kind: 'manifest' | 'bulk' | 'folder' | 'zip',
   ): Promise<ImportBatchDetail> {
     await this.prisma.importBatch.update({
       where: { id: batchId },
@@ -512,6 +560,16 @@ function indexFiles(files: UploadedFile[]): Map<string, UploadedFile> {
     if (!map.has(file.originalname)) map.set(file.originalname, file);
   }
   return map;
+}
+
+/** Audit metadata label for the bulk endpoint variant used. */
+function bulkKind(
+  files: UploadedFile[],
+  relativePaths: string[] | undefined,
+): 'bulk' | 'folder' | 'zip' {
+  if (relativePaths?.some((p) => p.trim().length > 0)) return 'folder';
+  if (files.length > 0 && files.every((f) => /\.zip$/i.test(f.originalname))) return 'zip';
+  return 'bulk';
 }
 
 /** Extracts a safe, human-readable message from a thrown value. */

@@ -4,7 +4,7 @@ Bring existing policies, job descriptions, and curriculums into PolicyManager in
 one step. You need the **document.write** permission; open **Import** in the left
 navigation (`/library/import`).
 
-## Two ways to import
+## Import options
 
 ### 1. With a CSV manifest (recommended)
 
@@ -32,6 +32,30 @@ On the **Files only** tab, choose one or more files and click **Run import**. Ea
 file becomes a document titled from its file name. Use this for a quick bulk load
 when you do not need to set categories or numbers up front.
 
+### 3. ZIP archive
+
+On the **ZIP archive** tab, choose one or more `.zip` files and click **Run import**.
+PolicyManager expands each archive and imports supported documents inside it. Folder
+paths inside the ZIP become categories. For example,
+`Policies/Clinical/Seclusion.pdf` imports the file into the `Policies/Clinical`
+category path.
+
+ZIP safety rules:
+
+- macOS metadata folders/files and hidden files are ignored.
+- Unsafe paths such as `../file.pdf` are rejected and shown as errors in the report.
+- Unsupported ZIP entries are reported as errors.
+- Each extracted file must be 50 MB or smaller.
+
+### 4. Folder upload or drag/drop
+
+On the **Folder** tab, choose a folder from your browser file picker. You can also
+drop files or folders into the import area. Browser folder paths are preserved in the
+report and converted into categories.
+
+If your browser does not support folder selection or folder drops, select multiple
+files on the **Files only** tab instead.
+
 ## The import report
 
 After running, you get a report with a line for every row:
@@ -42,11 +66,17 @@ After running, you get a report with a line for every row:
   number, the same file, or the same title + file name). Click **View existing** to
   see it.
 - **Error** — the row could not be imported; the message explains why (for example,
-  a referenced file was not uploaded, or the title was blank). Other rows are
-  unaffected.
+  a referenced file was not uploaded, the title was blank, a ZIP entry was unsafe,
+  or an archive entry had an unsupported file type). Other rows are unaffected.
 
 Summary tiles show the totals. Re-running the same import is safe: already-imported
 documents are detected as duplicates and skipped, so nothing is created twice.
 
 Past imports appear under **Recent imports**; click **View report** to reopen any of
 them.
+
+## Limits
+
+- Maximum 200 imported files/report rows per request after ZIP expansion.
+- Maximum 50 MB per uploaded file or extracted ZIP entry.
+- ZIP archives have a 500 MB total uncompressed limit.

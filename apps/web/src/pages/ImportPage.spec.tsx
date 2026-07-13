@@ -71,6 +71,7 @@ function renderPage() {
 
 const csvFile = () => new File(['title,fileName\nNew Doc,new.pdf\n'], 'manifest.csv', { type: 'text/csv' });
 const pdfFile = (name: string) => new File(['%PDF-1.4'], name, { type: 'application/pdf' });
+const zipFile = () => new File(['PK'], 'clinic-policies.zip', { type: 'application/zip' });
 
 describe('ImportPage', () => {
   beforeEach(() => {
@@ -93,6 +94,9 @@ describe('ImportPage', () => {
     expect(await screen.findByRole('form', { name: 'Import documents' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Download sample manifest' })).toBeInTheDocument();
     expect(screen.getByLabelText('Manifest (CSV)')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'ZIP archive' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Folder' })).toBeInTheDocument();
+    expect(screen.getByText(/Drop files or folders here/i)).toBeInTheDocument();
   });
 
   it('validates that a manifest file is chosen before running', async () => {
@@ -140,6 +144,43 @@ describe('ImportPage', () => {
 
     await waitFor(() => expect(mockRunBulk).toHaveBeenCalled());
     expect(mockRunManifest).not.toHaveBeenCalled();
+    expect(await screen.findByText('Import report')).toBeInTheDocument();
+  });
+
+  it('runs a ZIP archive import through the bulk endpoint', async () => {
+    renderPage();
+    const form = await screen.findByRole('form', { name: 'Import documents' });
+
+    fireEvent.click(within(form).getByRole('tab', { name: 'ZIP archive' }));
+    fireEvent.change(within(form).getByLabelText('ZIP archive to import'), {
+      target: { files: [zipFile()] },
+    });
+    fireEvent.click(within(form).getByRole('button', { name: 'Run import' }));
+
+    await waitFor(() => expect(mockRunBulk).toHaveBeenCalledWith([expect.any(File)], undefined));
+    expect(await screen.findByText('Import report')).toBeInTheDocument();
+  });
+
+  it('runs a folder import with relative paths preserved', async () => {
+    const folderFile = pdfFile('Treatment Plan.pdf');
+    Object.defineProperty(folderFile, 'webkitRelativePath', {
+      value: 'Policies/Clinical/Treatment Plan.pdf',
+    });
+    renderPage();
+    const form = await screen.findByRole('form', { name: 'Import documents' });
+
+    fireEvent.click(within(form).getByRole('tab', { name: 'Folder' }));
+    fireEvent.change(within(form).getByLabelText('Folder to import'), {
+      target: { files: [folderFile] },
+    });
+    fireEvent.click(within(form).getByRole('button', { name: 'Run import' }));
+
+    await waitFor(() =>
+      expect(mockRunBulk).toHaveBeenCalledWith(
+        [folderFile],
+        ['Policies/Clinical/Treatment Plan.pdf'],
+      ),
+    );
     expect(await screen.findByText('Import report')).toBeInTheDocument();
   });
 
