@@ -29,6 +29,7 @@ function doc(over: Partial<DocumentDetail> = {}): DocumentDetail {
     description: null,
     currentVersion: null,
     versions: [],
+    unresolvedAnnotationCount: 0,
     ...over,
   };
 }

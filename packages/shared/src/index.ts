@@ -4,6 +4,7 @@ export const PERMISSIONS = {
   DOCUMENT_READ: 'document.read',
   DOCUMENT_WRITE: 'document.write',
   DOCUMENT_APPROVE: 'document.approve',
+  DOCUMENT_COMMENT: 'document.comment',
   REVIEW_MANAGE: 'review.manage',
   USER_MANAGE: 'user.manage',
   STORAGE_MANAGE: 'storage.manage',
@@ -97,6 +98,7 @@ export type DocumentStatus =
   | 'archived'
   | 'retired';
 export type ReviewCadence = 'none' | 'quarterly' | 'annual' | 'custom';
+export type ExtractionStatus = 'pending' | 'processing' | 'done' | 'failed' | 'skipped';
 
 // Enumerations as ordered arrays for validation (API) and dropdowns (UI).
 export const DOCUMENT_STATUSES: readonly DocumentStatus[] = [
@@ -120,6 +122,22 @@ export const REVIEW_CADENCES: readonly ReviewCadence[] = [
   'annual',
   'custom',
 ] as const;
+
+export const EXTRACTION_STATUSES: readonly ExtractionStatus[] = [
+  'pending',
+  'processing',
+  'done',
+  'failed',
+  'skipped',
+] as const;
+
+export const EXTRACTION_STATUS_LABELS: Record<ExtractionStatus, string> = {
+  pending: 'Queued',
+  processing: 'Processing',
+  done: 'Search ready',
+  failed: 'Failed',
+  skipped: 'Skipped',
+};
 
 export const DOCUMENT_SORT_FIELDS = ['title', 'createdAt', 'nextReviewDate', 'status'] as const;
 export type DocumentSortField = (typeof DOCUMENT_SORT_FIELDS)[number];
@@ -147,6 +165,12 @@ export interface DocumentVersionSummary {
   uploadedByName: string | null;
   /** Whether text was extracted for search/RAG (the text itself is scope-gated). */
   hasExtractedText: boolean;
+  /** Async extraction/OCR lifecycle for the version. */
+  extractionStatus: ExtractionStatus;
+  /** True when OCR was used instead of metadata/text-only extraction. */
+  ocrApplied: boolean;
+  /** Operator-safe failure/skipped reason; never contains extracted text. */
+  extractionError: string | null;
   /**
    * Whether a uniform PDF rendition exists for in-browser viewing. True when a
    * rendition was generated (Office/HTML) OR the source is itself viewable
@@ -194,6 +218,8 @@ export interface DocumentListItem {
 export interface DocumentDetail extends DocumentListItem {
   description: string | null;
   versions: DocumentVersionSummary[];
+  /** Open comments/issues on the current version, used to warn approvers. */
+  unresolvedAnnotationCount: number;
 }
 
 /** Node in the document-category tree. */
@@ -291,6 +317,8 @@ export const AUDIT_ACTIONS = {
   DOCUMENT_EDITED: 'document.edited',
   VERSION_UPLOADED: 'version.uploaded',
   VERSION_RESTORED: 'version.restored',
+  EXTRACTION_REINDEXED: 'extraction.reindexed',
+  EXTRACTION_PROCESSED: 'extraction.processed',
   ACL_CHANGED: 'acl.changed',
   ACCESS_DENIED: 'access.denied',
   USER_LOGIN: 'user.login',
@@ -322,6 +350,11 @@ export const AUDIT_ACTIONS = {
   API_SEARCH: 'api.search',
   // Phase 8 — bulk import & consolidation.
   IMPORT_COMPLETED: 'import.completed',
+  // Phase 11 - review annotations.
+  ANNOTATION_CREATED: 'annotation.created',
+  ANNOTATION_RESOLVED: 'annotation.resolved',
+  ANNOTATION_REOPENED: 'annotation.reopened',
+  ANNOTATION_DELETED: 'annotation.deleted',
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
@@ -340,6 +373,8 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   [AUDIT_ACTIONS.DOCUMENT_EDITED]: 'Document edited',
   [AUDIT_ACTIONS.VERSION_UPLOADED]: 'Version uploaded',
   [AUDIT_ACTIONS.VERSION_RESTORED]: 'Version restored',
+  [AUDIT_ACTIONS.EXTRACTION_REINDEXED]: 'Text extraction reindexed',
+  [AUDIT_ACTIONS.EXTRACTION_PROCESSED]: 'Text extraction processed',
   [AUDIT_ACTIONS.ACL_CHANGED]: 'Access changed',
   [AUDIT_ACTIONS.ACCESS_DENIED]: 'Access denied',
   [AUDIT_ACTIONS.USER_LOGIN]: 'Sign-in',
@@ -367,6 +402,10 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   [AUDIT_ACTIONS.API_VERSIONS_READ]: 'API: versions read',
   [AUDIT_ACTIONS.API_SEARCH]: 'API: search',
   [AUDIT_ACTIONS.IMPORT_COMPLETED]: 'Bulk import completed',
+  [AUDIT_ACTIONS.ANNOTATION_CREATED]: 'Annotation created',
+  [AUDIT_ACTIONS.ANNOTATION_RESOLVED]: 'Annotation resolved',
+  [AUDIT_ACTIONS.ANNOTATION_REOPENED]: 'Annotation reopened',
+  [AUDIT_ACTIONS.ANNOTATION_DELETED]: 'Annotation deleted',
 };
 
 /** One row of the audit trail as surfaced to the audit query API + UI. */
@@ -386,6 +425,66 @@ export interface AuditEventItem {
   userAgent: string | null;
   metadata: Record<string, unknown> | null;
   createdAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Review annotations (Phase 11)
+// ---------------------------------------------------------------------------
+
+export type AnnotationType = 'comment' | 'issue' | 'suggested_change';
+export type AnnotationStatus = 'open' | 'resolved';
+
+export const ANNOTATION_TYPES: readonly AnnotationType[] = [
+  'comment',
+  'issue',
+  'suggested_change',
+] as const;
+
+export const ANNOTATION_STATUSES: readonly AnnotationStatus[] = ['open', 'resolved'] as const;
+
+export const ANNOTATION_TYPE_LABELS: Record<AnnotationType, string> = {
+  comment: 'Comment',
+  issue: 'Issue',
+  suggested_change: 'Suggested change',
+};
+
+export interface AnnotationRect {
+  pageNumber: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface DocumentAnnotationItem extends AnnotationRect {
+  id: string;
+  documentId: string;
+  versionId: string;
+  authorId: string;
+  authorName: string | null;
+  type: AnnotationType;
+  status: AnnotationStatus;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+  resolvedByName: string | null;
+}
+
+export interface DocumentAnnotationListResponse {
+  items: DocumentAnnotationItem[];
+  /**
+   * Server-calculated capability for the current user. This includes direct
+   * `document.comment`, reviewer assignment, or an open review task.
+   */
+  canAnnotate: boolean;
+  /** Delete moderation is intentionally narrower than annotation rights. */
+  canComplianceDelete: boolean;
+}
+
+export interface CreateAnnotationInput extends AnnotationRect {
+  type?: AnnotationType;
+  body: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -452,6 +551,8 @@ export interface ReviewTaskItem {
   createdAt: string;
   /** The parent document's cadence — lets the complete modal decide next-date UX. */
   reviewCadence: ReviewCadence;
+  /** Open annotations on the task version/current version, for reviewer triage. */
+  unresolvedAnnotationCount: number;
 }
 
 /** Body for completing a review task. */

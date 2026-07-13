@@ -426,7 +426,8 @@ export class ReviewService {
       this.prisma.reviewTask.count({ where }),
     ]);
 
-    return { items: rows.map((r) => this.toTaskItem(r)), total, page, pageSize };
+    const counts = await this.annotationCounts(rows);
+    return { items: rows.map((r) => this.toTaskItem(r, counts.get(taskCountKey(r)) ?? 0)), total, page, pageSize };
   }
 
   /** Single task detail. Non-managers may only read their own task (else 403). */
@@ -437,7 +438,8 @@ export class ReviewService {
     if (task.assignedToId !== user.id && !canManage) {
       throw new ForbiddenException('You can only view your own review tasks');
     }
-    return this.toTaskItem(task);
+    const counts = await this.annotationCounts([task]);
+    return this.toTaskItem(task, counts.get(taskCountKey(task)) ?? 0);
   }
 
   /**
@@ -485,7 +487,24 @@ export class ReviewService {
     if (!doc) throw new NotFoundException('Document not found');
   }
 
-  private toTaskItem(task: TaskWithJoins): ReviewTaskItem {
+  private async annotationCounts(tasks: TaskWithJoins[]): Promise<Map<string, number>> {
+    const targets = tasks
+      .map((task) => ({ documentId: task.documentId, versionId: task.versionId ?? task.document.currentVersionId }))
+      .filter((target): target is { documentId: string; versionId: string } => !!target.versionId);
+    if (targets.length === 0) return new Map();
+    const rows = await this.prisma.documentAnnotation.groupBy({
+      by: ['documentId', 'versionId'],
+      where: {
+        deletedAt: null,
+        status: 'open',
+        OR: targets,
+      },
+      _count: { _all: true },
+    });
+    return new Map(rows.map((row) => [`${row.documentId}:${row.versionId}`, row._count._all]));
+  }
+
+  private toTaskItem(task: TaskWithJoins, unresolvedAnnotationCount = 0): ReviewTaskItem {
     return {
       id: task.id,
       documentId: task.documentId,
@@ -501,8 +520,13 @@ export class ReviewService {
       notes: task.notes,
       createdAt: task.createdAt.toISOString(),
       reviewCadence: task.document.reviewCadence,
+      unresolvedAnnotationCount,
     };
   }
+}
+
+function taskCountKey(task: TaskWithJoins): string {
+  return `${task.documentId}:${task.versionId ?? task.document.currentVersionId ?? ''}`;
 }
 
 /** Parses an ISO date, returning undefined for missing/invalid input. */

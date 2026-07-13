@@ -22,8 +22,8 @@ describe('selectExtractor (dispatch)', () => {
     expect(selectExtractor('application/octet-stream', 'notes.md')).toBe('text');
   });
 
-  it('returns "none" for unsupported types (images, legacy .doc, binaries)', () => {
-    expect(selectExtractor('image/png', 'a.png')).toBe('none');
+  it('routes images to OCR and returns "none" for unsupported legacy/binary types', () => {
+    expect(selectExtractor('image/png', 'a.png')).toBe('image');
     expect(selectExtractor('application/msword', 'legacy.doc')).toBe('none');
     expect(selectExtractor('application/zip', 'a.zip')).toBe('none');
   });
@@ -38,7 +38,31 @@ describe('TextExtractionService.extract', () => {
   });
 
   it('returns an empty string for unsupported types (never throws)', async () => {
-    await expect(svc.extract(Buffer.from([0, 1, 2, 3]), 'image/png', 'a.png')).resolves.toBe('');
+    await expect(svc.extract(Buffer.from([0, 1, 2, 3]), 'application/zip', 'a.zip')).resolves.toBe('');
+  });
+
+  it('marks images skipped when OCR is not configured', async () => {
+    const result = await svc.extractWithStatus(Buffer.from([0, 1, 2]), 'image/png', 'scan.png');
+    expect(result).toMatchObject({ status: 'skipped', text: '', ocrApplied: false });
+    expect(result.error).toContain('OCR');
+  });
+
+  it('uses the OCR adapter for image text when configured', async () => {
+    const ocr = {
+      shouldOcrPdfText: jest.fn().mockReturnValue(true),
+      skipReasonFor: jest.fn().mockReturnValue(null),
+      extract: jest.fn().mockResolvedValue({ text: 'scanned policy text' }),
+      logFailure: jest.fn(),
+    };
+    const withOcr = new TextExtractionService(ocr as never);
+    const result = await withOcr.extractWithStatus(Buffer.from([0, 1, 2]), 'image/png', 'scan.png');
+    expect(result).toMatchObject({
+      status: 'done',
+      text: 'scanned policy text',
+      ocrApplied: true,
+      error: null,
+    });
+    expect(ocr.extract).toHaveBeenCalledWith(expect.any(Buffer), 'image/png', 'scan.png');
   });
 
   it('never crashes the upload when a parser throws — resolves to empty string', async () => {

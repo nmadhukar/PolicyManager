@@ -16,7 +16,6 @@ import { AuditService } from '../audit/audit.service';
 import type { RequestContext } from '../audit/request-context';
 import type { AuthenticatedApiClient } from '../api-clients/api-client.types';
 import {
-  buildPublicSearchWhere,
   buildPublicVisibilityWhere,
   type PublicListFilters,
 } from './public-document-query';
@@ -50,6 +49,22 @@ const apiDocumentSelect = {
 } satisfies Prisma.DocumentSelect;
 
 type ApiDocumentRow = Prisma.DocumentGetPayload<{ select: typeof apiDocumentSelect }>;
+
+interface PublicSearchRow {
+  id: string;
+  title: string;
+  documentNumber: string | null;
+  categoryId: string | null;
+  categoryName: string | null;
+  status: string;
+  accessLevel: string;
+  tags: string[];
+  versionNumber: number | null;
+  effectiveDate: Date | null;
+  updatedAt: Date;
+  extractedText: string | null;
+  score: number;
+}
 
 /**
  * Read-only data access for the public API (`/api/v1`). EVERY method enforces the
@@ -251,30 +266,57 @@ export class PublicDocumentsService {
       return { query: term, total: 0, page: paged.page, pageSize: paged.pageSize, items: [] };
     }
 
-    const where = buildPublicSearchWhere(client, term);
-    const [rows, total] = await this.prisma.$transaction([
-      this.prisma.document.findMany({
-        where,
-        orderBy: { updatedAt: 'desc' },
-        skip: paged.skip,
-        take: paged.take,
-        select: {
-          ...apiDocumentSelect,
-          currentVersion: { select: { versionNumber: true, extractedText: true } },
-        },
-      }),
-      this.prisma.document.count({ where }),
-    ]);
+    const searchWhere = publicSearchWhereSql(client, term);
+    const rows = await this.prisma.$queryRaw<PublicSearchRow[]>(Prisma.sql`
+      SELECT
+        d."id",
+        d."title",
+        d."documentNumber",
+        d."categoryId",
+        c."name" AS "categoryName",
+        d."status"::text AS "status",
+        d."accessLevel"::text AS "accessLevel",
+        d."tags",
+        v."versionNumber",
+        d."effectiveDate",
+        d."updatedAt",
+        v."extractedText",
+        ts_rank_cd(${publicSearchVectorSql()}, plainto_tsquery('english', ${term}))::float AS "score"
+      FROM "policytracker"."Document" d
+      LEFT JOIN "policytracker"."DocumentCategory" c ON c."id" = d."categoryId"
+      LEFT JOIN "policytracker"."DocumentVersion" v ON v."id" = d."currentVersionId"
+      ${searchWhere}
+      ORDER BY "score" DESC, d."updatedAt" DESC
+      LIMIT ${paged.take} OFFSET ${paged.skip}
+    `);
+    const countRows = await this.prisma.$queryRaw<Array<{ total: bigint }>>(Prisma.sql`
+      SELECT count(*)::bigint AS "total"
+      FROM "policytracker"."Document" d
+      LEFT JOIN "policytracker"."DocumentVersion" v ON v."id" = d."currentVersionId"
+      ${searchWhere}
+    `);
+    const total = Number(countRows[0]?.total ?? 0);
 
     await this.recordSearch(client, term, total, ctx);
 
     const items: ApiSearchHit[] = rows.map((row) => {
       const titleHit = row.title.toLowerCase().includes(term.toLowerCase());
-      const snippet = buildSnippet(row.currentVersion?.extractedText ?? null, term);
+      const snippet = buildSnippet(row.extractedText, term);
       return {
-        document: this.toApiDocument(row),
-        // Placeholder relevance: title matches rank above content-only matches.
-        score: titleHit ? 1 : 0.75,
+        document: {
+          id: row.id,
+          title: row.title,
+          documentNumber: row.documentNumber,
+          categoryId: row.categoryId,
+          categoryName: row.categoryName,
+          status: row.status as ApiDocument['status'],
+          accessLevel: row.accessLevel as ApiDocument['accessLevel'],
+          tags: row.tags,
+          version: row.versionNumber,
+          effectiveDate: row.effectiveDate ? row.effectiveDate.toISOString() : null,
+          updatedAt: row.updatedAt.toISOString(),
+        },
+        score: Number(row.score) || (titleHit ? 1 : 0.25),
         snippet,
       };
     });
@@ -347,6 +389,35 @@ export class PublicDocumentsService {
       updatedAt: row.updatedAt.toISOString(),
     };
   }
+}
+
+function publicSearchVectorSql(): Prisma.Sql {
+  return Prisma.sql`
+    setweight(to_tsvector('english', coalesce(d."title", '')), 'A') ||
+    setweight(to_tsvector('english', coalesce(d."documentNumber", '')), 'B') ||
+    setweight(to_tsvector('english', coalesce(d."description", '')), 'B') ||
+    coalesce(v."searchVector", to_tsvector('english', ''))
+  `;
+}
+
+function publicSearchWhereSql(client: AuthenticatedApiClient, term: string): Prisma.Sql {
+  const likeTerm = `%${term}%`;
+  const allowList =
+    client.allowedCategoryIds.length > 0
+      ? Prisma.sql`AND d."categoryId" IN (${Prisma.join(client.allowedCategoryIds)})`
+      : Prisma.empty;
+  return Prisma.sql`
+    WHERE d."status" = 'published'
+      AND d."deletedAt" IS NULL
+      AND d."accessLevel" <> 'confidential'
+      ${allowList}
+      AND (
+        ${publicSearchVectorSql()} @@ plainto_tsquery('english', ${term})
+        OR d."title" ILIKE ${likeTerm}
+        OR d."documentNumber" ILIKE ${likeTerm}
+        OR d."description" ILIKE ${likeTerm}
+      )
+  `;
 }
 
 /**

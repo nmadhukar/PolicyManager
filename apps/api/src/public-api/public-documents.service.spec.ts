@@ -30,6 +30,22 @@ describe('PublicDocumentsService', () => {
     currentVersion: { versionNumber: 3 },
     ...over,
   });
+  const searchRow = (over: Record<string, unknown> = {}) => ({
+    id: 'doc-1',
+    title: 'Seclusion & Restraint Policy',
+    documentNumber: 'PP-042',
+    categoryId: 'cat-1',
+    categoryName: 'Policies',
+    status: 'published',
+    accessLevel: 'restricted',
+    tags: ['CARF'],
+    versionNumber: 3,
+    effectiveDate: new Date('2026-01-01T00:00:00Z'),
+    updatedAt: new Date('2026-06-01T00:00:00Z'),
+    extractedText: 'lorem ipsum seclusion policy dolor sit amet',
+    score: 0.52,
+    ...over,
+  });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const makePrisma = (): any => ({
@@ -38,6 +54,7 @@ describe('PublicDocumentsService', () => {
       count: jest.fn().mockResolvedValue(1),
       findFirst: jest.fn().mockResolvedValue(docRow()),
     },
+    $queryRaw: jest.fn(),
     $transaction: jest.fn((ops: Promise<unknown>[]) => Promise.all(ops)),
   });
   const makeS3 = () => ({
@@ -205,18 +222,14 @@ describe('PublicDocumentsService', () => {
   describe('search', () => {
     it('returns scored hits with snippets and audits api.search', async () => {
       const prisma = makePrisma();
-      prisma.document.findMany.mockResolvedValue([
-        docRow({
-          title: 'Unrelated Title',
-          currentVersion: { versionNumber: 3, extractedText: 'lorem ipsum seclusion policy dolor sit amet' },
-        }),
-      ]);
-      prisma.document.count.mockResolvedValue(1);
+      prisma.$queryRaw
+        .mockResolvedValueOnce([searchRow({ title: 'Unrelated Title' })])
+        .mockResolvedValueOnce([{ total: 1n }]);
       const { svc, audit } = build(prisma);
       const res = await svc.search(client, 'seclusion', 1, 20, {});
       expect(res.query).toBe('seclusion');
       expect(res.total).toBe(1);
-      expect(res.items[0].score).toBe(0.75); // content-only match
+      expect(res.items[0].score).toBeCloseTo(0.52);
       expect(res.items[0].snippet).toContain('seclusion');
       expect(audit.record).toHaveBeenCalledWith(
         expect.objectContaining({ action: 'api.search', source: 'api', metadata: expect.objectContaining({ q: 'seclusion' }) }),
@@ -225,12 +238,12 @@ describe('PublicDocumentsService', () => {
 
     it('scores a title match above a content match', async () => {
       const prisma = makePrisma();
-      prisma.document.findMany.mockResolvedValue([
-        docRow({ title: 'Seclusion Policy', currentVersion: { versionNumber: 1, extractedText: null } }),
-      ]);
+      prisma.$queryRaw
+        .mockResolvedValueOnce([searchRow({ title: 'Seclusion Policy', extractedText: null, score: 1.2 })])
+        .mockResolvedValueOnce([{ total: 1n }]);
       const { svc } = build(prisma);
       const res = await svc.search(client, 'seclusion', undefined, undefined, {});
-      expect(res.items[0].score).toBe(1);
+      expect(res.items[0].score).toBeCloseTo(1.2);
     });
 
     it('short-circuits an empty term (no DB query) but still audits', async () => {
@@ -238,7 +251,7 @@ describe('PublicDocumentsService', () => {
       const res = await svc.search(client, '   ', undefined, undefined, {});
       expect(res.items).toEqual([]);
       expect(res.total).toBe(0);
-      expect(prisma.document.findMany).not.toHaveBeenCalled();
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
       expect(audit.record).toHaveBeenCalledWith(
         expect.objectContaining({ action: 'api.search' }),
       );

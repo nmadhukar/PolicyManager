@@ -59,7 +59,7 @@ read as `404` (their existence is not disclosed).
 
 ## Search & the RAG seam
 
-Search is keyword today (case-insensitive over title and the current version's
-extracted text). The response shape (`{ query, total, page, pageSize, items:[{ document, score, snippet }] }`)
+Search uses PostgreSQL full-text ranking over document metadata and the current
+version's extracted/OCR text. The response shape (`{ query, total, page, pageSize, items:[{ document, score, snippet }] }`)
 is deliberately stable so a future pgvector/semantic backend can replace the match
 predicate behind the **same contract** — existing integrations do not change.

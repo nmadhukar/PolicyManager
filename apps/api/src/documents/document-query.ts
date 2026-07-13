@@ -73,6 +73,7 @@ export function buildDocumentListQuery(query: ListDocumentsQuery): BuiltDocument
           { title: { contains: term, mode: 'insensitive' } },
           { documentNumber: { contains: term, mode: 'insensitive' } },
           { description: { contains: term, mode: 'insensitive' } },
+          { currentVersion: { is: { extractedText: { contains: term, mode: 'insensitive' } } } },
         ],
       },
     ];

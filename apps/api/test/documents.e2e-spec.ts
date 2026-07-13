@@ -11,16 +11,16 @@ import { PrismaService } from '../src/prisma/prisma.service';
  * End-to-end proof (against the running Postgres + MinIO) of the Documents &
  * Versioning slice:
  *  - title is required (400 without it),
- *  - a PDF upload is stored immutably with a correct sha256 checksum and has
- *    extracted text,
+ *  - a PDF upload is stored immutably with a correct sha256 checksum and queued
+ *    for background extraction,
  *  - the list endpoint finds the document via filters,
  *  - download returns a short-lived presigned URL (never the raw bytes),
  *  - unauthenticated access is 401.
  *
  * NOTE: pdf.js sets up its worker via an ESM dynamic import, so this suite must
  * run with `--experimental-vm-modules` (baked into the `test:e2e` script) for
- * PDF text extraction to succeed inside Jest. In the real Node runtime no flag
- * is needed.
+ * background PDF text extraction to succeed inside Jest. In the real Node
+ * runtime no flag is needed.
  */
 describe('Documents & Versioning (e2e)', () => {
   let app: INestApplication;
@@ -54,6 +54,26 @@ describe('Documents & Versioning (e2e)', () => {
     for (let i = 1; i <= 5; i++) pdf += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
     pdf += `trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
     return Buffer.from(pdf, 'latin1');
+  }
+
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  async function waitForExtractedText(docId: string, versionId: string) {
+    let last: request.Response | null = null;
+    for (let i = 0; i < 20; i++) {
+      last = await request(app.getHttpServer())
+        .get(`/api/documents/${docId}`)
+        .set('Authorization', auth())
+        .expect(200);
+      if (
+        last.body.currentVersion?.id === versionId &&
+        last.body.currentVersion?.extractionStatus === 'done'
+      ) {
+        return last;
+      }
+      await sleep(250);
+    }
+    return last!;
   }
 
   async function ensureRbac(): Promise<string> {
@@ -160,17 +180,17 @@ describe('Documents & Versioning (e2e)', () => {
     expect(uploaded.body.checksum).toBe(expectedChecksum);
     expect(uploaded.body.sizeBytes).toBe(pdf.length);
     expect(uploaded.body.mimeType).toBe('application/pdf');
-    // Text was extracted from the PDF (RAG-ready). The raw text is NOT returned.
-    expect(uploaded.body.hasExtractedText).toBe(true);
+    // Upload does not block on extraction/OCR. The raw text is NOT returned.
+    expect(uploaded.body.hasExtractedText).toBe(false);
+    expect(uploaded.body.extractionStatus).toBe('pending');
     expect(uploaded.body.extractedText).toBeUndefined();
     const versionId = uploaded.body.id as string;
 
-    // Detail now reflects the current version + history.
-    const detail = await request(app.getHttpServer())
-      .get(`/api/documents/${docId}`)
-      .set('Authorization', auth())
-      .expect(200);
+    // Detail eventually reflects background text extraction for search/RAG.
+    const detail = await waitForExtractedText(docId, versionId);
     expect(detail.body.currentVersion.id).toBe(versionId);
+    expect(detail.body.currentVersion.hasExtractedText).toBe(true);
+    expect(detail.body.currentVersion.extractionStatus).toBe('done');
     expect(detail.body.versions).toHaveLength(1);
 
     // List with filters finds the document.

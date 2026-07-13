@@ -26,7 +26,7 @@ describe('buildDocumentListQuery', () => {
     expect(q.take).toBe(10);
   });
 
-  it('builds a case-insensitive OR search across title/number/description', () => {
+  it('builds a case-insensitive OR search across metadata and current-version text', () => {
     const q = buildDocumentListQuery({ q: 'seclusion' });
     expect(q.where.AND).toEqual([
       {
@@ -34,6 +34,11 @@ describe('buildDocumentListQuery', () => {
           { title: { contains: 'seclusion', mode: 'insensitive' } },
           { documentNumber: { contains: 'seclusion', mode: 'insensitive' } },
           { description: { contains: 'seclusion', mode: 'insensitive' } },
+          {
+            currentVersion: {
+              is: { extractedText: { contains: 'seclusion', mode: 'insensitive' } },
+            },
+          },
         ],
       },
     ]);

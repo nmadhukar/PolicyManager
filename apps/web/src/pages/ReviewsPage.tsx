@@ -262,6 +262,12 @@ function TaskRow({ task }: { task: ReviewTaskItem }) {
             {REVIEW_TASK_STATUS_LABELS[task.status]}
           </span>
           <span>Due {formatDate(task.dueDate)}</span>
+          {task.unresolvedAnnotationCount > 0 && (
+            <span className="rounded-full bg-amber-100 px-2 py-0.5 font-medium text-amber-800">
+              {task.unresolvedAnnotationCount} open annotation
+              {task.unresolvedAnnotationCount === 1 ? '' : 's'}
+            </span>
+          )}
           {task.completedAt && <span>· Completed {formatDate(task.completedAt)}</span>}
         </div>
       </div>
@@ -350,6 +356,12 @@ function CompleteModal({ task, onClose }: { task: ReviewTaskItem; onClose: () =>
           Complete review
         </h2>
         <p className="mt-1 text-sm text-ink-soft">{task.documentTitle}</p>
+        {task.unresolvedAnnotationCount > 0 && (
+          <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900" role="status">
+            {task.unresolvedAnnotationCount} unresolved annotation
+            {task.unresolvedAnnotationCount === 1 ? '' : 's'} on this version.
+          </div>
+        )}
 
         {error && (
           <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">

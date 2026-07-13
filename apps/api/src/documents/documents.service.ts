@@ -32,7 +32,7 @@ import {
   type OnlyOfficeCallbackBody,
 } from './onlyoffice.service';
 import { RenditionService } from './rendition.service';
-import { TextExtractionService } from './text-extraction.service';
+import { DocumentExtractionService } from './document-extraction.service';
 import { computeNextVersionNumber, sha256Hex } from './versioning.util';
 
 /** In-memory file shape used by the shared version-write path. */
@@ -79,6 +79,9 @@ const versionSummarySelect = {
   status: true,
   createdAt: true,
   hasExtractedText: true,
+  extractionStatus: true,
+  extractionError: true,
+  ocrApplied: true,
   renditionS3Key: true,
   uploadedBy: { select: { name: true } },
 } satisfies Prisma.DocumentVersionSelect;
@@ -99,11 +102,11 @@ export class DocumentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly s3: S3Service,
-    private readonly textExtraction: TextExtractionService,
     private readonly renditions: RenditionService,
     private readonly onlyOffice: OnlyOfficeService,
     private readonly access: DocumentAccessService,
     private readonly audit: AuditService,
+    private readonly extraction: DocumentExtractionService,
   ) {}
 
   // ---- Reads ---------------------------------------------------------------
@@ -168,10 +171,21 @@ export class DocumentsService {
       },
     });
     if (!doc) throw new NotFoundException('Document not found');
+    const unresolvedAnnotationCount = doc.currentVersionId
+      ? await this.prisma.documentAnnotation.count({
+          where: {
+            documentId: id,
+            versionId: doc.currentVersionId,
+            status: 'open',
+            deletedAt: null,
+          },
+        })
+      : 0;
     return {
       ...this.toListItem(doc),
       description: doc.description,
       versions: doc.versions.map((v) => this.toVersionSummary(v)),
+      unresolvedAnnotationCount,
     };
   }
 
@@ -334,9 +348,10 @@ export class DocumentsService {
 
   /**
    * Shared immutable-version write path used by uploads, TipTap saves, and
-   * OnlyOffice save-backs. Stores bytes at a fresh deterministic key, extracts
-   * text (best-effort), generates a PDF rendition (best-effort), records the
-   * version row, and points the document at it. Never overwrites prior bytes.
+   * OnlyOffice save-backs. Stores bytes at a fresh deterministic key, queues
+   * text/OCR extraction (best-effort), generates a PDF rendition (best-effort),
+   * records the version row, and points the document at it. Never overwrites
+   * prior bytes.
    * Audit is emitted by the CALLERS (upload/tiptap/edit) so each gets its own
    * action label.
    */
@@ -350,15 +365,9 @@ export class DocumentsService {
     const sizeBytes = BigInt(file.size ?? file.buffer.length); // D10: BigInt column
     const mimeType = file.mimetype || 'application/octet-stream';
 
-    // Text extraction does not depend on the version number, so do it up front.
+    // Extraction/OCR runs after commit so upload latency and transaction locks
+    // are not tied to slow parsers or OCR infrastructure.
     // Best-effort — must never crash the write.
-    const extractedText = await this.textExtraction.extract(
-      file.buffer,
-      mimeType,
-      file.originalname,
-    );
-    const hasExtractedText = extractedText.length > 0;
-
     // C1/D6: allocate the version number AND store the bytes inside one transaction
     // that ROW-LOCKS the parent document. Concurrent uploads to the same document
     // serialize here, so each gets a distinct number + deterministic key — two
@@ -390,8 +399,8 @@ export class DocumentsService {
               checksum,
               uploadedById,
               changeSummary,
-              extractedText: hasExtractedText ? extractedText : undefined,
-              hasExtractedText,
+              hasExtractedText: false,
+              extractionStatus: 'pending',
             },
             select: versionSummarySelect,
           });
@@ -424,9 +433,15 @@ export class DocumentsService {
         data: { renditionS3Key: rendition.renditionS3Key },
         select: versionSummarySelect,
       });
+      this.extraction.startVersion(result.created.id);
       return this.toVersionSummary(updated);
     }
+    this.extraction.startVersion(result.created.id);
     return this.toVersionSummary(result.created);
+  }
+
+  async reindexExtraction(user: AuthUser, ctx: RequestContext = {}) {
+    return this.extraction.reindexAll(user, ctx);
   }
 
   /**
@@ -872,10 +887,14 @@ export class DocumentsService {
         sizeBytes: true,
         checksum: true,
         extractedText: true,
+        hasExtractedText: true,
+        extractionStatus: true,
+        extractionError: true,
+        ocrApplied: true,
       },
     });
     if (!source) throw new NotFoundException('Version not found');
-    const hasExtractedText = (source.extractedText?.length ?? 0) > 0;
+    const hasExtractedText = source.hasExtractedText && (source.extractedText?.length ?? 0) > 0;
 
     // C1/D6: allocate the number + copy the source bytes to the new key under the
     // same document row lock used by uploads, so a concurrent restore/upload can
@@ -911,6 +930,9 @@ export class DocumentsService {
               changeSummary: `Restored from v${source.versionNumber}`,
               extractedText: hasExtractedText ? source.extractedText ?? undefined : undefined,
               hasExtractedText,
+              extractionStatus: hasExtractedText ? 'done' : source.extractionStatus,
+              extractionError: source.extractionError,
+              ocrApplied: source.ocrApplied,
             },
             select: versionSummarySelect,
           });
@@ -1062,6 +1084,9 @@ export class DocumentsService {
       // Expose ONLY existence (D2 — read from the persisted flag, never the text).
       // The extracted text itself is scope-gated and never returned here (AGENTS.md §8).
       hasExtractedText: v.hasExtractedText,
+      extractionStatus: v.extractionStatus as DocumentVersionSummary['extractionStatus'],
+      extractionError: v.extractionError,
+      ocrApplied: v.ocrApplied,
       // A version is viewable in-browser when it has a PDF rendition or is itself
       // a PDF/image; the UI uses this to decide whether to offer "View".
       hasRendition:

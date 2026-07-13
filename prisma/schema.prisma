@@ -58,6 +58,8 @@ model User {
   assignedAcknowledgments   AcknowledgmentAssignment[] @relation("AckAssignedBy")
   createdApiClients         ApiClient[]                @relation("ApiClientCreator")
   importBatches             ImportBatch[]              @relation("ImportBatchCreator")
+  authoredAnnotations       DocumentAnnotation[]        @relation("AnnotationAuthor")
+  resolvedAnnotations       DocumentAnnotation[]        @relation("AnnotationResolver")
 
   @@schema("policytracker")
 }
@@ -179,6 +181,16 @@ enum ReviewCadence {
   @@schema("policytracker")
 }
 
+enum ExtractionStatus {
+  pending
+  processing
+  done
+  failed
+  skipped
+
+  @@schema("policytracker")
+}
+
 /// Hierarchical folder for documents (Policies & Procedures, Job Descriptions,
 /// IOP/PHP Curriculum, Forms…). `parentId` gives an arbitrary-depth tree.
 model DocumentCategory {
@@ -247,6 +259,7 @@ model Document {
   attestations              Attestation[]              @relation("AttestationDoc")
   acknowledgmentAssignments AcknowledgmentAssignment[] @relation("AckDoc")
   importItems               ImportItem[]               @relation("ImportItemDocument")
+  annotations               DocumentAnnotation[]        @relation("DocumentAnnotationDoc")
 
   @@index([title])
   @@index([categoryId])
@@ -280,7 +293,11 @@ model DocumentVersion {
   // detail, and version reads compute "has text" WITHOUT selecting the (large)
   // @db.Text column on every row (D2). The text itself is read only where used
   // (public search / content).
-  hasExtractedText Boolean      @default(false)
+  hasExtractedText Boolean          @default(false)
+  extractionStatus ExtractionStatus @default(pending)
+  extractionError  String?          @db.Text
+  ocrApplied       Boolean          @default(false)
+  searchVector     Unsupported("tsvector")?
   createdAt      DateTime       @default(now())
 
   document                  Document                   @relation("DocumentVersions", fields: [documentId], references: [id], onDelete: Cascade)
@@ -288,9 +305,11 @@ model DocumentVersion {
   uploadedBy                User                       @relation("VersionUploader", fields: [uploadedById], references: [id])
   attestations              Attestation[]              @relation("AttestationVersion")
   acknowledgmentAssignments AcknowledgmentAssignment[] @relation("AckVersion")
+  annotations               DocumentAnnotation[]       @relation("AnnotationVersion")
 
   @@unique([documentId, versionNumber])
   @@index([documentId])
+  @@index([extractionStatus])
   // Dedup hot path: import checksum lookups scan by checksum (D7).
   @@index([checksum])
   @@schema("policytracker")
@@ -299,6 +318,54 @@ model DocumentVersion {
 // ---------------------------------------------------------------------------
 // Phase 4 — Access Control & Audit
 // ---------------------------------------------------------------------------
+
+enum AnnotationType {
+  comment
+  issue
+  suggested_change
+
+  @@schema("policytracker")
+}
+
+enum AnnotationStatus {
+  open
+  resolved
+
+  @@schema("policytracker")
+}
+
+/// Page-anchored review annotation. Comments are soft-deleted and audited; they
+/// are never exposed by the public integration API or cover-page/export paths.
+model DocumentAnnotation {
+  id           String           @id @default(uuid())
+  documentId   String
+  versionId    String
+  authorId     String
+  type         AnnotationType   @default(comment)
+  status       AnnotationStatus @default(open)
+  pageNumber   Int
+  x            Decimal          @db.Decimal(6, 5)
+  y            Decimal          @db.Decimal(6, 5)
+  width        Decimal          @db.Decimal(6, 5)
+  height       Decimal          @db.Decimal(6, 5)
+  body         String           @db.Text
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  resolvedAt   DateTime?
+  resolvedById String?
+  deletedAt    DateTime?
+
+  document   Document        @relation("DocumentAnnotationDoc", fields: [documentId], references: [id], onDelete: Cascade)
+  version    DocumentVersion @relation("AnnotationVersion", fields: [versionId], references: [id], onDelete: Cascade)
+  author     User            @relation("AnnotationAuthor", fields: [authorId], references: [id])
+  resolvedBy User?           @relation("AnnotationResolver", fields: [resolvedById], references: [id])
+
+  @@index([documentId, versionId, status])
+  @@index([authorId])
+  @@index([resolvedById])
+  @@index([deletedAt])
+  @@schema("policytracker")
+}
 
 /// Whether an ACL grant targets a Role (all its members) or a single User.
 enum AclPrincipalType {

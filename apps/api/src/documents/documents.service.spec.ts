@@ -28,6 +28,7 @@ const makePrisma = (): any => {
       update: jest.fn(),
       findFirst: jest.fn(),
     },
+    documentAnnotation: { count: jest.fn().mockResolvedValue(0) },
     documentCategory: { findUnique: jest.fn() },
     // C8: deactivateWorkItems cancels open review/ack rows on delete/archive.
     reviewTask: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
@@ -52,8 +53,6 @@ const makeS3 = () => ({
   getPresignedDownloadUrl: jest.fn().mockResolvedValue('https://minio.local/signed?x=1'),
 });
 
-const makeExtractor = () => ({ extract: jest.fn().mockResolvedValue('extracted words') });
-
 // Rendition generation is best-effort and independently unit-tested; here it is a
 // no-op stub returning "no rendition" so version-write assertions stay focused.
 const makeRenditions = () => ({
@@ -76,31 +75,35 @@ const makeAccess = () => ({
 });
 
 const makeAudit = () => ({ record: jest.fn().mockResolvedValue('ae-1') });
+const makeExtraction = () => ({
+  startVersion: jest.fn(),
+  reindexAll: jest.fn().mockResolvedValue({ queued: 0, processed: 0, done: 0, skipped: 0, failed: 0 }),
+});
 
 const build = (
   p = makePrisma(),
   s = makeS3(),
-  e = makeExtractor(),
   r = makeRenditions(),
   o = makeOnlyOffice(),
   ac = makeAccess(),
   au = makeAudit(),
+  ex = makeExtraction(),
 ) => ({
   prisma: p,
   s3: s,
-  extractor: e,
   renditions: r,
   onlyOffice: o,
   access: ac,
   audit: au,
+  extraction: ex,
   svc: new DocumentsService(
     p as never,
     s as never,
-    e as never,
     r as never,
     o as never,
     ac as never,
     au as never,
+    ex as never,
   ),
 });
 
@@ -135,6 +138,9 @@ const versionRow = (over: Record<string, unknown> = {}) => ({
   status: 'draft',
   createdAt: new Date('2026-01-01T00:00:00Z'),
   hasExtractedText: true,
+  extractionStatus: 'done',
+  extractionError: null,
+  ocrApplied: false,
   renditionS3Key: null,
   uploadedBy: { name: 'Admin' },
   ...over,
@@ -148,11 +154,13 @@ describe('DocumentsService.addVersion', () => {
     buffer: Buffer.from('the-bytes'),
   };
 
-  it('stores an immutable v1 and audits version.uploaded', async () => {
-    const { svc, prisma, s3, extractor, audit } = build();
+  it('stores an immutable v1, queues extraction, and audits version.uploaded', async () => {
+    const { svc, prisma, s3, extraction, audit } = build();
     prisma.document.findFirst.mockResolvedValue(accessDoc()); // loadAccessDoc
     prisma.documentVersion.aggregate.mockResolvedValue({ _max: { versionNumber: null } });
-    prisma.documentVersion.create.mockResolvedValue(versionRow());
+    prisma.documentVersion.create.mockResolvedValue(
+      versionRow({ hasExtractedText: false, extractionStatus: 'pending' }),
+    );
     prisma.document.update.mockResolvedValue({});
 
     const result = await svc.addVersion('doc-1', file, {}, actor, reqCtx);
@@ -167,15 +175,17 @@ describe('DocumentsService.addVersion', () => {
     expect(createArg.data.checksum).toBe(sha256Hex(file.buffer));
     expect(createArg.data.versionNumber).toBe(1);
     expect(createArg.data.s3VersionId).toBe('s3-ver-1');
-    expect(createArg.data.extractedText).toBe('extracted words');
+    expect(createArg.data.extractedText).toBeUndefined();
+    expect(createArg.data.hasExtractedText).toBe(false);
+    expect(createArg.data.extractionStatus).toBe('pending');
     expect(prisma.document.update).toHaveBeenCalledWith({
       where: { id: 'doc-1' },
       data: { currentVersion: { connect: { id: 'v-1' } } },
     });
-    expect(extractor.extract).toHaveBeenCalledWith(file.buffer, 'application/pdf', 'policy.pdf');
+    expect(extraction.startVersion).toHaveBeenCalledWith('v-1');
     expect(result.versionNumber).toBe(1);
     expect((result as unknown as Record<string, unknown>).extractedText).toBeUndefined();
-    expect(result.hasExtractedText).toBe(true);
+    expect(result.hasExtractedText).toBe(false);
     // Audit: the upload is recorded with the version id + request context.
     expect(audit.record).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -225,19 +235,18 @@ describe('DocumentsService.addVersion', () => {
     expect(s3.putObject).not.toHaveBeenCalled();
   });
 
-  it('omits extractedText but persists hasExtractedText=false when extraction yields nothing', async () => {
-    const { svc, prisma, extractor } = build();
+  it('persists pending extraction metadata without inline parser work', async () => {
+    const { svc, prisma } = build();
     prisma.document.findFirst.mockResolvedValue(accessDoc());
     prisma.documentVersion.aggregate.mockResolvedValue({ _max: { versionNumber: null } });
     prisma.documentVersion.create.mockResolvedValue(versionRow({ hasExtractedText: false }));
     prisma.document.update.mockResolvedValue({});
-    extractor.extract.mockResolvedValue('');
 
     await svc.addVersion('doc-1', file, {}, actor, reqCtx);
     const createArg = prisma.documentVersion.create.mock.calls[0][0];
-    // D2: the text column is omitted AND the persisted flag is false.
     expect(createArg.data.extractedText).toBeUndefined();
     expect(createArg.data.hasExtractedText).toBe(false);
+    expect(createArg.data.extractionStatus).toBe('pending');
   });
 
   it('row-locks the document before allocating the version number (C1/D6)', async () => {
@@ -1100,6 +1109,10 @@ describe('DocumentsService.restoreVersion', () => {
     sizeBytes: 10,
     checksum: 'sha-of-v1',
     extractedText: 'v1 words',
+    hasExtractedText: true,
+    extractionStatus: 'done',
+    extractionError: null,
+    ocrApplied: false,
   };
 
   it('copies the old object to a NEW key, appends a new current version, and audits', async () => {

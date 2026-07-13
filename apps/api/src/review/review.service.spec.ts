@@ -30,6 +30,7 @@ describe('ReviewService', () => {
         update: jest.fn(),
         updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
+      documentAnnotation: { groupBy: jest.fn().mockResolvedValue([]) },
     };
     // C6/D4: completeTask now uses the callback (interactive) transaction form.
     prisma.$transaction = jest.fn((arg: unknown) =>

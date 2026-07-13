@@ -10,7 +10,9 @@ Planned guides:
 - Managing document access.
 - Configuring storage.
 - Configuring SMTP.
+- Configuring OCR/search extraction (`OCR_ENABLED`, `OCR_ENDPOINT`, and the extraction reindex endpoint).
 - Managing API clients.
+- Granting document annotation rights (`document.comment`) and reviewing annotation audit events.
 - Reviewing audit logs.
 - Preparing survey evidence.
 

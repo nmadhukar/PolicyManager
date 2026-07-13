@@ -7,7 +7,7 @@ place. Open it from **Library** in the left navigation.
 ## Finding a document
 
 - **Search:** type in the search box at the top. It matches the document title,
-  number, or description as you type.
+  number, description, and searchable text extracted from the current version.
 - **Filters:** narrow the list by **Category**, **Owner**, **Status**, **Access
   level**, **Tag**, and a **Next review** date range (after / before).
 - **Active filters** appear as chips under the filters. Click a chip's ✕ to
@@ -44,16 +44,30 @@ uploading a new file never erases the previous one.
    remain in the history as evidence.
 
 Supported files include PDF, Word (`.docx`), Excel, PowerPoint, images, and
-text/markdown. Text is automatically extracted from PDFs, Word docs, and text
-files for search.
+text/markdown. Text extraction runs in the background. Scanned PDFs and images
+can become searchable when OCR is enabled by an administrator.
 
 ## Version history & downloading
 
 - The **Version history** table lists every version, newest first, with its
   file, size, who uploaded it, when, and the change summary. The current version
   is badged **Current**.
+- Each row shows whether search text is queued, processing, ready, skipped, or
+  failed. Versions marked **OCR** used optical character recognition.
 - Click **Download** on any version to open it. Downloads use a secure,
   short-lived link — the underlying storage is never public.
+
+## Review annotations
+
+When viewing a document version, assigned reviewers and users with annotation
+rights can add comments anchored to a page. Open annotations show in the viewer
+panel and as highlights over the document preview. Reviewers can resolve or
+reopen comments, and authors or compliance staff can delete comments. Deleting
+an annotation removes it from normal views but keeps an audit record.
+
+Approval and review screens show a warning when the current version still has
+open annotations. The warning does not block sign-off; it gives the signer the
+current issue count before they approve or complete the review.
 
 ## Editing details & tags
 

@@ -165,3 +165,48 @@ Tickets:
 - PM-0905 - Coolify deployment guide.
 - PM-0906 - Release checklist.
 - PM-0907 - Final documentation review.
+
+## Phase 10: OCR And Full-Text Search Indexing
+
+Enhancement phase. Detailed tickets: `.ai/tasks/PHASE_10_OCR_SEARCH.md`.
+Decisions: `.ai/decisions/ADR-0001-ocr-and-fulltext-search.md`
+(self-hosted OCRmyPDF/Tesseract, async extraction, Postgres tsvector search).
+
+Tickets:
+
+- PM-1001 - Add self-hosted OCR service (OCRmyPDF/Tesseract) container + env config.
+- PM-1002 - Add async extraction pipeline (`extractionStatus`, background worker off the upload path).
+- PM-1003 - Add `OcrService` for images and image-only/scanned PDFs (env-gated, best-effort, searchable-PDF rendition).
+- PM-1004 - Route OCR inside extraction dispatch (images + image-only PDF detection; preserve fast paths).
+- PM-1005 - Upgrade search to PostgreSQL full-text (tsvector + GIN + `ts_rank`), same API contract.
+- PM-1006 - Backfill/reindex existing versions (OCR legacy scans, populate tsvector); gated + audited + idempotent.
+- PM-1007 - UI: search relevance + extraction/OCR status badges with loading/empty/error states.
+- PM-1008 - Docs (dev/admin/user) + finalize ADR-0001 + `ocr-extraction` skill.
+
+Acceptance gate:
+
+- Scanned image and image-only PDF uploads become searchable via OCR-populated `extractedText`.
+- Extraction runs off the upload transaction; upload latency unaffected by OCR.
+- Full-text search returns ranked results under the existing API contract; GIN index verified in `policytracker`.
+- `OCR_ENABLED=false` degrades gracefully to today's behavior.
+
+## Phase 11: Review Annotations
+
+Governed markup for the review cycle (not open annotation on approved docs).
+Detailed tickets: `.ai/tasks/PHASE_11_REVIEW_ANNOTATIONS.md`.
+Decisions: `.ai/decisions/ADR-0002-review-annotations.md`. Priority: after Phase 10.
+
+Tickets:
+
+- PM-1101 - Add `DocumentAnnotation` model + `document.comment` permission (overlay layer, never mutates bytes).
+- PM-1102 - Add annotations API (version-scoped CRUD, RBAC, soft-delete, audited).
+- PM-1103 - Add viewer overlay UI (highlights/notes on the read-only rendition; no create UI without `document.comment`).
+- PM-1104 - Integrate with the review cycle (unresolved count, soft warning on approve, non-carrying across versions).
+- PM-1105 - Access/audit/regression tests (governance rules hold end-to-end; export + `/api/v1` free of annotations).
+- PM-1106 - Docs + `review-annotations` skill.
+
+Acceptance gate:
+
+- Reviewers with `document.comment` can annotate a version; Staff/Auditor cannot author.
+- Annotations never mutate version bytes, the rendition, cover-page export, or `/api/v1` output.
+- Annotations are version-scoped, resolvable, soft-deleted, and audited.

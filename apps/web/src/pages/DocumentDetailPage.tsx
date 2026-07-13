@@ -5,6 +5,7 @@ import { AxiosError } from 'axios';
 import {
   ACCESS_LEVELS,
   DOCUMENT_STATUSES,
+  EXTRACTION_STATUS_LABELS,
   PERMISSIONS,
   REVIEW_CADENCES,
   type DocumentDetail,
@@ -57,6 +58,19 @@ function isOfficeEditable(v: DocumentVersionSummary): boolean {
 }
 function isHtmlDoc(v: DocumentVersionSummary): boolean {
   return v.mimeType.startsWith('text/html') || fileExtension(v.fileName) === 'html';
+}
+function extractionBadgeClasses(status: DocumentVersionSummary['extractionStatus']): string {
+  switch (status) {
+    case 'done':
+      return 'bg-emerald-100 text-emerald-800';
+    case 'processing':
+    case 'pending':
+      return 'bg-amber-100 text-amber-800';
+    case 'failed':
+      return 'bg-red-100 text-red-700';
+    default:
+      return 'bg-slate-100 text-ink-soft';
+  }
 }
 
 /** Which full-screen surface is open over the detail page (one at a time). */
@@ -606,7 +620,22 @@ function VersionsCard({ doc, canWrite }: { doc: DocumentDetail; canWrite: boolea
                     </td>
                     <td className="py-2.5 pr-4 align-top text-ink-soft">
                       <div>{v.fileName}</div>
-                      <div className="text-xs text-ink-muted">{formatBytes(v.sizeBytes)}</div>
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-ink-muted">
+                        <span>{formatBytes(v.sizeBytes)}</span>
+                        <span
+                          className={`rounded-full px-2 py-0.5 font-medium ${extractionBadgeClasses(
+                            v.extractionStatus,
+                          )}`}
+                          title={v.extractionError ?? undefined}
+                        >
+                          {EXTRACTION_STATUS_LABELS[v.extractionStatus]}
+                        </span>
+                        {v.ocrApplied && (
+                          <span className="rounded-full bg-brand-100 px-2 py-0.5 font-medium text-brand-700">
+                            OCR
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="py-2.5 pr-4 align-top text-ink-soft">
                       <div>{formatDate(v.createdAt)}</div>

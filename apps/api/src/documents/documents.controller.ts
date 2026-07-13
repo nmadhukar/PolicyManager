@@ -71,6 +71,16 @@ export class DocumentsController {
     return this.documents.list(query, user);
   }
 
+  @Post('extraction/reindex')
+  @HttpCode(200)
+  @RequirePermission(PERMISSIONS.STORAGE_MANAGE)
+  @ApiOperation({
+    summary: 'Queue all live versions for text/OCR extraction and process the first batch.',
+  })
+  reindexExtraction(@CurrentUser() user: AuthUser, @ReqContext() ctx: RequestContext) {
+    return this.documents.reindexExtraction(user, ctx);
+  }
+
   @Get(':id')
   @RequirePermission(PERMISSIONS.DOCUMENT_READ)
   @ApiOperation({ summary: 'Get a document with its full version history.' })

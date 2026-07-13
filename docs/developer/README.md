@@ -18,6 +18,7 @@ Sections to fill as the app is built:
 - Cover page generation.
 - Public API.
 - Import & consolidation. See [Import & Consolidation](./import-consolidation.md).
+- OCR/search and review annotations. See [OCR, Search, and Review Annotations](./ocr-search-and-annotations.md).
 - Testing strategy.
 - Code comment standards.
 
