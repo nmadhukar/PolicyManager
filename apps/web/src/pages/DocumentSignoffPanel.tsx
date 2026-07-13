@@ -4,6 +4,7 @@ import { AxiosError } from 'axios';
 import {
   ATTESTATION_ACTION_LABELS,
   PERMISSIONS,
+  type EvidenceBinderOptions,
   type AttestationItem,
   type DocumentDetail,
 } from '@policymanager/shared';
@@ -13,8 +14,11 @@ import {
   fetchExport,
   listAttestations,
 } from '../api/signoff';
+import { compareVersions } from '../api/documentCompare';
+import { exportEvidenceBinder, listEvidenceBinders } from '../api/evidence';
 import { useAuth } from '../auth/AuthContext';
 import { downloadBlob } from '../lib/download';
+import { apiErrorMessage } from '../lib/apiError';
 import { formatDateTime } from '../lib/format';
 import { Modal } from '../ui/Modal';
 
@@ -100,6 +104,7 @@ export function DocumentSignoffPanel({ doc }: { doc: DocumentDetail }) {
       </div>
 
       <CoverPageActions doc={doc} />
+      <EvidenceBinderActions doc={doc} />
 
       {signing && <ApproveModal doc={doc} onClose={() => setSigning(false)} />}
     </div>
@@ -155,6 +160,121 @@ function CoverPageActions({ doc }: { doc: DocumentDetail }) {
         </p>
       )}
     </div>
+  );
+}
+
+function EvidenceBinderActions({ doc }: { doc: DocumentDetail }) {
+  const { hasPermission } = useAuth();
+  const canExport = hasPermission(PERMISSIONS.EVIDENCE_EXPORT);
+  const [open, setOpen] = useState(false);
+  const history = useQuery({
+    queryKey: ['evidence-binders', doc.id],
+    queryFn: () => listEvidenceBinders(doc.id),
+    enabled: canExport,
+  });
+  if (!canExport) return null;
+  return (
+    <div className="border-t border-slate-100 pt-3">
+      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+        Evidence binder
+      </h3>
+      <button className="btn-secondary !py-1.5 text-sm" onClick={() => setOpen(true)}>
+        Export binder
+      </button>
+      {history.data && history.data.length > 0 && (
+        <ul className="mt-2 space-y-1 text-xs text-ink-muted">
+          {history.data.slice(0, 3).map((item) => (
+            <li key={item.id}>
+              {item.fileName} - {item.status} - {formatDateTime(item.createdAt)}
+            </li>
+          ))}
+        </ul>
+      )}
+      {open && <EvidenceBinderModal doc={doc} onClose={() => setOpen(false)} />}
+    </div>
+  );
+}
+
+function EvidenceBinderModal({ doc, onClose }: { doc: DocumentDetail; onClose: () => void }) {
+  const [options, setOptions] = useState<EvidenceBinderOptions>({
+    format: 'zip',
+    includePolicyPdf: true,
+    includeCoverPage: true,
+    includeApprovalChain: true,
+    includeAcknowledgmentRoster: true,
+    includeReviewHistory: true,
+    includeRevisionHistory: true,
+    includeAuditLog: true,
+  });
+  const [error, setError] = useState<string | null>(null);
+  const mutation = useMutation({
+    mutationFn: () => exportEvidenceBinder(doc.id, options),
+    onSuccess: (blob) => {
+      const ext = options.format === 'zip' ? 'zip' : 'pdf';
+      downloadBlob(blob, `${fileStem(doc)}-evidence-binder.${ext}`);
+      onClose();
+    },
+    onError: (err) => setError(apiErrorMessage(err, 'Could not export the evidence binder.')),
+  });
+  const toggle = (key: keyof EvidenceBinderOptions) =>
+    setOptions((prev) => ({ ...prev, [key]: !prev[key] }));
+  return (
+    <Modal open onClose={onClose} titleId="binder-title" busy={mutation.isPending}>
+      <div className="w-[min(32rem,92vw)]">
+        <h2 id="binder-title" className="text-base font-semibold text-ink">
+          Export evidence binder
+        </h2>
+        <div className="mt-4">
+          <label htmlFor="binder-format" className="label">
+            Format
+          </label>
+          <select
+            id="binder-format"
+            className="input"
+            value={options.format}
+            onChange={(e) =>
+              setOptions({ ...options, format: e.target.value as EvidenceBinderOptions['format'] })
+            }
+          >
+            <option value="zip">ZIP evidence package</option>
+            <option value="combined_pdf">Combined PDF</option>
+          </select>
+        </div>
+        <div className="mt-4 grid gap-2 text-sm text-ink-soft sm:grid-cols-2">
+          {[
+            ['includePolicyPdf', 'Policy PDF'],
+            ['includeCoverPage', 'Cover page'],
+            ['includeApprovalChain', 'Approval chain'],
+            ['includeAcknowledgmentRoster', 'Acknowledgment roster'],
+            ['includeReviewHistory', 'Review history'],
+            ['includeRevisionHistory', 'Revision history'],
+            ['includeAuditLog', 'Audit log'],
+          ].map(([key, label]) => (
+            <label key={key} className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={Boolean(options[key as keyof EvidenceBinderOptions])}
+                onChange={() => toggle(key as keyof EvidenceBinderOptions)}
+              />
+              {label}
+            </label>
+          ))}
+        </div>
+        {error && (
+          <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+            {error}
+          </div>
+        )}
+        <div className="mt-5 flex justify-end gap-2">
+          <button className="btn-secondary" onClick={onClose} disabled={mutation.isPending}>
+            Cancel
+          </button>
+          <button className="btn-primary" onClick={() => mutation.mutate()} disabled={mutation.isPending}>
+            {mutation.isPending ? 'Exporting...' : 'Export'}
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -222,6 +342,7 @@ function ApproveModal({ doc, onClose }: { doc: DocumentDetail; onClose: () => vo
             {doc.unresolvedAnnotationCount === 1 ? '' : 's'} on the current version.
           </div>
         )}
+        <CompareBeforeSignoff doc={doc} />
 
         {error && (
           <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
@@ -279,5 +400,42 @@ function ApproveModal({ doc, onClose }: { doc: DocumentDetail; onClose: () => vo
         </div>
       </form>
     </Modal>
+  );
+}
+
+function CompareBeforeSignoff({ doc }: { doc: DocumentDetail }) {
+  const current = doc.currentVersion;
+  const previous = doc.versions.find((v) => v.id !== current?.id);
+  const query = useQuery({
+    queryKey: ['approve-compare', doc.id, previous?.id, current?.id],
+    queryFn: () => compareVersions(doc.id, previous!.id, current!.id),
+    enabled: !!current && !!previous,
+  });
+  if (!current || !previous) {
+    return (
+      <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-ink-muted">
+        No prior version is available for redline comparison.
+      </div>
+    );
+  }
+  return (
+    <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+      <div className="text-xs font-semibold uppercase tracking-wide text-ink-muted">
+        Changes reviewed before sign-off
+      </div>
+      {query.isLoading ? (
+        <p className="mt-1 text-xs text-ink-muted">Loading v{previous.versionNumber} to v{current.versionNumber}...</p>
+      ) : query.isError || !query.data ? (
+        <p className="mt-1 text-xs text-red-600">Could not load the version comparison.</p>
+      ) : (
+        <div className="mt-1 text-xs text-ink-soft">
+          v{query.data.fromVersionNumber} to v{query.data.toVersionNumber}: {query.data.summary.added} added,{' '}
+          {query.data.summary.removed} removed, {query.data.summary.changed} changed.
+          {query.data.warnings.length > 0 && (
+            <div className="mt-1 text-amber-800">{query.data.warnings[0]}</div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }

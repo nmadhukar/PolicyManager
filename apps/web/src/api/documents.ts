@@ -36,12 +36,16 @@ export interface DocumentListParams {
   categoryId?: string;
   ownerId?: string;
   tag?: string;
+  tags?: string;
   status?: DocumentStatus;
   accessLevel?: AccessLevel;
   /** Filter to documents whose current version has this extraction status. */
   extractionStatus?: ExtractionStatus;
   reviewBefore?: string;
   reviewAfter?: string;
+  effectiveBefore?: string;
+  effectiveAfter?: string;
+  dueState?: string;
   /** Trash view: only soft-deleted documents (requires document.write). */
   deleted?: boolean;
   /** Include archived documents in the active list. */

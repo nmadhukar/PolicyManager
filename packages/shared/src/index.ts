@@ -10,6 +10,8 @@ export const PERMISSIONS = {
   STORAGE_MANAGE: 'storage.manage',
   SMTP_MANAGE: 'smtp.manage',
   API_MANAGE: 'api.manage',
+  EVIDENCE_EXPORT: 'evidence.export',
+  SAVED_SEARCH_MANAGE: 'saved_search.manage',
   /** Read the immutable audit trail (Admin, Compliance Officer, Auditor). */
   AUDIT_READ: 'audit.read',
 } as const;
@@ -142,6 +144,20 @@ export const EXTRACTION_STATUS_LABELS: Record<ExtractionStatus, string> = {
 export const DOCUMENT_SORT_FIELDS = ['title', 'createdAt', 'nextReviewDate', 'status'] as const;
 export type DocumentSortField = (typeof DOCUMENT_SORT_FIELDS)[number];
 export type SortOrder = 'asc' | 'desc';
+export type DocumentDueState = 'expired' | 'dueSoon' | 'missingApproval' | 'notAcknowledged';
+export const DOCUMENT_DUE_STATES: readonly DocumentDueState[] = [
+  'expired',
+  'dueSoon',
+  'missingApproval',
+  'notAcknowledged',
+] as const;
+
+export const DOCUMENT_DUE_STATE_LABELS: Record<DocumentDueState, string> = {
+  expired: 'Expired',
+  dueSoon: 'Due soon',
+  missingApproval: 'Missing approval',
+  notAcknowledged: 'Not acknowledged',
+};
 
 /** Generic paginated envelope returned by list endpoints. */
 export interface Paginated<T> {
@@ -355,6 +371,16 @@ export const AUDIT_ACTIONS = {
   ANNOTATION_RESOLVED: 'annotation.resolved',
   ANNOTATION_REOPENED: 'annotation.reopened',
   ANNOTATION_DELETED: 'annotation.deleted',
+  // Phase 12+ - compare, evidence, saved search, and notification center.
+  VERSION_COMPARE_VIEWED: 'version.compare_viewed',
+  VERSION_COMPARE_EXPORTED: 'version.compare_exported',
+  EVIDENCE_BINDER_EXPORTED: 'evidence_binder.exported',
+  SAVED_SEARCH_CREATED: 'saved_search.created',
+  SAVED_SEARCH_UPDATED: 'saved_search.updated',
+  SAVED_SEARCH_DELETED: 'saved_search.deleted',
+  NOTIFICATION_PREFERENCES_UPDATED: 'notification_preferences.updated',
+  NOTIFICATION_DIGEST_SENT: 'notification_digest.sent',
+  NOTIFICATION_DIGEST_FAILED: 'notification_digest.failed',
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
@@ -406,6 +432,15 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   [AUDIT_ACTIONS.ANNOTATION_RESOLVED]: 'Annotation resolved',
   [AUDIT_ACTIONS.ANNOTATION_REOPENED]: 'Annotation reopened',
   [AUDIT_ACTIONS.ANNOTATION_DELETED]: 'Annotation deleted',
+  [AUDIT_ACTIONS.VERSION_COMPARE_VIEWED]: 'Version compare viewed',
+  [AUDIT_ACTIONS.VERSION_COMPARE_EXPORTED]: 'Version compare exported',
+  [AUDIT_ACTIONS.EVIDENCE_BINDER_EXPORTED]: 'Evidence binder exported',
+  [AUDIT_ACTIONS.SAVED_SEARCH_CREATED]: 'Saved search created',
+  [AUDIT_ACTIONS.SAVED_SEARCH_UPDATED]: 'Saved search updated',
+  [AUDIT_ACTIONS.SAVED_SEARCH_DELETED]: 'Saved search deleted',
+  [AUDIT_ACTIONS.NOTIFICATION_PREFERENCES_UPDATED]: 'Notification preferences updated',
+  [AUDIT_ACTIONS.NOTIFICATION_DIGEST_SENT]: 'Notification digest sent',
+  [AUDIT_ACTIONS.NOTIFICATION_DIGEST_FAILED]: 'Notification digest failed',
 };
 
 /** One row of the audit trail as surfaced to the audit query API + UI. */
@@ -1061,4 +1096,164 @@ export interface ImportBatchSummary {
 /** A batch plus its full per-row report (GET /imports/:id). */
 export interface ImportBatchDetail extends ImportBatchSummary {
   items: ImportItemResult[];
+}
+
+// ---------------------------------------------------------------------------
+// Advanced search, policy compare, evidence binder, and notification center
+// ---------------------------------------------------------------------------
+
+export type SavedSearchScope = 'private' | 'role' | 'global';
+export const SAVED_SEARCH_SCOPES: readonly SavedSearchScope[] = ['private', 'role', 'global'] as const;
+
+export interface SavedSearchItem {
+  id: string;
+  name: string;
+  ownerId: string;
+  ownerName: string | null;
+  scope: SavedSearchScope;
+  roleName: string | null;
+  filters: Record<string, unknown>;
+  sort: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
+  lastRunAt: string | null;
+}
+
+export interface UpsertSavedSearchInput {
+  name: string;
+  scope?: SavedSearchScope;
+  roleName?: string | null;
+  filters: Record<string, unknown>;
+  sort?: Record<string, unknown> | null;
+}
+
+export type DiffHunkType = 'unchanged' | 'added' | 'removed' | 'changed';
+
+export interface PolicyDiffHunk {
+  type: DiffHunkType;
+  oldLine: number | null;
+  newLine: number | null;
+  oldText: string | null;
+  newText: string | null;
+}
+
+export interface VersionCompareMetadataChange {
+  field: string;
+  label: string;
+  oldValue: string | null;
+  newValue: string | null;
+}
+
+export interface VersionCompareResult {
+  documentId: string;
+  documentTitle: string;
+  fromVersionId: string;
+  toVersionId: string;
+  fromVersionNumber: number;
+  toVersionNumber: number;
+  textAvailable: boolean;
+  warnings: string[];
+  summary: {
+    added: number;
+    removed: number;
+    changed: number;
+    unchanged: number;
+  };
+  metadataChanges: VersionCompareMetadataChange[];
+  hunks: PolicyDiffHunk[];
+}
+
+export type EvidenceBinderFormat = 'zip' | 'combined_pdf';
+export const EVIDENCE_BINDER_FORMATS: readonly EvidenceBinderFormat[] = ['zip', 'combined_pdf'] as const;
+
+export interface EvidenceBinderOptions {
+  format: EvidenceBinderFormat;
+  includePolicyPdf?: boolean;
+  includeCoverPage?: boolean;
+  includeApprovalChain?: boolean;
+  includeAcknowledgmentRoster?: boolean;
+  includeReviewHistory?: boolean;
+  includeRevisionHistory?: boolean;
+  includeAuditLog?: boolean;
+}
+
+export interface EvidenceBinderExportResult {
+  fileName: string;
+  mimeType: 'application/zip' | 'application/pdf';
+}
+
+export type AppNotificationType =
+  | 'review_assigned'
+  | 'acknowledgment_due'
+  | 'policy_published'
+  | 'comment_resolved'
+  | 'approval_requested';
+export const APP_NOTIFICATION_TYPES: readonly AppNotificationType[] = [
+  'review_assigned',
+  'acknowledgment_due',
+  'policy_published',
+  'comment_resolved',
+  'approval_requested',
+] as const;
+
+export const APP_NOTIFICATION_LABELS: Record<AppNotificationType, string> = {
+  review_assigned: 'Review assigned',
+  acknowledgment_due: 'Acknowledgment due',
+  policy_published: 'Policy published',
+  comment_resolved: 'Comment resolved',
+  approval_requested: 'Approval requested',
+};
+
+export type NotificationPriority = 'low' | 'normal' | 'high';
+export type NotificationDigestFrequency = 'daily' | 'weekly';
+export const NOTIFICATION_DIGEST_FREQUENCIES: readonly NotificationDigestFrequency[] = [
+  'daily',
+  'weekly',
+] as const;
+
+export interface NotificationItem {
+  id: string;
+  type: AppNotificationType;
+  title: string;
+  body: string;
+  priority: NotificationPriority;
+  entityType: string | null;
+  entityId: string | null;
+  documentId: string | null;
+  documentVersionId: string | null;
+  href: string | null;
+  metadata: Record<string, unknown> | null;
+  readAt: string | null;
+  dismissedAt: string | null;
+  createdAt: string;
+  actorName: string | null;
+}
+
+export interface NotificationPreferenceView {
+  inAppEnabled: boolean;
+  emailDigestEnabled: boolean;
+  digestFrequency: NotificationDigestFrequency;
+  digestTimeLocal: string;
+  timezone: string;
+  typeOverrides: Partial<Record<AppNotificationType, { inApp?: boolean; emailDigest?: boolean }>>;
+  lastDigestSentAt: string | null;
+}
+
+export interface UpdateNotificationPreferencesInput {
+  inAppEnabled?: boolean;
+  emailDigestEnabled?: boolean;
+  digestFrequency?: NotificationDigestFrequency;
+  digestTimeLocal?: string;
+  timezone?: string;
+  typeOverrides?: Partial<Record<AppNotificationType, { inApp?: boolean; emailDigest?: boolean }>>;
+}
+
+export interface NotificationUnreadCount {
+  unread: number;
+}
+
+export interface NotificationDigestRunResult {
+  usersConsidered: number;
+  digestsSent: number;
+  failed: number;
 }

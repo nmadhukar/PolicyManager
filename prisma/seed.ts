@@ -34,6 +34,8 @@ const PERMISSION_DESCRIPTIONS: Record<string, string> = {
   [PERMISSIONS.STORAGE_MANAGE]: 'Administer object storage buckets and prefixes.',
   [PERMISSIONS.SMTP_MANAGE]: 'Configure SMTP and notification settings.',
   [PERMISSIONS.API_MANAGE]: 'Manage public API clients and keys.',
+  [PERMISSIONS.EVIDENCE_EXPORT]: 'Export compliance evidence binders.',
+  [PERMISSIONS.SAVED_SEARCH_MANAGE]: 'Create shared saved searches.',
   [PERMISSIONS.AUDIT_READ]: 'Read the immutable audit trail (compliance evidence).',
 };
 
@@ -49,6 +51,8 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
     PERMISSIONS.DOCUMENT_APPROVE,
     PERMISSIONS.DOCUMENT_COMMENT,
     PERMISSIONS.REVIEW_MANAGE,
+    PERMISSIONS.EVIDENCE_EXPORT,
+    PERMISSIONS.SAVED_SEARCH_MANAGE,
     PERMISSIONS.AUDIT_READ,
   ],
   [ROLES.MANAGER]: [
@@ -56,10 +60,11 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
     PERMISSIONS.DOCUMENT_WRITE,
     PERMISSIONS.DOCUMENT_COMMENT,
     PERMISSIONS.REVIEW_MANAGE,
+    PERMISSIONS.EVIDENCE_EXPORT,
   ],
   [ROLES.STAFF]: [PERMISSIONS.DOCUMENT_READ],
   // Auditor is a read-only compliance role: read documents + read the audit trail.
-  [ROLES.AUDITOR]: [PERMISSIONS.DOCUMENT_READ, PERMISSIONS.AUDIT_READ],
+  [ROLES.AUDITOR]: [PERMISSIONS.DOCUMENT_READ, PERMISSIONS.EVIDENCE_EXPORT, PERMISSIONS.AUDIT_READ],
 };
 
 const ROLE_DESCRIPTIONS: Record<string, string> = {

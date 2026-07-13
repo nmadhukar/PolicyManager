@@ -19,6 +19,7 @@ import { AuditService } from '../audit/audit.service';
 import type { RequestContext } from '../audit/request-context';
 import { DocumentAccessService, type AccessDocument } from './document-access.service';
 import type { CreateAnnotationDto } from './dto/create-annotation.dto';
+import { NotificationsService } from '../notifications/notifications.service';
 
 const annotationInclude = {
   author: { select: { name: true } },
@@ -40,6 +41,7 @@ export class DocumentAnnotationsService {
     private readonly prisma: PrismaService,
     private readonly access: DocumentAccessService,
     private readonly audit: AuditService,
+    private readonly notifications?: NotificationsService,
   ) {}
 
   async list(
@@ -115,6 +117,7 @@ export class DocumentAnnotationsService {
       include: annotationInclude,
     });
     await this.auditState(AUDIT_ACTIONS.ANNOTATION_RESOLVED, updated, user, ctx);
+    await this.notifications?.notifyCommentResolved(updated.id, user);
     return toItem(updated);
   }
 

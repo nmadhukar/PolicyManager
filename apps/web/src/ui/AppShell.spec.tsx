@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AppShell } from './AppShell';
 
 vi.mock('../auth/AuthContext', () => ({
@@ -21,12 +22,15 @@ vi.mock('../auth/AuthContext', () => ({
 }));
 
 function renderShell() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter>
-      <AppShell>
-        <div>page content</div>
-      </AppShell>
-    </MemoryRouter>,
+    <QueryClientProvider client={qc}>
+      <MemoryRouter>
+        <AppShell>
+          <div>page content</div>
+        </AppShell>
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 

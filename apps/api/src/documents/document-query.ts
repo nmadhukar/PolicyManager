@@ -1,6 +1,8 @@
 import type { Prisma } from '@prisma/client';
 import {
   DOCUMENT_SORT_FIELDS,
+  DEFAULT_REVIEW_LEAD_DAYS,
+  type DocumentDueState,
   type DocumentSortField,
   type ExtractionStatus,
   type SortOrder,
@@ -12,12 +14,17 @@ export interface ListDocumentsQuery {
   categoryId?: string;
   ownerId?: string;
   tag?: string;
+  /** Comma-separated tags; all listed tags must be present. */
+  tags?: string;
   status?: string;
   accessLevel?: string;
   /** Filter to documents whose CURRENT version has this extraction status. */
   extractionStatus?: ExtractionStatus;
   reviewBefore?: string;
   reviewAfter?: string;
+  effectiveBefore?: string;
+  effectiveAfter?: string;
+  dueState?: DocumentDueState;
   /**
    * Trash view. When true, return ONLY soft-deleted documents; when false/absent,
    * soft-deleted documents are excluded. RBAC for this view is enforced in the
@@ -68,7 +75,10 @@ function parseDate(value?: string): Date | undefined {
  * a database. The sort field is whitelisted (never interpolated) to prevent
  * ordering by arbitrary/sensitive columns.
  */
-export function buildDocumentListQuery(query: ListDocumentsQuery): BuiltDocumentQuery {
+export function buildDocumentListQuery(
+  query: ListDocumentsQuery,
+  now: Date = new Date(),
+): BuiltDocumentQuery {
   const page = Math.max(Math.trunc(query.page ?? 1), 1);
   const pageSize = clamp(Math.trunc(query.pageSize ?? DEFAULT_PAGE_SIZE), 1, MAX_PAGE_SIZE);
 
@@ -81,7 +91,9 @@ export function buildDocumentListQuery(query: ListDocumentsQuery): BuiltDocument
 
   if (query.categoryId) where.categoryId = query.categoryId;
   if (query.ownerId) where.ownerId = query.ownerId;
-  if (query.tag) where.tags = { has: query.tag };
+  const tags = splitTags(query.tags);
+  if (tags.length > 0) where.tags = { hasEvery: tags };
+  else if (query.tag) where.tags = { has: query.tag };
   if (query.accessLevel) {
     where.accessLevel = query.accessLevel as Prisma.DocumentWhereInput['accessLevel'];
   }
@@ -119,6 +131,17 @@ export function buildDocumentListQuery(query: ListDocumentsQuery): BuiltDocument
     };
   }
 
+  const effectiveAfter = parseDate(query.effectiveAfter);
+  const effectiveBefore = parseDate(query.effectiveBefore);
+  if (effectiveAfter || effectiveBefore) {
+    where.effectiveDate = {
+      ...(effectiveAfter ? { gte: effectiveAfter } : {}),
+      ...(effectiveBefore ? { lte: effectiveBefore } : {}),
+    };
+  }
+
+  applyDueState(where, query.dueState, now);
+
   const sortField: DocumentSortField = DOCUMENT_SORT_FIELDS.includes(query.sort as DocumentSortField)
     ? (query.sort as DocumentSortField)
     : 'createdAt';
@@ -134,4 +157,52 @@ export function buildDocumentListQuery(query: ListDocumentsQuery): BuiltDocument
     pageSize,
     term,
   };
+}
+
+/** Splits the advanced-search tags parameter while preserving the legacy `tag`. */
+function splitTags(value?: string): string[] {
+  if (!value) return [];
+  return value
+    .split(',')
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Applies compliance quick filters. These are intentionally server-side so saved
+ * searches and UI chips cannot bypass the same ACL-filtered document query path.
+ */
+function applyDueState(
+  where: Prisma.DocumentWhereInput,
+  dueState: DocumentDueState | undefined,
+  now: Date,
+): void {
+  if (!dueState) return;
+  if (dueState === 'expired') {
+    where.nextReviewDate = { not: null, lt: now };
+    return;
+  }
+  if (dueState === 'dueSoon') {
+    where.nextReviewDate = {
+      not: null,
+      gte: now,
+      lte: addDays(now, DEFAULT_REVIEW_LEAD_DAYS),
+    };
+    return;
+  }
+  if (dueState === 'missingApproval') {
+    where.status = { in: ['draft', 'in_review'] };
+    return;
+  }
+  if (dueState === 'notAcknowledged') {
+    where.acknowledgmentAssignments = {
+      some: { status: { in: ['pending', 'overdue'] } },
+    };
+  }
+}
+
+function addDays(value: Date, days: number): Date {
+  const d = new Date(value);
+  d.setDate(d.getDate() + days);
+  return d;
 }

@@ -12,6 +12,7 @@ const mockRestore = vi.fn();
 const mockArchive = vi.fn();
 const mockUnarchive = vi.fn();
 const mockCreateCategory = vi.fn();
+const mockListSavedSearches = vi.fn();
 
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
@@ -37,6 +38,13 @@ vi.mock('../api/documents', () => ({
   restoreDocument: (...args: unknown[]) => mockRestore(...args),
   archiveDocument: (...args: unknown[]) => mockArchive(...args),
   unarchiveDocument: (...args: unknown[]) => mockUnarchive(...args),
+}));
+
+vi.mock('../api/savedSearches', () => ({
+  listSavedSearches: (...args: unknown[]) => mockListSavedSearches(...args),
+  createSavedSearch: vi.fn(),
+  runSavedSearch: vi.fn(),
+  deleteSavedSearch: vi.fn(),
 }));
 
 /** Builds a one-row list payload with sensible soft-delete defaults. */
@@ -110,6 +118,7 @@ describe('LibraryPage', () => {
       description: null,
       children: [],
     });
+    mockListSavedSearches.mockReset().mockResolvedValue([]);
   });
 
   it('shows the forbidden state when the user lacks document.read', () => {

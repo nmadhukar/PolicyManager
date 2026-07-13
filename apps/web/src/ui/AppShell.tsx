@@ -1,7 +1,9 @@
 import { ReactNode, useRef, useState } from 'react';
 import { Link, NavLink } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { PERMISSIONS } from '@policymanager/shared';
 import { useAuth } from '../auth/AuthContext';
+import { getUnreadNotificationCount } from '../api/notifications';
 import { useFocusTrap } from './useFocusTrap';
 
 interface NavItem {
@@ -15,6 +17,7 @@ const NAV: NavItem[] = [
   { label: 'Dashboard', to: '/', icon: 'DB' },
   { label: 'Library', to: '/library', icon: 'LB', requires: PERMISSIONS.DOCUMENT_READ },
   { label: 'Import', to: '/library/import', icon: 'IM', requires: PERMISSIONS.DOCUMENT_WRITE },
+  { label: 'Notifications', to: '/notifications', icon: 'NT' },
   // Personal dashboard: any signed-in user may be assigned as a reviewer.
   { label: 'Reviews', to: '/reviews', icon: 'RV' },
   // Personal dashboard: any signed-in user may be assigned to read and sign.
@@ -62,6 +65,13 @@ export function AppShell({ children }: { children: ReactNode }) {
   const visibleNav = NAV.filter(
     (item) => !item.requires || hasPermission(item.requires as never),
   );
+  const unreadQuery = useQuery({
+    queryKey: ['notification-unread-count'],
+    queryFn: getUnreadNotificationCount,
+    refetchInterval: 60_000,
+    enabled: !!user,
+  });
+  const unread = unreadQuery.data?.unread ?? 0;
 
   const closeMobileNav = () => setMobileNavOpen(false);
   useFocusTrap(mobileNavOpen, drawerRef, closeMobileNav);
@@ -149,6 +159,18 @@ export function AppShell({ children }: { children: ReactNode }) {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            <Link
+              to="/notifications"
+              className="relative rounded-md p-2 text-sm font-medium text-ink-soft hover:bg-slate-100 hover:text-brand-700"
+              aria-label={unread > 0 ? `${unread} unread notifications` : 'Notifications'}
+            >
+              NT
+              {unread > 0 && (
+                <span className="absolute -right-1 -top-1 min-w-5 rounded-full bg-red-600 px-1.5 text-center text-[10px] font-semibold text-white">
+                  {unread > 99 ? '99+' : unread}
+                </span>
+              )}
+            </Link>
             {user && (
               <div className="flex items-center gap-2">
                 <span

@@ -3,8 +3,10 @@ import {
   ACCESS_LEVELS,
   DOCUMENT_SORT_FIELDS,
   DOCUMENT_STATUSES,
+  DOCUMENT_DUE_STATES,
   EXTRACTION_STATUSES,
   type AccessLevel,
+  type DocumentDueState,
   type DocumentSortField,
   type DocumentStatus,
   type ExtractionStatus,
@@ -42,6 +44,11 @@ export class ListDocumentsQueryDto {
   @IsString()
   tag?: string;
 
+  @ApiPropertyOptional({ description: 'Comma-separated tags; all listed tags must be present.' })
+  @IsOptional()
+  @IsString()
+  tags?: string;
+
   @ApiPropertyOptional({ enum: DOCUMENT_STATUSES as unknown as string[] })
   @IsOptional()
   @IsIn(DOCUMENT_STATUSES as unknown as string[])
@@ -69,6 +76,21 @@ export class ListDocumentsQueryDto {
   @IsOptional()
   @IsString()
   reviewAfter?: string;
+
+  @ApiPropertyOptional({ description: 'effectiveDate <= this date (ISO).' })
+  @IsOptional()
+  @IsString()
+  effectiveBefore?: string;
+
+  @ApiPropertyOptional({ description: 'effectiveDate >= this date (ISO).' })
+  @IsOptional()
+  @IsString()
+  effectiveAfter?: string;
+
+  @ApiPropertyOptional({ enum: DOCUMENT_DUE_STATES as unknown as string[] })
+  @IsOptional()
+  @IsIn(DOCUMENT_DUE_STATES as unknown as string[])
+  dueState?: DocumentDueState;
 
   @ApiPropertyOptional({
     description: 'Trash view: only soft-deleted documents. Requires document.write.',

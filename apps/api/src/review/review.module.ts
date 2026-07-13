@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { AttestationModule } from '../attestation/attestation.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { ReviewScheduler } from './review.scheduler';
 import { ReviewService } from './review.service';
 import { ReviewersController } from './reviewers.controller';
@@ -15,7 +16,7 @@ import { ReviewsController } from './reviews.controller';
  * sign-off and the sweep can flag overdue acknowledgments.
  */
 @Module({
-  imports: [AuthModule, AttestationModule],
+  imports: [AuthModule, AttestationModule, NotificationsModule],
   controllers: [ReviewersController, ReviewsController],
   providers: [ReviewService, ReviewScheduler],
   exports: [ReviewService],

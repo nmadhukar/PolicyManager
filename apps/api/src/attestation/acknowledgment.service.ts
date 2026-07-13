@@ -20,6 +20,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import type { RequestContext } from '../audit/request-context';
 import { AttestationService } from './attestation.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 /** Assignment fields + joins for the manager status view. */
 const statusInclude = {
@@ -52,6 +53,7 @@ export class AcknowledgmentService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly attestation: AttestationService,
+    private readonly notifications?: NotificationsService,
   ) {}
 
   /**
@@ -88,7 +90,7 @@ export class AcknowledgmentService {
         select: { id: true },
       });
       if (existing) continue; // Idempotent — keep the existing (possibly completed) row.
-      await this.prisma.acknowledgmentAssignment.create({
+      const assignment = await this.prisma.acknowledgmentAssignment.create({
         data: {
           documentId,
           versionId: doc.currentVersionId,
@@ -98,6 +100,7 @@ export class AcknowledgmentService {
           status: 'pending',
         },
       });
+      await this.notifications?.notifyAcknowledgmentAssignment(assignment.id);
       created += 1;
     }
 
@@ -142,9 +145,10 @@ export class AcknowledgmentService {
         select: { id: true },
       });
       if (existing) continue;
-      await this.prisma.acknowledgmentAssignment.create({
+      const assignment = await this.prisma.acknowledgmentAssignment.create({
         data: { documentId, versionId, assigneeId, assignedById: actor.id, status: 'pending' },
       });
+      await this.notifications?.notifyAcknowledgmentAssignment(assignment.id);
       created += 1;
     }
 

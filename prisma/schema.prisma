@@ -60,6 +60,12 @@ model User {
   importBatches             ImportBatch[]              @relation("ImportBatchCreator")
   authoredAnnotations       DocumentAnnotation[]        @relation("AnnotationAuthor")
   resolvedAnnotations       DocumentAnnotation[]        @relation("AnnotationResolver")
+  receivedNotifications     Notification[]             @relation("NotificationRecipient")
+  actedNotifications        Notification[]             @relation("NotificationActor")
+  notificationPreference    NotificationPreference?
+  notificationDeliveries    NotificationDelivery[]      @relation("NotificationDeliveryRecipient")
+  savedSearches             SavedSearch[]              @relation("SavedSearchOwner")
+  evidenceBinderJobs        EvidenceBinderJob[]         @relation("EvidenceBinderRequester")
 
   @@schema("policytracker")
 }
@@ -260,6 +266,7 @@ model Document {
   acknowledgmentAssignments AcknowledgmentAssignment[] @relation("AckDoc")
   importItems               ImportItem[]               @relation("ImportItemDocument")
   annotations               DocumentAnnotation[]        @relation("DocumentAnnotationDoc")
+  evidenceBinderJobs        EvidenceBinderJob[]         @relation("EvidenceBinderDocument")
 
   @@index([title])
   @@index([categoryId])
@@ -312,6 +319,7 @@ model DocumentVersion {
   attestations              Attestation[]              @relation("AttestationVersion")
   acknowledgmentAssignments AcknowledgmentAssignment[] @relation("AckVersion")
   annotations               DocumentAnnotation[]       @relation("AnnotationVersion")
+  evidenceBinderJobs        EvidenceBinderJob[]        @relation("EvidenceBinderVersion")
 
   @@unique([documentId, versionNumber])
   @@index([documentId])
@@ -765,5 +773,193 @@ model ImportItem {
   document Document?   @relation("ImportItemDocument", fields: [documentId], references: [id], onDelete: SetNull)
 
   @@index([batchId])
+  @@schema("policytracker")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 12+ — compare, evidence binder, advanced search, notification center
+// ---------------------------------------------------------------------------
+
+enum SavedSearchScope {
+  private
+  role
+  global
+
+  @@schema("policytracker")
+}
+
+/// User-defined document-library filter preset. Private searches are always
+/// visible to their owner; role/global presets are gated by saved_search.manage
+/// when written and still flow through normal document access when executed.
+model SavedSearch {
+  id        String           @id @default(uuid())
+  name      String
+  ownerId   String
+  scope     SavedSearchScope @default(private)
+  roleName  String?
+  filters   Json
+  sort      Json?
+  lastRunAt DateTime?
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  owner User @relation("SavedSearchOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerId, name])
+  @@index([ownerId])
+  @@index([scope])
+  @@schema("policytracker")
+}
+
+enum EvidenceBinderFormat {
+  zip
+  combined_pdf
+
+  @@schema("policytracker")
+}
+
+enum EvidenceBinderStatus {
+  completed
+  failed
+
+  @@schema("policytracker")
+}
+
+/// Export history for a compliance evidence binder. Binder bytes are streamed
+/// synchronously in v1; this row records what evidence was generated and by whom.
+model EvidenceBinderJob {
+  id               String               @id @default(uuid())
+  documentId       String
+  versionId        String?
+  requestedById    String
+  format           EvidenceBinderFormat
+  status           EvidenceBinderStatus
+  includedSections Json
+  fileName         String
+  checksum         String?
+  errorMessage     String?
+  createdAt        DateTime             @default(now())
+  completedAt      DateTime?
+
+  document    Document         @relation("EvidenceBinderDocument", fields: [documentId], references: [id], onDelete: Restrict)
+  version     DocumentVersion? @relation("EvidenceBinderVersion", fields: [versionId], references: [id], onDelete: SetNull)
+  requestedBy User             @relation("EvidenceBinderRequester", fields: [requestedById], references: [id])
+
+  @@index([documentId])
+  @@index([requestedById])
+  @@index([createdAt])
+  @@schema("policytracker")
+}
+
+enum AppNotificationType {
+  review_assigned
+  acknowledgment_due
+  policy_published
+  comment_resolved
+  approval_requested
+
+  @@schema("policytracker")
+}
+
+enum NotificationPriority {
+  low
+  normal
+  high
+
+  @@schema("policytracker")
+}
+
+enum NotificationDigestFrequency {
+  daily
+  weekly
+
+  @@schema("policytracker")
+}
+
+enum NotificationChannel {
+  in_app
+  email_digest
+
+  @@schema("policytracker")
+}
+
+enum NotificationDeliveryStatus {
+  pending
+  sent
+  failed
+  skipped
+
+  @@schema("policytracker")
+}
+
+/// Per-user in-app notification. Notification text is masked at read time if the
+/// user has since lost access to the linked confidential document.
+model Notification {
+  id                String               @id @default(uuid())
+  recipientId       String
+  actorId           String?
+  type              AppNotificationType
+  title             String
+  body              String
+  entityType        String?
+  entityId          String?
+  documentId        String?
+  documentVersionId String?
+  priority          NotificationPriority @default(normal)
+  metadata          Json?
+  dedupeKey         String?              @unique
+  readAt            DateTime?
+  dismissedAt       DateTime?
+  expiresAt         DateTime?
+  createdAt         DateTime             @default(now())
+
+  recipient  User                   @relation("NotificationRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+  actor      User?                  @relation("NotificationActor", fields: [actorId], references: [id], onDelete: SetNull)
+  deliveries NotificationDelivery[]
+
+  @@index([recipientId, readAt, dismissedAt, createdAt])
+  @@index([documentId])
+  @@index([type])
+  @@schema("policytracker")
+}
+
+/// User-level notification settings. Defaults are materialized on first read so
+/// digest jobs can query explicit preferences efficiently.
+model NotificationPreference {
+  userId             String                      @id
+  inAppEnabled       Boolean                     @default(true)
+  emailDigestEnabled Boolean                     @default(false)
+  digestFrequency    NotificationDigestFrequency @default(daily)
+  digestTimeLocal    String                      @default("08:00")
+  timezone           String                      @default("America/New_York")
+  typeOverrides      Json?
+  lastDigestSentAt   DateTime?
+  updatedAt          DateTime                    @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@schema("policytracker")
+}
+
+/// Delivery audit for notification channels. `notificationId` is nullable because
+/// one email digest can summarize many notifications.
+model NotificationDelivery {
+  id                String                     @id @default(uuid())
+  notificationId    String?
+  recipientId       String
+  channel           NotificationChannel
+  status            NotificationDeliveryStatus @default(pending)
+  subject           String?
+  sentAt            DateTime?
+  errorMessage      String?
+  providerMessageId String?
+  metadata          Json?
+  createdAt         DateTime                   @default(now())
+
+  notification Notification? @relation(fields: [notificationId], references: [id], onDelete: SetNull)
+  recipient    User          @relation("NotificationDeliveryRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@index([recipientId, channel, createdAt])
+  @@index([notificationId])
   @@schema("policytracker")
 }

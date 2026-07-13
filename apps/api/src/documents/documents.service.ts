@@ -35,6 +35,7 @@ import {
 } from './onlyoffice.service';
 import { RenditionService } from './rendition.service';
 import { DocumentExtractionService } from './document-extraction.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { computeNextVersionNumber, sha256Hex } from './versioning.util';
 
 /** In-memory file shape used by the shared version-write path. */
@@ -115,6 +116,7 @@ export class DocumentsService {
     private readonly access: DocumentAccessService,
     private readonly audit: AuditService,
     private readonly extraction: DocumentExtractionService,
+    private readonly notifications?: NotificationsService,
   ) {}
 
   // ---- Reads ---------------------------------------------------------------
@@ -345,6 +347,9 @@ export class DocumentsService {
     // C8: retiring/archiving via a metadata update also deactivates open work items.
     if (dto.status === 'archived' || dto.status === 'retired') {
       await this.deactivateWorkItems(id);
+    }
+    if (dto.status === 'in_review') {
+      await this.notifications?.notifyApprovalRequested(id, user);
     }
     return this.loadDetail(id);
   }

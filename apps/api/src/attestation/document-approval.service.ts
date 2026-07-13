@@ -17,6 +17,7 @@ import type { RequestContext } from '../audit/request-context';
 import { DocumentAccessService, type AccessDocument } from '../documents/document-access.service';
 import { AttestationService } from './attestation.service';
 import { AcknowledgmentService } from './acknowledgment.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 /**
  * Document approval / publish sign-off (PM-0602). Approving records an immutable
@@ -34,6 +35,7 @@ export class DocumentApprovalService {
     private readonly access: DocumentAccessService,
     private readonly attestation: AttestationService,
     private readonly acknowledgment: AcknowledgmentService,
+    private readonly notifications?: NotificationsService,
   ) {}
 
   async approve(
@@ -105,6 +107,7 @@ export class DocumentApprovalService {
         user,
         ctx,
       );
+      await this.notifications?.notifyPolicyPublished(documentId, doc.currentVersionId, user);
     }
 
     return { documentId, status, attestation, acknowledgmentsRetriggered };

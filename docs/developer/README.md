@@ -19,6 +19,7 @@ Sections to fill as the app is built:
 - Public API.
 - Import & consolidation. See [Import & Consolidation](./import-consolidation.md).
 - OCR/search and review annotations. See [OCR, Search, and Review Annotations](./ocr-search-and-annotations.md).
+- Compare, evidence binder, advanced search, and notifications. See [Compare, Evidence Binder, Search, And Notifications](./compare-binder-search-notifications.md).
 - Testing strategy.
 - Code comment standards.
 

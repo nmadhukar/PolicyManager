@@ -18,6 +18,9 @@ import { SmtpModule } from './smtp/smtp.module';
 import { ApiClientsModule } from './api-clients/api-clients.module';
 import { PublicApiModule } from './public-api/public-api.module';
 import { ImportsModule } from './imports/imports.module';
+import { SearchModule } from './search/search.module';
+import { NotificationsModule } from './notifications/notifications.module';
+import { EvidenceModule } from './evidence/evidence.module';
 
 @Module({
   imports: [
@@ -60,6 +63,9 @@ import { ImportsModule } from './imports/imports.module';
     PublicApiModule,
     // Phase 8 — bulk import & consolidation (CSV manifest + bulk upload).
     ImportsModule,
+    SearchModule,
+    NotificationsModule,
+    EvidenceModule,
   ],
   // SM3: enforce the throttler globally (auth routes add tighter @Throttle limits).
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

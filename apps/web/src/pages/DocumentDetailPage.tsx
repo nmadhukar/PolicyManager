@@ -25,6 +25,7 @@ import {
   updateDocument,
   uploadVersion,
 } from '../api/documents';
+import { compareVersions, fetchComparePdf } from '../api/documentCompare';
 import { flattenCategories, listCategoryTree } from '../api/categories';
 import { DocumentAclPanel } from './DocumentAclPanel';
 import { DocumentReviewersPanel } from './DocumentReviewersPanel';
@@ -35,11 +36,12 @@ import { formatBytes, formatDate, statusBadgeClasses, statusLabel } from '../lib
 import { AppShell } from '../ui/AppShell';
 import { CategorySelectWithCreate } from '../ui/CategorySelectWithCreate';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
+import { Modal } from '../ui/Modal';
 import { EmptyState, ErrorState, ForbiddenState, LoadingState } from '../ui/states';
 import { TagInput } from '../ui/TagInput';
 import { useToast } from '../ui/Toast';
 import { apiErrorMessage } from '../lib/apiError';
-import { triggerUrlDownload } from '../lib/download';
+import { downloadBlob, triggerUrlDownload } from '../lib/download';
 
 // Heavy viewing/editing surfaces are code-split so the detail page (and its tests)
 // don't pull in pdf.js / OnlyOffice / TipTap until a user actually opens one.
@@ -77,6 +79,7 @@ function extractionBadgeClasses(status: DocumentVersionSummary['extractionStatus
 /** Which full-screen surface is open over the detail page (one at a time). */
 type Overlay =
   | { kind: 'view'; version: DocumentVersionSummary }
+  | { kind: 'compare'; from: DocumentVersionSummary; to: DocumentVersionSummary }
   | { kind: 'edit-office' }
   | { kind: 'edit-text'; version?: DocumentVersionSummary };
 
@@ -543,13 +546,25 @@ function VersionsCard({ doc, canWrite }: { doc: DocumentDetail; canWrite: boolea
 
   return (
     <div className="card p-5">
-      <div className="mb-4 flex items-center justify-between gap-2">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-muted">
           Version history
         </h2>
-        <span className="text-xs text-ink-muted">
-          {doc.versions.length} version{doc.versions.length === 1 ? '' : 's'}
-        </span>
+        <div className="flex items-center gap-2">
+          {doc.versions.length > 1 && doc.versions[1] && doc.currentVersion && (
+            <button
+              className="btn-secondary !px-3 !py-1 text-xs"
+              onClick={() =>
+                setOverlay({ kind: 'compare', from: doc.versions[1], to: doc.currentVersion as DocumentVersionSummary })
+              }
+            >
+              Compare latest
+            </button>
+          )}
+          <span className="text-xs text-ink-muted">
+            {doc.versions.length} version{doc.versions.length === 1 ? '' : 's'}
+          </span>
+        </div>
       </div>
 
       {canWrite && (
@@ -660,6 +675,20 @@ function VersionsCard({ doc, canWrite }: { doc: DocumentDetail; canWrite: boolea
                             <RetryExtractionButton documentId={doc.id} />
                           )}
                         {canWrite && !isCurrent && <RestoreVersionButton doc={doc} version={v} />}
+                        {!isCurrent && doc.currentVersion && (
+                          <button
+                            className="btn-secondary !px-3 !py-1 text-xs"
+                            onClick={() =>
+                              setOverlay({
+                                kind: 'compare',
+                                from: v,
+                                to: doc.currentVersion as DocumentVersionSummary,
+                              })
+                            }
+                          >
+                            Compare
+                          </button>
+                        )}
                         <DownloadButton documentId={doc.id} versionId={v.id} />
                       </div>
                     </td>
@@ -675,6 +704,9 @@ function VersionsCard({ doc, canWrite }: { doc: DocumentDetail; canWrite: boolea
         <Suspense fallback={<OverlayFallback />}>
           {overlay.kind === 'view' && (
             <DocumentViewer documentId={doc.id} version={overlay.version} onClose={close} />
+          )}
+          {overlay.kind === 'compare' && (
+            <CompareModal documentId={doc.id} from={overlay.from} to={overlay.to} onClose={close} />
           )}
           {overlay.kind === 'edit-office' && (
             // Close refreshes history — a save-back may have created a new version.
@@ -702,6 +734,131 @@ function OverlayFallback() {
       role="status"
     >
       Loading…
+    </div>
+  );
+}
+
+function CompareModal({
+  documentId,
+  from,
+  to,
+  onClose,
+}: {
+  documentId: string;
+  from: DocumentVersionSummary;
+  to: DocumentVersionSummary;
+  onClose: () => void;
+}) {
+  const query = useQuery({
+    queryKey: ['version-compare', documentId, from.id, to.id],
+    queryFn: () => compareVersions(documentId, from.id, to.id),
+  });
+  const exportPdf = useMutation({
+    mutationFn: () => fetchComparePdf(documentId, from.id, to.id),
+    onSuccess: (blob) => downloadBlob(blob, `compare-v${from.versionNumber}-v${to.versionNumber}.pdf`),
+  });
+
+  return (
+    <Modal open onClose={onClose} titleId="compare-title" busy={exportPdf.isPending}>
+      <div className="max-h-[78vh] w-[min(56rem,92vw)] overflow-y-auto pr-1">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 id="compare-title" className="text-base font-semibold text-ink">
+              Version compare
+            </h2>
+            <p className="mt-1 text-sm text-ink-muted">
+              v{from.versionNumber} to v{to.versionNumber}
+            </p>
+          </div>
+          <button
+            className="btn-secondary !py-1.5 text-sm"
+            onClick={() => exportPdf.mutate()}
+            disabled={exportPdf.isPending}
+          >
+            Export PDF
+          </button>
+        </div>
+
+        {query.isLoading ? (
+          <div className="mt-4">
+            <LoadingState label="Comparing versions..." />
+          </div>
+        ) : query.isError || !query.data ? (
+          <div className="mt-4">
+            <ErrorState description="Could not compare these versions." onRetry={() => void query.refetch()} />
+          </div>
+        ) : (
+          <div className="mt-4 space-y-4">
+            {query.data.warnings.map((w) => (
+              <div key={w} className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                {w}
+              </div>
+            ))}
+            <div className="grid grid-cols-3 gap-2 text-sm">
+              <Metric label="Added" value={query.data.summary.added} tone="text-green-700" />
+              <Metric label="Removed" value={query.data.summary.removed} tone="text-red-700" />
+              <Metric label="Changed" value={query.data.summary.changed} tone="text-amber-700" />
+            </div>
+            {query.data.metadataChanges.length > 0 && (
+              <div className="rounded-lg border border-slate-200">
+                <div className="border-b border-slate-100 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+                  Metadata changes
+                </div>
+                <div className="divide-y divide-slate-100 text-sm">
+                  {query.data.metadataChanges.map((change) => (
+                    <div key={change.field} className="grid gap-2 px-3 py-2 sm:grid-cols-[10rem_1fr_1fr]">
+                      <div className="font-medium text-ink">{change.label}</div>
+                      <div className="text-red-700">{change.oldValue ?? '-'}</div>
+                      <div className="text-green-700">{change.newValue ?? '-'}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div className="overflow-hidden rounded-lg border border-slate-200">
+              <div className="border-b border-slate-100 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-ink-muted">
+                Redline
+              </div>
+              <div className="max-h-[26rem] overflow-auto bg-slate-50 p-3 font-mono text-xs leading-5">
+                {query.data.hunks.length === 0 ? (
+                  <div className="text-ink-muted">No text changes available.</div>
+                ) : (
+                  query.data.hunks.map((hunk, index) => (
+                    <div
+                      key={`${hunk.type}-${index}`}
+                      className={
+                        hunk.type === 'added'
+                          ? 'bg-green-50 text-green-800'
+                          : hunk.type === 'removed'
+                            ? 'bg-red-50 text-red-800 line-through'
+                            : hunk.type === 'changed'
+                              ? 'bg-amber-50 text-amber-900'
+                              : 'text-ink-soft'
+                      }
+                    >
+                      <span className="mr-2 text-ink-muted">
+                        {hunk.oldLine ?? '-'}:{hunk.newLine ?? '-'}
+                      </span>
+                      {hunk.type === 'changed'
+                        ? `${hunk.oldText ?? ''} -> ${hunk.newText ?? ''}`
+                        : hunk.newText ?? hunk.oldText}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+function Metric({ label, value, tone }: { label: string; value: number; tone: string }) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-3">
+      <div className={`text-xl font-semibold ${tone}`}>{value}</div>
+      <div className="text-xs uppercase tracking-wide text-ink-muted">{label}</div>
     </div>
   );
 }

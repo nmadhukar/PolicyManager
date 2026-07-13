@@ -9,6 +9,9 @@ Available guides:
 - [Importing documents](./import-documents.md) — bulk-onboard existing files with a
   CSV manifest or a manifest-less upload, and read the import report.
 
+- [Compare, evidence binder, search, and notifications](./compare-binder-search-notifications.md) - review redlines,
+  export audit binders, save searches, and manage notifications.
+
 Planned guides:
 
 - Completing an acknowledgement.

@@ -97,6 +97,12 @@ describe('buildDocumentListQuery', () => {
     expect(buildDocumentListQuery({ tag: 'CARF' }).where.tags).toEqual({ has: 'CARF' });
   });
 
+  it('filters by multiple tags using hasEvery', () => {
+    expect(buildDocumentListQuery({ tags: 'CARF, JCAHO' }).where.tags).toEqual({
+      hasEvery: ['CARF', 'JCAHO'],
+    });
+  });
+
   it('builds a nextReviewDate range from reviewAfter/reviewBefore', () => {
     const q = buildDocumentListQuery({
       reviewAfter: '2026-01-01',
@@ -110,6 +116,35 @@ describe('buildDocumentListQuery', () => {
 
   it('ignores unparseable review dates', () => {
     expect(buildDocumentListQuery({ reviewBefore: 'not-a-date' }).where.nextReviewDate).toBeUndefined();
+  });
+
+  it('builds an effectiveDate range from effectiveAfter/effectiveBefore', () => {
+    const q = buildDocumentListQuery({
+      effectiveAfter: '2026-01-01',
+      effectiveBefore: '2026-02-01',
+    });
+    expect(q.where.effectiveDate).toEqual({
+      gte: new Date('2026-01-01'),
+      lte: new Date('2026-02-01'),
+    });
+  });
+
+  it('supports due-state quick filters', () => {
+    const now = new Date('2026-07-13T12:00:00Z');
+    const expired = buildDocumentListQuery({ dueState: 'expired' }, now);
+    expect(expired.where.nextReviewDate).toEqual({ not: null, lt: now });
+
+    const dueSoon = buildDocumentListQuery({ dueState: 'dueSoon' }, now);
+    expect(dueSoon.where.nextReviewDate).toEqual({
+      not: null,
+      gte: now,
+      lte: new Date('2026-07-27T12:00:00.000Z'),
+    });
+
+    const notAcknowledged = buildDocumentListQuery({ dueState: 'notAcknowledged' }, now);
+    expect(notAcknowledged.where.acknowledgmentAssignments).toEqual({
+      some: { status: { in: ['pending', 'overdue'] } },
+    });
   });
 
   it('sorts by an allowed field + order', () => {

@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { vi } from 'vitest';
 import type { AuthUser } from '@policymanager/shared';
@@ -31,10 +32,15 @@ function authValue(overrides: Partial<AuthContextValue> = {}): AuthContextValue 
 }
 
 function renderPage() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   return render(
-    <MemoryRouter>
-      <ChangePasswordPage />
-    </MemoryRouter>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <ChangePasswordPage />
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 

@@ -27,6 +27,7 @@ import type { RequestContext } from '../audit/request-context';
 import { MailService } from '../mail/mail.service';
 import { AttestationService } from '../attestation/attestation.service';
 import { AcknowledgmentService } from '../attestation/acknowledgment.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { addDays, advanceReviewDate } from './review-cadence.util';
 
 /** Filters for the review-task listing (already validated in the DTO). */
@@ -85,6 +86,7 @@ export class ReviewService {
     private readonly audit: AuditService,
     private readonly attestation: AttestationService,
     private readonly acknowledgment: AcknowledgmentService,
+    private readonly notifications?: NotificationsService,
   ) {}
 
   // ---- Reviewer assignment -------------------------------------------------
@@ -121,6 +123,24 @@ export class ReviewService {
         ...ctx,
         metadata: { op: 'add', reviewerId },
       });
+      if (this.notifications) {
+        const doc = await this.prisma.document.findUnique({
+          where: { id: documentId },
+          select: { title: true, currentVersionId: true },
+        });
+        await this.notifications.create({
+          recipientId: reviewerId,
+          actorId: actor.id,
+          type: 'review_assigned',
+          title: 'Review assigned',
+          body: doc?.title ?? 'Document review',
+          documentId,
+          documentVersionId: doc?.currentVersionId ?? null,
+          entityType: 'review_assignment',
+          entityId: assignment.id,
+          dedupeKey: `review-assignment:${assignment.id}`,
+        });
+      }
     }
 
     return {
@@ -256,6 +276,7 @@ export class ReviewService {
         });
 
         // Best-effort reminder — MailService never throws and logs the outcome.
+        await this.notifications?.notifyReviewTaskCreated(task.id);
         await this.mail.sendReviewReminder({
           to: reviewer.email,
           name: reviewer.name,
