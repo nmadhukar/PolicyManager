@@ -4,8 +4,7 @@
 // Models are added per phase as vertical slices — not one big dump.
 
 generator client {
-  provider        = "prisma-client-js"
-  previewFeatures = ["multiSchema"]
+  provider = "prisma-client-js"
 }
 
 datasource db {
@@ -152,6 +151,25 @@ model PasswordResetToken {
   createdAt DateTime  @default(now())
 
   @@index([userId])
+  @@schema("policytracker")
+}
+
+/// Short-lived CSRF/replay guard for one in-flight OIDC login (ADR 0003). `state`
+/// is the opaque value round-tripped through Azure AD's redirect; `nonce` and
+/// `codeVerifier` (PKCE) are needed again at the callback to validate the ID
+/// token and complete the code exchange. A row is deleted the moment its
+/// callback is consumed, so a captured `state` cannot be replayed; `expiresAt`
+/// bounds an abandoned login (the user never returns from Azure AD).
+model OidcState {
+  id           String   @id @default(uuid())
+  state        String   @unique
+  nonce        String
+  codeVerifier String
+  redirectUri  String
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  @@index([expiresAt])
   @@schema("policytracker")
 }
 

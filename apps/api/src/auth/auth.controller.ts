@@ -1,10 +1,13 @@
-import { Body, Controller, Get, HttpCode, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Post, Query, Res, UseGuards } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import type { Response } from 'express';
 import { AUDIT_ACTIONS } from '@policymanager/shared';
 import type { AuthUser } from '@policymanager/shared';
 import { AuditService } from '../audit/audit.service';
 import { ReqContext, type RequestContext } from '../audit/request-context';
+import { AZURE_OIDC_PROVIDER, AzureOidcService } from './azure-oidc.service';
 import { AuthService } from './auth.service';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { ChangePasswordDto } from './dto/change-password.dto';
@@ -31,6 +34,8 @@ export class AuthController {
   constructor(
     private readonly auth: AuthService,
     private readonly audit: AuditService,
+    private readonly azureOidc: AzureOidcService,
+    private readonly config: ConfigService,
   ) {}
 
   @Post('login')
@@ -116,5 +121,64 @@ export class AuthController {
   @ApiOperation({ summary: 'Current authenticated user with resolved roles + permissions.' })
   me(@CurrentUser() user: AuthUser): AuthUser {
     return user;
+  }
+
+  /**
+   * Starts SSO login (ADR 0003): redirects the browser to Azure AD. Entry
+   * point for the ESS Portal launchpad tile — no request body, so a browser
+   * navigation (not an XHR) is all a caller needs.
+   */
+  @Get('oidc/azure')
+  @ApiOperation({ summary: 'Redirect to Azure AD to start a single sign-on login.' })
+  async startAzureLogin(@Res() res: Response): Promise<void> {
+    const url = await this.azureOidc.buildAuthorizationUrl();
+    res.redirect(url);
+  }
+
+  /**
+   * Completes SSO login: exchanges the code, resolves/creates the local user,
+   * and hands the browser back to the web app with tokens in the URL FRAGMENT
+   * (never a query string) so they never reach server logs or `Referer`
+   * headers — the same pattern ESS Portal's own OIDC callback already uses.
+   */
+  @Get('oidc/azure/callback')
+  @ApiOperation({ summary: 'Azure AD redirect target; completes single sign-on login.' })
+  async azureCallback(
+    @Query() query: Record<string, string>,
+    @Res() res: Response,
+    @ReqContext() ctx: RequestContext,
+  ): Promise<void> {
+    const webBase = (
+      this.config.get<string>('WEB_APP_URL') ||
+      this.config.get<string>('FRONTEND_URL') ||
+      'http://localhost:5173'
+    ).replace(/\/+$/, '');
+
+    try {
+      const profile = await this.azureOidc.handleCallback(query);
+      const result = await this.auth.loginWithOidc(AZURE_OIDC_PROVIDER, profile);
+
+      await this.audit.record({
+        action: AUDIT_ACTIONS.USER_LOGIN_OIDC,
+        actorUserId: result.user.id,
+        targetType: 'user',
+        ...ctx,
+        metadata: { provider: AZURE_OIDC_PROVIDER },
+      });
+
+      const fragment = new URLSearchParams({
+        accessToken: result.accessToken,
+        refreshToken: result.refreshToken,
+      });
+      res.redirect(`${webBase}/auth/callback#${fragment.toString()}`);
+    } catch (err) {
+      await this.audit.record({
+        action: AUDIT_ACTIONS.USER_LOGIN_OIDC_FAILED,
+        targetType: 'user',
+        ...ctx,
+        metadata: { provider: AZURE_OIDC_PROVIDER },
+      });
+      res.redirect(`${webBase}/auth/callback#error=sso_failed`);
+    }
   }
 }

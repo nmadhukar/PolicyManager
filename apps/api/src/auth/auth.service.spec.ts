@@ -51,7 +51,9 @@ describe('AuthService', () => {
   });
 
   const makePrisma = () => ({
-    user: { findUnique: jest.fn(), update: jest.fn() },
+    user: { findUnique: jest.fn(), update: jest.fn(), create: jest.fn() },
+    userIdentity: { findUnique: jest.fn(), create: jest.fn() },
+    role: { findUnique: jest.fn() },
     refreshToken: {
       create: jest.fn(),
       findUnique: jest.fn(),
@@ -285,6 +287,132 @@ describe('AuthService', () => {
       prisma.user.findUnique.mockResolvedValue(makeUserRecord({ mustChangePassword: true }));
       const user = await build(prisma).getAuthUser('user-1');
       expect(user?.mustChangePassword).toBe(true);
+    });
+  });
+
+  describe('loginWithOidc (ADR 0003)', () => {
+    const profile = {
+      subject: 'azure-oid-1',
+      email: 'jane@clinic.example',
+      emailVerified: true,
+      name: 'Jane Clinician',
+    };
+
+    it('first SSO login creates a new User + UserIdentity with the Staff role', async () => {
+      const prisma = makePrisma();
+      prisma.userIdentity.findUnique.mockResolvedValue(null);
+      prisma.user.findUnique.mockResolvedValue(null);
+      prisma.role.findUnique.mockResolvedValue({ id: 'role-staff', name: 'Staff' });
+      prisma.user.create.mockResolvedValue(
+        makeUserRecord({
+          id: 'new-user-1',
+          email: profile.email,
+          name: profile.name,
+          roles: [{ role: { name: 'Staff', permissions: [] } }],
+        }),
+      );
+
+      const result = await build(prisma).loginWithOidc('azure', profile);
+
+      expect(prisma.role.findUnique).toHaveBeenCalledWith({ where: { name: 'Staff' } });
+      const createArgs = prisma.user.create.mock.calls[0][0];
+      expect(createArgs.data.email).toBe(profile.email);
+      expect(createArgs.data.identities.create).toEqual({
+        provider: 'azure',
+        subject: profile.subject,
+        email: profile.email,
+      });
+      expect(createArgs.data.roles.create).toEqual({ roleId: 'role-staff' });
+      // Never Admin by default.
+      expect(result.user.roles).toEqual(['Staff']);
+      expect(result.accessToken).toEqual(expect.any(String));
+    });
+
+    it('links a new UserIdentity onto an existing user matched by VERIFIED email', async () => {
+      const prisma = makePrisma();
+      prisma.userIdentity.findUnique.mockResolvedValue(null);
+      prisma.user.findUnique.mockResolvedValue(
+        makeUserRecord({ id: 'existing-user', email: profile.email }),
+      );
+      prisma.userIdentity.create.mockResolvedValue({});
+
+      const result = await build(prisma).loginWithOidc('azure', profile);
+
+      expect(prisma.userIdentity.create).toHaveBeenCalledWith({
+        data: { userId: 'existing-user', provider: 'azure', subject: profile.subject, email: profile.email },
+      });
+      expect(prisma.user.create).not.toHaveBeenCalled();
+      expect(result.user.id).toBe('existing-user');
+    });
+
+    it('does NOT link an existing user when the email claim is unverified', async () => {
+      const prisma = makePrisma();
+      prisma.userIdentity.findUnique.mockResolvedValue(null);
+      prisma.user.findUnique.mockResolvedValue(
+        makeUserRecord({ id: 'existing-user', email: profile.email }),
+      );
+
+      await expect(
+        build(prisma).loginWithOidc('azure', { ...profile, emailVerified: false }),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(prisma.userIdentity.create).not.toHaveBeenCalled();
+    });
+
+    it('a second login with the same (provider, subject) reuses the existing account (no duplicate)', async () => {
+      const prisma = makePrisma();
+      prisma.userIdentity.findUnique.mockResolvedValue({
+        id: 'identity-1',
+        userId: 'existing-user',
+        provider: 'azure',
+        subject: profile.subject,
+        user: makeUserRecord({ id: 'existing-user', email: profile.email }),
+      });
+
+      const result = await build(prisma).loginWithOidc('azure', profile);
+
+      expect(prisma.user.create).not.toHaveBeenCalled();
+      expect(prisma.userIdentity.create).not.toHaveBeenCalled();
+      expect(result.user.id).toBe('existing-user');
+    });
+
+    it('rejects when the linked identity belongs to a disabled user', async () => {
+      const prisma = makePrisma();
+      prisma.userIdentity.findUnique.mockResolvedValue({
+        id: 'identity-1',
+        userId: 'disabled-user',
+        provider: 'azure',
+        subject: profile.subject,
+        user: makeUserRecord({ id: 'disabled-user', status: 'disabled' }),
+      });
+
+      await expect(build(prisma).loginWithOidc('azure', profile)).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+    });
+
+    it('rejects when the matched-by-email existing user is disabled', async () => {
+      const prisma = makePrisma();
+      prisma.userIdentity.findUnique.mockResolvedValue(null);
+      prisma.user.findUnique.mockResolvedValue(
+        makeUserRecord({ id: 'existing-user', email: profile.email, status: 'disabled' }),
+      );
+
+      await expect(build(prisma).loginWithOidc('azure', profile)).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+      expect(prisma.userIdentity.create).not.toHaveBeenCalled();
+    });
+
+    it('fails loudly if the default Staff role is not seeded', async () => {
+      const prisma = makePrisma();
+      prisma.userIdentity.findUnique.mockResolvedValue(null);
+      prisma.user.findUnique.mockResolvedValue(null);
+      prisma.role.findUnique.mockResolvedValue(null);
+
+      await expect(build(prisma).loginWithOidc('azure', profile)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(prisma.user.create).not.toHaveBeenCalled();
     });
   });
 

@@ -348,6 +348,8 @@ export const AUDIT_ACTIONS = {
   ACCESS_DENIED: 'access.denied',
   USER_LOGIN: 'user.login',
   USER_LOGIN_FAILED: 'user.login_failed',
+  USER_LOGIN_OIDC: 'user.login_oidc',
+  USER_LOGIN_OIDC_FAILED: 'user.login_oidc_failed',
   USER_PASSWORD_RESET: 'user.password_reset',
   // Phase 5 — QC review scheduling + SMTP admin.
   REVIEW_ASSIGNED: 'review.assigned',

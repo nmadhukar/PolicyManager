@@ -8,11 +8,13 @@ import {
   useState,
 } from 'react';
 import type { AuthUser, PermissionKey } from '@policymanager/shared';
-import { apiChangePassword, apiLogin, apiLogout } from '../api/auth';
+import { apiChangePassword, apiLogin, apiLogout, apiMe } from '../api/auth';
 import {
   clearSession,
   requestRefresh,
+  setAccessToken,
   setOnAuthFailure,
+  setRefreshToken,
   storeSession,
 } from '../api/http';
 
@@ -29,6 +31,13 @@ export interface AuthContextValue {
    * must-change-password gate on success.
    */
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
+  /**
+   * Completes an SSO login (ADR 0003): the callback page has already received
+   * an access+refresh token pair from the OIDC redirect and just needs the
+   * session persisted + the current user fetched, mirroring what `login` does
+   * after a local password check.
+   */
+  completeSsoLogin: (accessToken: string, refreshToken: string) => Promise<void>;
   hasPermission: (key: PermissionKey) => boolean;
 }
 
@@ -91,14 +100,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setStatus('authenticated');
   }, []);
 
+  const completeSsoLogin = useCallback(async (accessToken: string, refreshToken: string) => {
+    setAccessToken(accessToken);
+    setRefreshToken(refreshToken);
+    const me = await apiMe();
+    setUser(me);
+    setStatus('authenticated');
+  }, []);
+
   const hasPermission = useCallback(
     (key: PermissionKey) => !!user?.permissions.includes(key),
     [user],
   );
 
   const value = useMemo<AuthContextValue>(
-    () => ({ user, status, login, logout, changePassword, hasPermission }),
-    [user, status, login, logout, changePassword, hasPermission],
+    () => ({ user, status, login, logout, changePassword, completeSsoLogin, hasPermission }),
+    [user, status, login, logout, changePassword, completeSsoLogin, hasPermission],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

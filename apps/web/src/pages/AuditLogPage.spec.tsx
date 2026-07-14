@@ -26,6 +26,7 @@ function baseAuth(permissions: string[]): AuthContextValue {
     login: vi.fn(),
     logout: vi.fn(),
     changePassword: vi.fn(),
+    completeSsoLogin: vi.fn(),
     hasPermission: (key) => permissions.includes(key),
   };
 }

@@ -26,6 +26,7 @@ function authValue(overrides: Partial<AuthContextValue> = {}): AuthContextValue 
     login: vi.fn(),
     logout: vi.fn(),
     changePassword: vi.fn().mockResolvedValue(undefined),
+    completeSsoLogin: vi.fn(),
     hasPermission: () => false,
     ...overrides,
   };

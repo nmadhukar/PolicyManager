@@ -3,6 +3,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { AzureOidcService } from './azure-oidc.service';
 import { PermissionsGuard } from './guards/permissions.guard';
 import { JwtStrategy } from './strategies/jwt.strategy';
 
@@ -13,7 +14,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
 @Module({
   imports: [PassportModule, JwtModule.register({})],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, PermissionsGuard],
+  providers: [AuthService, AzureOidcService, JwtStrategy, PermissionsGuard],
   exports: [AuthService, PermissionsGuard],
 })
 export class AuthModule {}

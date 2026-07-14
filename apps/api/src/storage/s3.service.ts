@@ -73,6 +73,18 @@ export interface PutObjectResult {
 export class S3Service implements OnModuleInit {
   private readonly logger = new Logger(S3Service.name);
   private readonly client: S3Client;
+  /**
+   * Client used ONLY to sign presigned URLs. Identical to `client` except its
+   * endpoint may differ: when the API runs inside a container that reaches
+   * MinIO via an internal Docker hostname (e.g. `http://minio:9000`), that
+   * hostname is meaningless to the browser the presigned URL is handed to.
+   * `S3_PUBLIC_ENDPOINT` lets deployments split "endpoint the server uses to
+   * talk to storage" from "endpoint the browser uses to fetch a presigned
+   * object" — defaulting to the same endpoint when no split is needed (the
+   * common case: bare-metal/VM deployments, or production S3 with one public
+   * hostname for both).
+   */
+  private readonly presignClient: S3Client;
   private readonly bucket: string;
   private readonly documentsPrefix: string;
   private readonly renditionsPrefix: string;
@@ -84,6 +96,7 @@ export class S3Service implements OnModuleInit {
 
   constructor(private readonly config: ConfigService) {
     const endpoint = config.get<string>('S3_ENDPOINT') || undefined;
+    const publicEndpoint = config.get<string>('S3_PUBLIC_ENDPOINT') || endpoint;
     const region = config.get<string>('S3_REGION') || 'us-east-2';
     this.endpoint = endpoint;
     this.region = region;
@@ -94,12 +107,19 @@ export class S3Service implements OnModuleInit {
     this.kmsKeyId = config.get<string>('S3_KMS_KEY_ID') || undefined;
     this.autoCreate = envBool(config.get('S3_AUTO_CREATE'));
 
-    this.client = new S3Client({
-      region,
-      endpoint,
-      forcePathStyle: envBool(config.get('S3_FORCE_PATH_STYLE'), Boolean(endpoint)),
-      credentials: S3Service.resolveCredentials(config, endpoint),
-    });
+    const credentials = S3Service.resolveCredentials(config, endpoint);
+    const forcePathStyle = envBool(config.get('S3_FORCE_PATH_STYLE'), Boolean(endpoint));
+
+    this.client = new S3Client({ region, endpoint, forcePathStyle, credentials });
+    this.presignClient =
+      publicEndpoint === endpoint
+        ? this.client
+        : new S3Client({
+            region,
+            endpoint: publicEndpoint,
+            forcePathStyle: envBool(config.get('S3_FORCE_PATH_STYLE'), Boolean(publicEndpoint)),
+            credentials,
+          });
   }
 
   /**
@@ -271,7 +291,7 @@ export class S3Service implements OnModuleInit {
         ? { ResponseContentDisposition: `attachment; filename="${sanitizeHeader(downloadFileName)}"` }
         : {}),
     });
-    return getSignedUrl(this.client, command, { expiresIn: ttlSeconds });
+    return getSignedUrl(this.presignClient, command, { expiresIn: ttlSeconds });
   }
 
   // ---- Storage Admin (AGENTS.md §9; STORAGE_MANAGE-gated in the controller) --

@@ -4,6 +4,7 @@ import { ErrorBoundary } from './ui/ErrorBoundary';
 import { AcknowledgmentsPage } from './pages/AcknowledgmentsPage';
 import { ApiClientsPage } from './pages/ApiClientsPage';
 import { AuditLogPage } from './pages/AuditLogPage';
+import { AuthCallbackPage } from './pages/AuthCallbackPage';
 import { ChangePasswordPage } from './pages/ChangePasswordPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { DocumentDetailPage } from './pages/DocumentDetailPage';
@@ -26,6 +27,7 @@ export default function App() {
     <ErrorBoundary key={location.pathname}>
       <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/auth/callback" element={<AuthCallbackPage />} />
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route

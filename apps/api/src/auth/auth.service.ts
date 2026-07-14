@@ -7,9 +7,10 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as argon2 from 'argon2';
-import type { AuthUser } from '@policymanager/shared';
+import { ROLES, type AuthUser } from '@policymanager/shared';
 import { PrismaService } from '../prisma/prisma.service';
 import { MailService } from '../mail/mail.service';
+import type { AzureOidcProfile } from './azure-oidc.service';
 import { assertPasswordPolicy } from './password-policy';
 import type { AuthResult, AuthTokens, JwtPayload } from './auth.types';
 
@@ -164,6 +165,87 @@ export class AuthService {
   /** Full login flow: validate credentials then issue tokens. */
   async login(email: string, password: string): Promise<AuthResult> {
     const user = await this.validateCredentials(email, password);
+    const tokens = await this.issueTokens(user);
+    return { ...tokens, user };
+  }
+
+  /**
+   * Completes an OIDC login (ADR 0003): resolves the local `User` for a
+   * validated identity-provider profile, then issues tokens exactly as local
+   * login does. Resolution order:
+   *   1. `UserIdentity` already linked to this `(provider, subject)` — reuse it.
+   *   2. An existing `User` with a matching (verified) email — link a new
+   *      `UserIdentity` onto it. An unverified email claim never links, since
+   *      that would let an attacker hijack an account by claiming its address.
+   *   3. Neither — create a brand-new `User` + `UserIdentity`, defaulting to
+   *      the Staff role (never Admin) until Azure AD group -> role mapping
+   *      exists (deferred per ADR 0003).
+   */
+  async loginWithOidc(provider: string, profile: AzureOidcProfile): Promise<AuthResult> {
+    const existingIdentity = await this.prisma.userIdentity.findUnique({
+      where: { provider_subject: { provider, subject: profile.subject } },
+      include: { user: { include: this.userInclude() } },
+    });
+
+    if (existingIdentity) {
+      if (existingIdentity.user.status !== 'active') {
+        throw new UnauthorizedException(AuthService.INVALID_LOGIN);
+      }
+      const user = this.toAuthUser(existingIdentity.user);
+      const tokens = await this.issueTokens(user);
+      return { ...tokens, user };
+    }
+
+    const existingUser = await this.prisma.user.findUnique({
+      where: { email: profile.email },
+      include: this.userInclude(),
+    });
+
+    if (existingUser) {
+      if (existingUser.status !== 'active') {
+        throw new UnauthorizedException(AuthService.INVALID_LOGIN);
+      }
+      if (!profile.emailVerified) {
+        // Do not silently take over an existing account on an unverified claim.
+        throw new UnauthorizedException(AuthService.INVALID_LOGIN);
+      }
+      await this.prisma.userIdentity.create({
+        data: {
+          userId: existingUser.id,
+          provider,
+          subject: profile.subject,
+          email: profile.email,
+        },
+      });
+      const user = this.toAuthUser(existingUser);
+      const tokens = await this.issueTokens(user);
+      return { ...tokens, user };
+    }
+
+    const staffRole = await this.prisma.role.findUnique({ where: { name: ROLES.STAFF } });
+    if (!staffRole) {
+      // Seed data is expected to exist (PM-0202); this is a deployment defect,
+      // not a user-facing auth failure — fail loudly rather than provisioning
+      // a role-less account.
+      throw new BadRequestException('Default role is not configured.');
+    }
+
+    // A single nested-write `create` (user + its identity + its role) is
+    // already one atomic INSERT — no separate $transaction call is needed.
+    const created = await this.prisma.user.create({
+      data: {
+        email: profile.email,
+        name: profile.name,
+        status: 'active',
+        identities: {
+          create: { provider, subject: profile.subject, email: profile.email },
+        },
+        roles: { create: { roleId: staffRole.id } },
+      },
+      include: this.userInclude(),
+    });
+
+    const user = this.toAuthUser(created);
     const tokens = await this.issueTokens(user);
     return { ...tokens, user };
   }
