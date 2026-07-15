@@ -45,7 +45,7 @@ function actionBadge(action: AttestationItem['action']): string {
  * page (preview + cover-prepended export). Read for any document.read user.
  */
 export function DocumentSignoffPanel({ doc }: { doc: DocumentDetail }) {
-  const { hasPermission } = useAuth();
+  const { user, hasPermission } = useAuth();
   const canApprove = hasPermission(PERMISSIONS.DOCUMENT_APPROVE);
   const [signing, setSigning] = useState(false);
 
@@ -54,6 +54,12 @@ export function DocumentSignoffPanel({ doc }: { doc: DocumentDetail }) {
     queryFn: () => listAttestations(doc.id),
   });
   const chain = chainQuery.data ?? [];
+  // A user can only approve a given version once (server-enforced); hide the
+  // button once their own approval for the CURRENT version is already in the
+  // chain, rather than let them hit the "already approved" error.
+  const alreadyApproved = chain.some(
+    (a) => a.action === 'approved' && a.userId === user?.id && a.versionId === doc.currentVersion?.id,
+  );
 
   return (
     <div className="card space-y-4 p-5">
@@ -62,10 +68,13 @@ export function DocumentSignoffPanel({ doc }: { doc: DocumentDetail }) {
           <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-muted">Sign-off</h2>
           <p className="mt-1 text-xs text-ink-muted">Approval chain &amp; compliance cover page.</p>
         </div>
-        {canApprove && (
+        {canApprove && !alreadyApproved && (
           <button className="btn-primary !py-1.5 text-sm" onClick={() => setSigning(true)}>
             Approve
           </button>
+        )}
+        {canApprove && alreadyApproved && (
+          <span className="text-xs text-ink-muted">You already approved this version.</span>
         )}
       </div>
 

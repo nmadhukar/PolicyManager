@@ -254,6 +254,23 @@ describe('AuthService', () => {
       prisma.refreshToken.findUnique.mockResolvedValue(null);
       await expect(build(prisma).refresh('x')).rejects.toBeInstanceOf(UnauthorizedException);
     });
+
+    it('rejects refresh for a LOCKED user and does not rotate (a locked session cannot self-renew)', async () => {
+      const prisma = makePrisma();
+      prisma.refreshToken.findUnique.mockResolvedValue({
+        id: 'rt-1',
+        userId: 'locked-user',
+        revokedAt: null,
+        expiresAt: new Date(Date.now() + 100_000),
+      });
+      prisma.user.findUnique.mockResolvedValue(
+        makeUserRecord({ id: 'locked-user', lockedUntil: new Date(Date.now() + 60_000) }),
+      );
+
+      await expect(build(prisma).refresh('x')).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(prisma.refreshToken.update).not.toHaveBeenCalled();
+      expect(prisma.refreshToken.create).not.toHaveBeenCalled();
+    });
   });
 
   describe('logout', () => {
@@ -272,6 +289,14 @@ describe('AuthService', () => {
     it('returns null for a disabled user', async () => {
       const prisma = makePrisma();
       prisma.user.findUnique.mockResolvedValue(makeUserRecord({ status: 'disabled' }));
+      expect(await build(prisma).getAuthUser('user-1')).toBeNull();
+    });
+
+    it('returns null for a LOCKED user (per-request auth stops working the moment lock lands)', async () => {
+      const prisma = makePrisma();
+      prisma.user.findUnique.mockResolvedValue(
+        makeUserRecord({ lockedUntil: new Date(Date.now() + 60_000) }),
+      );
       expect(await build(prisma).getAuthUser('user-1')).toBeNull();
     });
 
@@ -401,6 +426,49 @@ describe('AuthService', () => {
         UnauthorizedException,
       );
       expect(prisma.userIdentity.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects SSO login when the linked identity belongs to a LOCKED user (admin lock)', async () => {
+      const prisma = makePrisma();
+      prisma.userIdentity.findUnique.mockResolvedValue({
+        id: 'identity-1',
+        userId: 'locked-user',
+        provider: 'azure',
+        subject: profile.subject,
+        // status still active — only lockedUntil is set (what the admin Lock button does).
+        user: makeUserRecord({ id: 'locked-user', lockedUntil: new Date(Date.now() + 60_000) }),
+      });
+
+      await expect(build(prisma).loginWithOidc('azure', profile)).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+    });
+
+    it('rejects SSO login when the matched-by-email existing user is LOCKED', async () => {
+      const prisma = makePrisma();
+      prisma.userIdentity.findUnique.mockResolvedValue(null);
+      prisma.user.findUnique.mockResolvedValue(
+        makeUserRecord({ id: 'existing-user', email: profile.email, lockedUntil: new Date(Date.now() + 60_000) }),
+      );
+
+      await expect(build(prisma).loginWithOidc('azure', profile)).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+      expect(prisma.userIdentity.create).not.toHaveBeenCalled();
+    });
+
+    it('allows SSO login when an EXPIRED lock is present (lockedUntil in the past)', async () => {
+      const prisma = makePrisma();
+      prisma.userIdentity.findUnique.mockResolvedValue({
+        id: 'identity-1',
+        userId: 'existing-user',
+        provider: 'azure',
+        subject: profile.subject,
+        user: makeUserRecord({ id: 'existing-user', lockedUntil: new Date(Date.now() - 60_000) }),
+      });
+
+      const result = await build(prisma).loginWithOidc('azure', profile);
+      expect(result.user.id).toBe('existing-user');
     });
 
     it('fails loudly if the default Staff role is not seeded', async () => {

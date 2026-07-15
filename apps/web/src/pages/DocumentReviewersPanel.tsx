@@ -83,9 +83,12 @@ export function DocumentReviewersPanel({
             {reviewers.map((r) => (
               <li
                 key={r.userId}
-                className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-1.5 text-sm"
+                className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-1.5 text-sm"
               >
-                <span className="min-w-0 truncate">
+                <span
+                  className="min-w-0 truncate"
+                  title={r.email ? `${r.name ?? r.userId} · ${r.email}` : (r.name ?? r.userId)}
+                >
                   <span className="font-medium text-ink">{r.name ?? r.userId}</span>
                   {r.email && <span className="text-ink-muted"> · {r.email}</span>}
                 </span>

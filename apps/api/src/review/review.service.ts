@@ -123,11 +123,11 @@ export class ReviewService {
         ...ctx,
         metadata: { op: 'add', reviewerId },
       });
+      const doc = await this.prisma.document.findUnique({
+        where: { id: documentId },
+        select: { title: true, currentVersionId: true, nextReviewDate: true, status: true, deletedAt: true },
+      });
       if (this.notifications) {
-        const doc = await this.prisma.document.findUnique({
-          where: { id: documentId },
-          select: { title: true, currentVersionId: true },
-        });
         await this.notifications.create({
           recipientId: reviewerId,
           actorId: actor.id,
@@ -141,6 +141,18 @@ export class ReviewService {
           dedupeKey: `review-assignment:${assignment.id}`,
         });
       }
+      // If the document is ALREADY due (its next-review date is within the sweep
+      // lead-time), create the reviewer's task now instead of making them wait
+      // for the next nightly sweep — the assigned review then shows up in their
+      // Reviews list immediately. A not-yet-due document correctly waits.
+      if (doc) {
+        await this.ensureDueTaskForReviewer(
+          documentId,
+          { id: reviewer.id, name: reviewer.name, email: reviewer.email },
+          doc,
+          new Date(),
+        );
+      }
     }
 
     return {
@@ -149,6 +161,68 @@ export class ReviewService {
       email: reviewer.email,
       assignedAt: assignment.createdAt.toISOString(),
     };
+  }
+
+  /**
+   * Creates an OPEN review task for `reviewer` on `documentId` when the document
+   * is due (nextReviewDate within the sweep lead-time) and still in active
+   * circulation — mirroring {@link runReviewSweep}'s per-reviewer create, incl.
+   * the P2002 idempotency guard, audit, notification, and reminder email. A
+   * no-op when the document isn't due, is archived/retired/deleted, or the
+   * reviewer already has an open task. Returns the new task id, or null.
+   */
+  private async ensureDueTaskForReviewer(
+    documentId: string,
+    reviewer: { id: string; name: string; email: string },
+    doc: { title: string; currentVersionId: string | null; nextReviewDate: Date | null; status: string; deletedAt: Date | null },
+    now: Date,
+    leadTimeDays: number = DEFAULT_REVIEW_LEAD_DAYS,
+  ): Promise<string | null> {
+    if (doc.deletedAt || doc.status === 'archived' || doc.status === 'retired') return null;
+    if (!doc.nextReviewDate || doc.nextReviewDate.getTime() > addDays(now, leadTimeDays).getTime()) {
+      return null; // not due yet — the nightly sweep will create the task when it is
+    }
+
+    const due = doc.nextReviewDate;
+    let task: { id: string };
+    try {
+      task = await this.prisma.reviewTask.create({
+        data: {
+          documentId,
+          versionId: doc.currentVersionId ?? undefined,
+          dueDate: due,
+          assignedToId: reviewer.id,
+          status: due.getTime() < now.getTime() ? 'overdue' : 'pending',
+        },
+        select: { id: true },
+      });
+    } catch (err) {
+      // Partial unique on OPEN (documentId, assignedToId): an open task already
+      // exists (e.g. the sweep just made one) — nothing to do.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') return null;
+      throw err;
+    }
+
+    await this.audit.record({
+      action: AUDIT_ACTIONS.REVIEW_TASK_CREATED,
+      documentId,
+      versionId: doc.currentVersionId ?? undefined,
+      targetType: 'review_task',
+      source: 'system',
+      metadata: { taskId: task.id, assignedToId: reviewer.id, dueDate: due.toISOString(), origin: 'assignment' },
+    });
+    await this.notifications?.notifyReviewTaskCreated(task.id);
+    await this.mail.sendReviewReminder({
+      to: reviewer.email,
+      name: reviewer.name,
+      documentTitle: doc.title,
+      dueDate: due,
+      reviewUrl: `${this.appUrl()}/library/${documentId}`,
+      overdue: due.getTime() < now.getTime(),
+      toUserId: reviewer.id,
+      reviewTaskId: task.id,
+    });
+    return task.id;
   }
 
   /** Removes a reviewer assignment. 404 if the pair is not assigned. */
@@ -164,14 +238,31 @@ export class ReviewService {
     });
     if (!existing) throw new NotFoundException('Reviewer assignment not found');
 
-    await this.prisma.reviewAssignment.delete({ where: { id: existing.id } });
+    // Removing the assignment must also retire the reviewer's still-open task(s)
+    // for this document — otherwise a pending/overdue task lingers in their
+    // Reviews list for a document they no longer review. Only OPEN tasks are
+    // cancelled; completed tasks are immutable compliance evidence and are left
+    // untouched. Both writes commit atomically.
+    const cancelled = await this.prisma.$transaction(async (tx) => {
+      await tx.reviewAssignment.delete({ where: { id: existing.id } });
+      const { count } = await tx.reviewTask.updateMany({
+        where: {
+          documentId,
+          assignedToId: reviewerId,
+          status: { in: [...OPEN_REVIEW_TASK_STATUSES] },
+        },
+        data: { status: 'cancelled' },
+      });
+      return count;
+    });
+
     await this.audit.record({
       action: AUDIT_ACTIONS.REVIEW_ASSIGNED,
       actorUserId: actor.id,
       documentId,
       targetType: 'document',
       ...ctx,
-      metadata: { op: 'remove', reviewerId },
+      metadata: { op: 'remove', reviewerId, cancelledOpenTasks: cancelled },
     });
   }
 
@@ -346,6 +437,28 @@ export class ReviewService {
       throw new BadRequestException('This review task is already closed');
     }
 
+    // C5/SL3: the reviewer must have actually OPENED the document version being
+    // signed off — a completed review is compliance evidence that a human read
+    // it. The view-url endpoint records an immutable DOCUMENT_VIEWED audit event
+    // (with the versionId); THAT server-side evidence is the gate, mirroring the
+    // staff-acknowledgment flow. A managing user (REVIEW_MANAGE) completing on a
+    // reviewer's behalf is still required to have viewed it themselves.
+    const reviewedVersionId = task.versionId ?? task.document.currentVersionId ?? null;
+    if (reviewedVersionId) {
+      const viewed = await this.prisma.auditEvent.count({
+        where: {
+          action: AUDIT_ACTIONS.DOCUMENT_VIEWED,
+          actorUserId: user.id,
+          versionId: reviewedVersionId,
+        },
+      });
+      if (viewed === 0) {
+        throw new BadRequestException(
+          'You must open and read the document before completing the review.',
+        );
+      }
+    }
+
     let newNextReviewDate: Date;
     try {
       newNextReviewDate = advanceReviewDate({
@@ -377,7 +490,7 @@ export class ReviewService {
       await this.attestation.record(
         {
           documentId: task.documentId,
-          versionId: task.versionId ?? task.document.currentVersionId ?? null,
+          versionId: reviewedVersionId,
           action: 'reviewed',
           signatureName: dto.signatureName?.trim() || user.name,
           signatureRole: dto.signatureRole,
@@ -447,8 +560,22 @@ export class ReviewService {
       this.prisma.reviewTask.count({ where }),
     ]);
 
-    const counts = await this.annotationCounts(rows);
-    return { items: rows.map((r) => this.toTaskItem(r, counts.get(taskCountKey(r)) ?? 0)), total, page, pageSize };
+    const [counts, viewed] = await Promise.all([
+      this.annotationCounts(rows),
+      this.viewedVersionIds(rows, user.id),
+    ]);
+    return {
+      items: rows.map((r) =>
+        this.toTaskItem(
+          r,
+          counts.get(taskCountKey(r)) ?? 0,
+          viewed.has(r.versionId ?? r.document.currentVersionId ?? ''),
+        ),
+      ),
+      total,
+      page,
+      pageSize,
+    };
   }
 
   /** Single task detail. Non-managers may only read their own task (else 403). */
@@ -459,8 +586,15 @@ export class ReviewService {
     if (task.assignedToId !== user.id && !canManage) {
       throw new ForbiddenException('You can only view your own review tasks');
     }
-    const counts = await this.annotationCounts([task]);
-    return this.toTaskItem(task, counts.get(taskCountKey(task)) ?? 0);
+    const [counts, viewed] = await Promise.all([
+      this.annotationCounts([task]),
+      this.viewedVersionIds([task], user.id),
+    ]);
+    return this.toTaskItem(
+      task,
+      counts.get(taskCountKey(task)) ?? 0,
+      viewed.has(task.versionId ?? task.document.currentVersionId ?? ''),
+    );
   }
 
   /**
@@ -525,13 +659,20 @@ export class ReviewService {
     return new Map(rows.map((row) => [`${row.documentId}:${row.versionId}`, row._count._all]));
   }
 
-  private toTaskItem(task: TaskWithJoins, unresolvedAnnotationCount = 0): ReviewTaskItem {
+  private toTaskItem(
+    task: TaskWithJoins,
+    unresolvedAnnotationCount = 0,
+    hasViewed = false,
+  ): ReviewTaskItem {
     return {
       id: task.id,
       documentId: task.documentId,
       documentTitle: task.document?.title ?? null,
       documentNumber: task.document?.documentNumber ?? null,
       versionId: task.versionId,
+      // The version the review signs off on + the UI opens in the preview (and
+      // the gate checks): the pinned version, else the document's current one.
+      reviewedVersionId: task.versionId ?? task.document.currentVersionId ?? null,
       dueDate: task.dueDate.toISOString(),
       status: task.status as ReviewTaskStatus,
       assignedToId: task.assignedToId,
@@ -542,7 +683,35 @@ export class ReviewService {
       createdAt: task.createdAt.toISOString(),
       reviewCadence: task.document.reviewCadence,
       unresolvedAnnotationCount,
+      hasViewed,
     };
+  }
+
+  /**
+   * The set of version ids (among `tasks`' reviewed versions) that `userId` has
+   * already opened — a single batched DOCUMENT_VIEWED query for the whole page,
+   * used to set each task's `hasViewed` without an N+1. The reviewed version is
+   * `task.versionId ?? document.currentVersionId` (matches the complete gate).
+   */
+  private async viewedVersionIds(tasks: TaskWithJoins[], userId: string): Promise<Set<string>> {
+    const versionIds = Array.from(
+      new Set(
+        tasks
+          .map((t) => t.versionId ?? t.document.currentVersionId)
+          .filter((v): v is string => !!v),
+      ),
+    );
+    if (versionIds.length === 0) return new Set();
+    const rows = await this.prisma.auditEvent.findMany({
+      where: {
+        action: AUDIT_ACTIONS.DOCUMENT_VIEWED,
+        actorUserId: userId,
+        versionId: { in: versionIds },
+      },
+      select: { versionId: true },
+      distinct: ['versionId'],
+    });
+    return new Set(rows.map((r) => r.versionId).filter((v): v is string => !!v));
   }
 }
 

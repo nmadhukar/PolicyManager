@@ -1,4 +1,4 @@
-import { FormEvent, Suspense, lazy, useMemo, useRef, useState } from 'react';
+import { FormEvent, ReactNode, Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AxiosError } from 'axios';
@@ -17,6 +17,7 @@ import {
   archiveDocument,
   getDocument,
   getDownloadUrl,
+  getVersionHtml,
   regenerateRendition,
   restoreVersion,
   retryExtraction,
@@ -32,7 +33,7 @@ import { DocumentReviewersPanel } from './DocumentReviewersPanel';
 import { DocumentSignoffPanel } from './DocumentSignoffPanel';
 import { DocumentAcknowledgmentPanel } from './DocumentAcknowledgmentPanel';
 import { useAuth } from '../auth/AuthContext';
-import { formatBytes, formatDate, statusBadgeClasses, statusLabel } from '../lib/format';
+import { formatBytes, formatDate, formatDateTime, statusBadgeClasses, statusLabel } from '../lib/format';
 import { AppShell } from '../ui/AppShell';
 import { CategorySelectWithCreate } from '../ui/CategorySelectWithCreate';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
@@ -40,6 +41,7 @@ import { Modal } from '../ui/Modal';
 import { EmptyState, ErrorState, ForbiddenState, LoadingState } from '../ui/states';
 import { TagInput } from '../ui/TagInput';
 import { useToast } from '../ui/Toast';
+import { useFocusTrap } from '../ui/useFocusTrap';
 import { apiErrorMessage } from '../lib/apiError';
 import { downloadBlob, triggerUrlDownload } from '../lib/download';
 
@@ -61,6 +63,48 @@ function isOfficeEditable(v: DocumentVersionSummary): boolean {
 }
 function isHtmlDoc(v: DocumentVersionSummary): boolean {
   return v.mimeType.startsWith('text/html') || fileExtension(v.fileName) === 'html';
+}
+/**
+ * Flattens an app-authored HTML version to plain text for a `.txt` download.
+ * Uses the browser's parser (no dependency); block-level elements become line
+ * breaks so paragraphs, headings, and list items land on separate lines.
+ */
+function htmlToPlainText(html: string): string {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const BLOCK = new Set(['P', 'DIV', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'BR', 'TR', 'BLOCKQUOTE', 'PRE']);
+  const lines: string[] = [];
+  let current = '';
+  const walk = (node: Node): void => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      current += node.textContent ?? '';
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const tag = (node as Element).tagName;
+    if (tag === 'BR') {
+      lines.push(current);
+      current = '';
+      return;
+    }
+    const isBlock = BLOCK.has(tag);
+    if (isBlock && current.trim()) {
+      lines.push(current);
+      current = '';
+    }
+    node.childNodes.forEach(walk);
+    if (isBlock) {
+      lines.push(current);
+      current = '';
+    }
+  };
+  doc.body.childNodes.forEach(walk);
+  if (current.trim()) lines.push(current);
+  // Collapse runs of blank lines, trim trailing whitespace per line.
+  return lines
+    .map((l) => l.replace(/[ \t]+$/g, ''))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 function extractionBadgeClasses(status: DocumentVersionSummary['extractionStatus']): string {
   switch (status) {
@@ -89,7 +133,7 @@ export function DocumentDetailPage() {
 
   return (
     <AppShell>
-      <div className="mx-auto max-w-5xl">
+      <div className="mx-auto w-full max-w-7xl">
         <Link to="/library" className="text-sm font-medium text-brand-600 hover:underline">
           ← Back to library
         </Link>
@@ -129,8 +173,8 @@ function Detail({ id }: { id: string }) {
   return (
     <div className="space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold text-ink">{doc.title}</h1>
+        <div className="min-w-0">
+          <h1 className="break-words text-2xl font-semibold text-ink">{doc.title}</h1>
           <div className="mt-1 flex items-center gap-2 text-sm text-ink-muted">
             {doc.documentNumber && <span>{doc.documentNumber}</span>}
             <span
@@ -158,18 +202,19 @@ function Detail({ id }: { id: string }) {
         </div>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-3">
-        <div className="space-y-6 lg:col-span-2">
-          <VersionsCard doc={doc} canWrite={canWrite} />
-        </div>
-        <div className="space-y-6">
-          <MetadataCard doc={doc} canWrite={canWrite} />
-          <DocumentSignoffPanel doc={doc} />
-          {canManageReviews && <DocumentAcknowledgmentPanel doc={doc} />}
-          {canWrite && <QuickTags doc={doc} />}
-          {canManageReviews && <DocumentReviewersPanel doc={doc} />}
-          {canWrite && <DocumentAclPanel doc={doc} />}
-        </div>
+      <VersionsCard doc={doc} canWrite={canWrite} />
+      {/* Masonry via CSS columns: cards flow to fill vertical space so a short
+       * card (e.g. Tags) doesn't leave a gap below it the way a fixed grid row
+       * would. Each child gets break-inside-avoid so it isn't split across a
+       * column boundary, and mb-6 for the vertical rhythm (columns have no gap).
+       * `[&>*]:min-w-0` keeps a card with wide inner content from overflowing. */}
+      <div className="gap-6 [column-fill:balance] md:columns-2 xl:columns-3 [&>*]:mb-6 [&>*]:break-inside-avoid [&>*]:min-w-0">
+        <MetadataCard doc={doc} canWrite={canWrite} />
+        <DocumentSignoffPanel doc={doc} />
+        {canManageReviews && <DocumentAcknowledgmentPanel doc={doc} />}
+        {canManageReviews && <DocumentReviewersPanel doc={doc} />}
+        {canWrite && <DocumentAclPanel doc={doc} />}
+        {canWrite && <QuickTags doc={doc} />}
       </div>
     </div>
   );
@@ -255,6 +300,11 @@ function MetadataCard({ doc, canWrite }: { doc: DocumentDetail; canWrite: boolea
     ['Review cadence', doc.reviewCadence],
     ['Next review', formatDate(doc.nextReviewDate)],
     ['Effective date', formatDate(doc.effectiveDate)],
+    // Uploaded (first created) vs last edited — the document-level distinction.
+    // Per-version times are shown in the version history (each version is
+    // immutable, so it carries only its own creation time).
+    ['Created', formatDateTime(doc.createdAt)],
+    ['Last edited', formatDateTime(doc.updatedAt)],
   ];
 
   return (
@@ -528,6 +578,11 @@ function QuickTags({ doc }: { doc: DocumentDetail }) {
 function VersionsCard({ doc, canWrite }: { doc: DocumentDetail; canWrite: boolean }) {
   const queryClient = useQueryClient();
   const [overlay, setOverlay] = useState<Overlay | null>(null);
+  // Version count captured when the OnlyOffice editor closes. While set, we poll
+  // for the async save-back to land (a NEW version) and show a saving overlay —
+  // OnlyOffice writes the version server-side AFTER the editor closes, so an
+  // immediate refetch would miss it.
+  const [savingBaseline, setSavingBaseline] = useState<number | null>(null);
 
   const close = () => setOverlay(null);
   const refresh = () => {
@@ -538,6 +593,33 @@ function VersionsCard({ doc, canWrite }: { doc: DocumentDetail; canWrite: boolea
     refresh();
     close();
   };
+  // Closing the OnlyOffice editor: enter "saving" mode and poll until the new
+  // version appears (or a timeout), instead of refetching once and missing it.
+  const closeOfficeEditor = () => {
+    setSavingBaseline(doc.versions.length);
+    close();
+  };
+
+  // While saving: the new version landed (count grew) -> stop.
+  const savedArrived = savingBaseline !== null && doc.versions.length > savingBaseline;
+  useEffect(() => {
+    if (savingBaseline === null) return;
+    if (savedArrived) {
+      setSavingBaseline(null);
+      return;
+    }
+    // Poll for the async save-back, and give up after ~15s so the overlay can't
+    // hang forever — e.g. a no-change close (OnlyOffice writes no new version)
+    // or a failed save. A real save's version row appears within a few seconds.
+    const poll = setInterval(() => {
+      void queryClient.invalidateQueries({ queryKey: ['document', doc.id] });
+    }, 1500);
+    const giveUp = setTimeout(() => setSavingBaseline(null), 15_000);
+    return () => {
+      clearInterval(poll);
+      clearTimeout(giveUp);
+    };
+  }, [savingBaseline, savedArrived, queryClient, doc.id]);
 
   const current = doc.currentVersion;
   // What editor (if any) applies to the current version.
@@ -599,19 +681,19 @@ function VersionsCard({ doc, canWrite }: { doc: DocumentDetail; canWrite: boolea
         </p>
       ) : (
         <div className="mt-4 overflow-x-auto">
-          <table className="w-full min-w-[560px] text-left text-sm">
+          <table className="w-full min-w-[480px] table-fixed text-left text-sm">
             <thead className="border-b border-slate-200 text-xs uppercase tracking-wide text-ink-muted">
               <tr>
-                <th scope="col" className="py-2 pr-4 font-medium">
+                <th scope="col" className="w-[16%] py-2 pr-4 font-medium">
                   Version
                 </th>
                 <th scope="col" className="py-2 pr-4 font-medium">
                   File
                 </th>
-                <th scope="col" className="py-2 pr-4 font-medium">
+                <th scope="col" className="w-[22%] py-2 pr-4 font-medium">
                   Uploaded
                 </th>
-                <th scope="col" className="py-2 pr-0 text-right font-medium">
+                <th scope="col" className="w-[200px] py-2 pr-0 text-right font-medium">
                   Actions
                 </th>
               </tr>
@@ -635,7 +717,7 @@ function VersionsCard({ doc, canWrite }: { doc: DocumentDetail; canWrite: boolea
                       )}
                     </td>
                     <td className="py-2.5 pr-4 align-top text-ink-soft">
-                      <div>{v.fileName}</div>
+                      <div className="truncate" title={v.fileName}>{v.fileName}</div>
                       <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-ink-muted">
                         <span>{formatBytes(v.sizeBytes)}</span>
                         <span
@@ -654,11 +736,12 @@ function VersionsCard({ doc, canWrite }: { doc: DocumentDetail; canWrite: boolea
                       </div>
                     </td>
                     <td className="py-2.5 pr-4 align-top text-ink-soft">
-                      <div>{formatDate(v.createdAt)}</div>
+                      <div>{formatDateTime(v.createdAt)}</div>
                       <div className="text-xs text-ink-muted">{v.uploadedByName ?? '—'}</div>
                     </td>
                     <td className="py-2.5 pr-0 text-right align-top">
-                      <div className="inline-flex items-center justify-end gap-2">
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        {/* Primary inline action: View if previewable, else the write-only preview generator. */}
                         {v.hasRendition ? (
                           <button
                             className="btn-secondary !px-3 !py-1 text-xs"
@@ -669,27 +752,38 @@ function VersionsCard({ doc, canWrite }: { doc: DocumentDetail; canWrite: boolea
                         ) : (
                           canWrite && <RegenerateButton documentId={doc.id} versionId={v.id} />
                         )}
-                        {canWrite &&
-                          isCurrent &&
-                          (v.extractionStatus === 'failed' || v.extractionStatus === 'skipped') && (
-                            <RetryExtractionButton documentId={doc.id} />
-                          )}
-                        {canWrite && !isCurrent && <RestoreVersionButton doc={doc} version={v} />}
-                        {!isCurrent && doc.currentVersion && (
-                          <button
-                            className="btn-secondary !px-3 !py-1 text-xs"
-                            onClick={() =>
-                              setOverlay({
-                                kind: 'compare',
-                                from: v,
-                                to: doc.currentVersion as DocumentVersionSummary,
-                              })
-                            }
-                          >
-                            Compare
-                          </button>
-                        )}
+                        {/* Download stays inline — most-used secondary action. */}
                         <DownloadButton documentId={doc.id} versionId={v.id} />
+                        {/* Low-frequency actions collapse into an overflow menu. */}
+                        <VersionActionsMenu>
+                          {canWrite &&
+                            isCurrent &&
+                            (v.extractionStatus === 'failed' || v.extractionStatus === 'skipped') && (
+                              <RetryExtractionButton documentId={doc.id} menuItem />
+                            )}
+                          {canWrite && !isCurrent && (
+                            <RestoreVersionButton doc={doc} version={v} menuItem />
+                          )}
+                          {!isCurrent && doc.currentVersion && (
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="flex w-full items-center px-4 py-2 text-left text-sm text-ink-soft hover:bg-slate-50"
+                              onClick={() =>
+                                setOverlay({
+                                  kind: 'compare',
+                                  from: v,
+                                  to: doc.currentVersion as DocumentVersionSummary,
+                                })
+                              }
+                            >
+                              Compare
+                            </button>
+                          )}
+                          {isHtmlDoc(v) && (
+                            <DownloadTxtButton documentId={doc.id} version={v} menuItem />
+                          )}
+                        </VersionActionsMenu>
                       </div>
                     </td>
                   </tr>
@@ -709,8 +803,9 @@ function VersionsCard({ doc, canWrite }: { doc: DocumentDetail; canWrite: boolea
             <CompareModal documentId={doc.id} from={overlay.from} to={overlay.to} onClose={close} />
           )}
           {overlay.kind === 'edit-office' && (
-            // Close refreshes history — a save-back may have created a new version.
-            <OnlyOfficeEditor documentId={doc.id} onClose={closeAndRefresh} />
+            // On close we poll for the async save-back (see closeOfficeEditor)
+            // and show a saving overlay until the new version appears.
+            <OnlyOfficeEditor documentId={doc.id} onClose={closeOfficeEditor} />
           )}
           {overlay.kind === 'edit-text' && (
             <TipTapEditor
@@ -722,6 +817,31 @@ function VersionsCard({ doc, canWrite }: { doc: DocumentDetail; canWrite: boolea
           )}
         </Suspense>
       )}
+
+      {savingBaseline !== null && <SavingOverlay />}
+    </div>
+  );
+}
+
+/**
+ * Full-screen "saving" overlay shown after the OnlyOffice editor closes, while
+ * we poll for the async save-back to produce a new version. Dismissed by the
+ * caller once the version lands (or after the timeout).
+ */
+function SavingOverlay() {
+  return (
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-slate-900/60"
+      role="status"
+      aria-live="polite"
+    >
+      <div className="flex items-center gap-3 rounded-lg bg-white px-5 py-4 text-sm font-medium text-ink shadow-lg">
+        <span
+          aria-hidden
+          className="h-5 w-5 animate-spin rounded-full border-2 border-slate-300 border-t-brand-600"
+        />
+        Saving your changes…
+      </div>
     </div>
   );
 }
@@ -759,24 +879,16 @@ function CompareModal({
   });
 
   return (
-    <Modal open onClose={onClose} titleId="compare-title" busy={exportPdf.isPending}>
-      <div className="max-h-[78vh] w-[min(56rem,92vw)] overflow-y-auto pr-1">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h2 id="compare-title" className="text-base font-semibold text-ink">
-              Version compare
-            </h2>
-            <p className="mt-1 text-sm text-ink-muted">
-              v{from.versionNumber} to v{to.versionNumber}
-            </p>
-          </div>
-          <button
-            className="btn-secondary !py-1.5 text-sm"
-            onClick={() => exportPdf.mutate()}
-            disabled={exportPdf.isPending}
-          >
-            Export PDF
-          </button>
+    <Modal open onClose={onClose} titleId="compare-title" busy={exportPdf.isPending} size="xl">
+      <div className="max-h-[78vh] overflow-y-auto [scrollbar-gutter:stable]">
+        <div className="min-w-0 border-b border-slate-200 pb-4">
+          <h2 id="compare-title" className="text-base font-semibold text-ink">
+            {query.data?.documentTitle ?? 'Version compare'}
+          </h2>
+          <p className="mt-1 text-sm text-ink-muted">
+            Comparing v{query.data?.fromVersionNumber ?? from.versionNumber} (old) to v
+            {query.data?.toVersionNumber ?? to.versionNumber} (new)
+          </p>
         </div>
 
         {query.isLoading ? (
@@ -789,27 +901,38 @@ function CompareModal({
           </div>
         ) : (
           <div className="mt-4 space-y-4">
-            {query.data.warnings.map((w) => (
-              <div key={w} className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            {query.data.warnings.map((w, i) => (
+              <div
+                key={i}
+                role="status"
+                className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+              >
+                <span className="font-semibold">Warning: </span>
                 {w}
               </div>
             ))}
-            <div className="grid grid-cols-3 gap-2 text-sm">
-              <Metric label="Added" value={query.data.summary.added} tone="text-green-700" />
-              <Metric label="Removed" value={query.data.summary.removed} tone="text-red-700" />
-              <Metric label="Changed" value={query.data.summary.changed} tone="text-amber-700" />
+            <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
+              <Metric label="Added" value={query.data.summary.added} tone="text-green-700" tile="border-green-200 bg-green-50" />
+              <Metric label="Removed" value={query.data.summary.removed} tone="text-red-700" tile="border-red-200 bg-red-50" />
+              <Metric label="Changed" value={query.data.summary.changed} tone="text-amber-800" tile="border-amber-200 bg-amber-50" />
+              <Metric label="Unchanged" value={query.data.summary.unchanged} tone="text-ink-soft" tile="border-slate-200 bg-white" />
             </div>
             {query.data.metadataChanges.length > 0 && (
               <div className="rounded-lg border border-slate-200">
                 <div className="border-b border-slate-100 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-ink-muted">
                   Metadata changes
                 </div>
+                <div className="grid gap-2 border-b border-slate-100 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-ink-muted sm:grid-cols-[10rem_1fr_1fr]">
+                  <div className="min-w-0">Field</div>
+                  <div className="min-w-0">Old (v{query.data.fromVersionNumber})</div>
+                  <div className="min-w-0">New (v{query.data.toVersionNumber})</div>
+                </div>
                 <div className="divide-y divide-slate-100 text-sm">
                   {query.data.metadataChanges.map((change) => (
                     <div key={change.field} className="grid gap-2 px-3 py-2 sm:grid-cols-[10rem_1fr_1fr]">
-                      <div className="font-medium text-ink">{change.label}</div>
-                      <div className="text-red-700">{change.oldValue ?? '-'}</div>
-                      <div className="text-green-700">{change.newValue ?? '-'}</div>
+                      <div className="min-w-0 font-medium text-ink">{change.label}</div>
+                      <div className="min-w-0 break-all font-mono text-xs text-red-800">{change.oldValue ?? '-'}</div>
+                      <div className="min-w-0 break-all font-mono text-xs text-green-800">{change.newValue ?? '-'}</div>
                     </div>
                   ))}
                 </div>
@@ -821,42 +944,81 @@ function CompareModal({
               </div>
               <div className="max-h-[26rem] overflow-auto bg-slate-50 p-3 font-mono text-xs leading-5">
                 {query.data.hunks.length === 0 ? (
-                  <div className="text-ink-muted">No text changes available.</div>
+                  <div className="py-6 text-center text-ink-muted">
+                    {query.data.textAvailable
+                      ? 'No text differences — the extracted text is identical.'
+                      : 'Text comparison unavailable — extracted text is missing for one or both versions.'}
+                  </div>
                 ) : (
-                  query.data.hunks.map((hunk, index) => (
-                    <div
-                      key={`${hunk.type}-${index}`}
-                      className={
-                        hunk.type === 'added'
-                          ? 'bg-green-50 text-green-800'
-                          : hunk.type === 'removed'
-                            ? 'bg-red-50 text-red-800 line-through'
-                            : hunk.type === 'changed'
-                              ? 'bg-amber-50 text-amber-900'
-                              : 'text-ink-soft'
-                      }
-                    >
-                      <span className="mr-2 text-ink-muted">
-                        {hunk.oldLine ?? '-'}:{hunk.newLine ?? '-'}
-                      </span>
-                      {hunk.type === 'changed'
-                        ? `${hunk.oldText ?? ''} -> ${hunk.newText ?? ''}`
-                        : hunk.newText ?? hunk.oldText}
-                    </div>
-                  ))
+                  query.data.hunks.map((hunk, index) => {
+                    const mark =
+                      hunk.type === 'added' ? '+' : hunk.type === 'removed' ? '-' : hunk.type === 'changed' ? '~' : ' ';
+                    const rowTone =
+                      hunk.type === 'added'
+                        ? 'bg-green-50 text-green-800'
+                        : hunk.type === 'removed'
+                          ? 'bg-red-50 text-red-800'
+                          : hunk.type === 'changed'
+                            ? 'bg-amber-50 text-amber-900'
+                            : 'text-ink-soft';
+                    return (
+                      <div key={`${hunk.type}-${index}`} className={`flex gap-2 rounded px-2 py-0.5 ${rowTone}`}>
+                        <span className="select-none font-semibold text-ink-muted">{mark}</span>
+                        <span className="shrink-0 select-none text-ink-muted">
+                          {hunk.oldLine ?? '-'}:{hunk.newLine ?? '-'}
+                        </span>
+                        <span className="min-w-0 whitespace-pre-wrap break-words">
+                          {hunk.type === 'changed' ? (
+                            <>
+                              <span className="line-through">{hunk.oldText ?? ''}</span>
+                              {'\n'}
+                              <span>{hunk.newText ?? ''}</span>
+                            </>
+                          ) : hunk.type === 'removed' ? (
+                            <span className="line-through">{hunk.oldText ?? hunk.newText}</span>
+                          ) : (
+                            hunk.newText ?? hunk.oldText
+                          )}
+                        </span>
+                      </div>
+                    );
+                  })
                 )}
               </div>
             </div>
           </div>
         )}
+        <div className="mt-5 flex justify-end gap-2 border-t border-slate-200 pt-4">
+          <button type="button" className="btn-secondary" onClick={onClose} disabled={exportPdf.isPending}>
+            Close
+          </button>
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={() => exportPdf.mutate()}
+            disabled={exportPdf.isPending || query.isLoading || query.isError || !query.data}
+          >
+            {exportPdf.isPending ? 'Exporting…' : 'Export PDF'}
+          </button>
+        </div>
       </div>
     </Modal>
   );
 }
 
-function Metric({ label, value, tone }: { label: string; value: number; tone: string }) {
+function Metric({
+  label,
+  value,
+  tone,
+  tile = 'border-slate-200 bg-white',
+}: {
+  label: string;
+  value: number;
+  tone: string;
+  tile?: string;
+}) {
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-3">
+    <div className={`rounded-lg border p-3 ${tile}`}>
       <div className={`text-xl font-semibold ${tone}`}>{value}</div>
       <div className="text-xs uppercase tracking-wide text-ink-muted">{label}</div>
     </div>
@@ -869,7 +1031,13 @@ function Metric({ label, value, tone }: { label: string; value: number; tone: st
  * flips to offering "View".
  */
 /** Re-runs text/OCR extraction for the whole document (recover a failed/stuck scan). */
-function RetryExtractionButton({ documentId }: { documentId: string }) {
+function RetryExtractionButton({
+  documentId,
+  menuItem,
+}: {
+  documentId: string;
+  menuItem?: boolean;
+}) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const mutation = useMutation({
@@ -885,7 +1053,12 @@ function RetryExtractionButton({ documentId }: { documentId: string }) {
   });
   return (
     <button
-      className="btn-secondary !px-3 !py-1 text-xs"
+      role={menuItem ? 'menuitem' : undefined}
+      className={
+        menuItem
+          ? 'flex w-full items-center px-4 py-2 text-left text-sm text-ink-soft hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50'
+          : 'btn-secondary !px-3 !py-1 text-xs'
+      }
       onClick={() => mutation.mutate()}
       disabled={mutation.isPending}
       title="Re-run text/OCR extraction for this document"
@@ -923,9 +1096,11 @@ function RegenerateButton({ documentId, versionId }: { documentId: string; versi
 function RestoreVersionButton({
   doc,
   version,
+  menuItem,
 }: {
   doc: DocumentDetail;
   version: DocumentVersionSummary;
+  menuItem?: boolean;
 }) {
   const queryClient = useQueryClient();
   const toast = useToast();
@@ -943,7 +1118,12 @@ function RestoreVersionButton({
   return (
     <>
       <button
-        className="btn-secondary !px-3 !py-1 text-xs"
+        role={menuItem ? 'menuitem' : undefined}
+        className={
+          menuItem
+            ? 'flex w-full items-center px-4 py-2 text-left text-sm text-ink-soft hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50'
+            : 'btn-secondary !px-3 !py-1 text-xs'
+        }
         onClick={() => setConfirm(true)}
         disabled={mutation.isPending}
       >
@@ -967,7 +1147,15 @@ function RestoreVersionButton({
   );
 }
 
-function DownloadButton({ documentId, versionId }: { documentId: string; versionId: string }) {
+function DownloadButton({
+  documentId,
+  versionId,
+  menuItem,
+}: {
+  documentId: string;
+  versionId: string;
+  menuItem?: boolean;
+}) {
   const [error, setError] = useState(false);
   const mutation = useMutation({
     mutationFn: () => getDownloadUrl(documentId, versionId),
@@ -980,15 +1168,169 @@ function DownloadButton({ documentId, versionId }: { documentId: string; version
   });
 
   return (
-    <div className="inline-flex flex-col items-end">
+    <div className={menuItem ? 'w-full' : 'inline-flex flex-col items-end'}>
       <button
-        className="btn-secondary !px-3 !py-1 text-xs"
+        role={menuItem ? 'menuitem' : undefined}
+        className={
+          menuItem
+            ? 'flex w-full items-center px-4 py-2 text-left text-sm text-ink-soft hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50'
+            : 'btn-secondary !px-3 !py-1 text-xs'
+        }
         onClick={() => mutation.mutate()}
         disabled={mutation.isPending}
       >
         {mutation.isPending ? '…' : 'Download'}
       </button>
-      {error && <span className="mt-1 text-[10px] text-red-600">Failed</span>}
+      {error && (
+        <span className={menuItem ? 'block px-4 pb-1 text-[10px] text-red-600' : 'mt-1 text-[10px] text-red-600'}>
+          Failed
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Downloads an app-authored HTML version as plain text (.txt). The stored file
+ * stays HTML (it drives the formatted viewer + PDF rendition); this just offers
+ * a flattened plain-text copy. Only rendered for HTML versions.
+ */
+function DownloadTxtButton({
+  documentId,
+  version,
+  menuItem,
+}: {
+  documentId: string;
+  version: DocumentVersionSummary;
+  menuItem?: boolean;
+}) {
+  const [error, setError] = useState(false);
+  const mutation = useMutation({
+    mutationFn: () => getVersionHtml(documentId, version.id),
+    onSuccess: ({ html }) => {
+      setError(false);
+      const text = htmlToPlainText(html);
+      const stem = version.fileName.replace(/\.[^.]+$/, '') || 'document';
+      downloadBlob(new Blob([text], { type: 'text/plain;charset=utf-8' }), `${stem}.txt`);
+    },
+    onError: () => setError(true),
+  });
+
+  return (
+    <div className={menuItem ? 'w-full' : 'inline-flex flex-col items-end'}>
+      <button
+        role={menuItem ? 'menuitem' : undefined}
+        className={
+          menuItem
+            ? 'flex w-full items-center px-4 py-2 text-left text-sm text-ink-soft hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50'
+            : 'btn-secondary !px-3 !py-1 text-xs'
+        }
+        onClick={() => mutation.mutate()}
+        disabled={mutation.isPending}
+        title="Download this text document as a plain .txt file (formatting removed)"
+      >
+        {mutation.isPending ? '…' : 'Download .txt'}
+      </button>
+      {error && (
+        <span className={menuItem ? 'block px-4 pb-1 text-[10px] text-red-600' : 'mt-1 text-[10px] text-red-600'}>
+          Failed
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Overflow menu for low-frequency version-row actions (Restore, Compare,
+ * Re-extract, Download .txt). Hand-rolled dropdown (no icon/menu lib) mirroring
+ * the UserMenu pattern in AppShell: relative trigger + absolute right-0 z-20
+ * panel, focus-trap, capture-phase outside-pointerdown to close.
+ *
+ * Deliberately does NOT close on panel click: the mounted mutation buttons
+ * (Re-extract, Download .txt) own local pending/error state, so unmounting them
+ * on click would drop that UI. Closes only on outside-click or Escape; the plain
+ * Compare item closes explicitly. Renders nothing when it has no children so a
+ * row with no overflow actions shows no trigger.
+ */
+function VersionActionsMenu({ children }: { children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  // Fixed-viewport coordinates for the panel, computed from the trigger's rect.
+  // `position: fixed` escapes the table's `overflow-x-auto` wrapper (an absolute
+  // panel would be clipped by it); UserMenu can use `absolute` only because the
+  // header has no overflow ancestor — this table does.
+  const [coords, setCoords] = useState<{ top: number; right: number } | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  useFocusTrap(open, menuRef, () => setOpen(false));
+
+  const openMenu = () => {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (rect) setCoords({ top: rect.bottom + 4, right: window.innerWidth - rect.right });
+    setOpen(true);
+  };
+
+  // Close on outside-click, and also on scroll/resize (the fixed panel would
+  // otherwise drift away from its now-moved trigger).
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const t = e.target as Node;
+      if (
+        containerRef.current && !containerRef.current.contains(t) &&
+        menuRef.current && !menuRef.current.contains(t)
+      ) {
+        setOpen(false);
+      }
+    };
+    const onReposition = () => setOpen(false);
+    document.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('scroll', onReposition, true);
+    window.addEventListener('resize', onReposition);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('scroll', onReposition, true);
+      window.removeEventListener('resize', onReposition);
+    };
+  }, [open]);
+
+  // All actions gated off for this row -> no trigger. (children may contain
+  // `false`/`undefined` from short-circuited conditionals.)
+  const hasChildren = Array.isArray(children) ? children.some(Boolean) : Boolean(children);
+  if (!hasChildren) return null;
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        ref={triggerRef}
+        type="button"
+        className="btn-secondary !px-2 !py-1 text-xs"
+        onClick={() => (open ? setOpen(false) : openMenu())}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="More actions"
+        title="More actions"
+      >
+        {/* Hand-rolled horizontal ellipsis (no icon lib). */}
+        <svg viewBox="0 0 20 20" className="h-4 w-4" fill="currentColor" aria-hidden>
+          <circle cx="4" cy="10" r="1.5" />
+          <circle cx="10" cy="10" r="1.5" />
+          <circle cx="16" cy="10" r="1.5" />
+        </svg>
+      </button>
+
+      {open && coords && (
+        <div
+          ref={menuRef}
+          role="menu"
+          aria-label="More version actions"
+          style={{ position: 'fixed', top: coords.top, right: coords.right }}
+          className="z-30 flex w-48 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white py-1 text-left shadow-lg focus:outline-none"
+        >
+          {children}
+        </div>
+      )}
     </div>
   );
 }

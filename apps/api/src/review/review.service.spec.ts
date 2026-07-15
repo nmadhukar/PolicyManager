@@ -14,7 +14,7 @@ describe('ReviewService', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const makePrisma = (): any => {
     const prisma: any = {
-      document: { findFirst: jest.fn(), findMany: jest.fn().mockResolvedValue([]), count: jest.fn(), update: jest.fn() },
+      document: { findFirst: jest.fn(), findUnique: jest.fn().mockResolvedValue(null), findMany: jest.fn().mockResolvedValue([]), count: jest.fn(), update: jest.fn() },
       user: { findUnique: jest.fn() },
       reviewAssignment: {
         findUnique: jest.fn().mockResolvedValue(null),
@@ -31,6 +31,13 @@ describe('ReviewService', () => {
         updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
       documentAnnotation: { groupBy: jest.fn().mockResolvedValue([]) },
+      // Default: the reviewer HAS viewed the version (count>0), so completeTask's
+      // view-gate passes. A dedicated test overrides count to 0 to assert the
+      // rejection. `findMany` (batched hasViewed for lists) defaults to empty.
+      auditEvent: {
+        count: jest.fn().mockResolvedValue(1),
+        findMany: jest.fn().mockResolvedValue([]),
+      },
     };
     // C6/D4: completeTask now uses the callback (interactive) transaction form.
     prisma.$transaction = jest.fn((arg: unknown) =>
@@ -219,6 +226,120 @@ describe('ReviewService', () => {
     });
   });
 
+  describe('assignReviewer (immediate task creation when due)', () => {
+    const reviewer = { id: 'rev-x', name: 'Rev X', email: 'x@x.com' };
+    const setup = (docOver: Record<string, unknown> = {}) => {
+      const built = build();
+      const { prisma } = built;
+      // assertActiveDocument is private; stub it via index access to keep the
+      // test focused on the assignment/task-creation behavior (not doc lookup).
+      (built.svc as unknown as Record<string, unknown>).assertActiveDocument = jest
+        .fn()
+        .mockResolvedValue(undefined);
+      prisma.user.findUnique.mockResolvedValue(reviewer);
+      prisma.reviewAssignment.findUnique.mockResolvedValue(null); // not yet assigned
+      prisma.reviewAssignment.create.mockResolvedValue({ id: 'ra-x', createdAt: NOW });
+      prisma.document.findUnique.mockResolvedValue({
+        title: 'Due Doc',
+        currentVersionId: 'v1',
+        status: 'approved',
+        deletedAt: null,
+        nextReviewDate: new Date('2026-07-13T00:00:00.000Z'), // == NOW -> due
+        ...docOver,
+      });
+      return built;
+    };
+
+    it('creates the reviewer’s task immediately (as overdue) when the document is already past due', async () => {
+      // nextReviewDate in the past -> due, and past NOW -> overdue.
+      const { svc, prisma } = setup({ nextReviewDate: new Date('2026-07-01T00:00:00.000Z') });
+      prisma.reviewTask.create.mockResolvedValue({ id: 'task-immediate' });
+
+      await svc.assignReviewer('doc-1', reviewer.id, manager);
+
+      expect(prisma.reviewTask.create).toHaveBeenCalledTimes(1);
+      expect(prisma.reviewTask.create.mock.calls[0][0].data).toMatchObject({
+        documentId: 'doc-1',
+        assignedToId: 'rev-x',
+        status: 'overdue',
+      });
+    });
+
+    it('creates a PENDING task when due within the lead window but not yet past', async () => {
+      // NOW is 2026-07-13; lead window is +14d. A date a few days out is "due" but future -> pending.
+      const { svc, prisma } = setup({ nextReviewDate: new Date('2026-07-20T00:00:00.000Z') });
+      prisma.reviewTask.create.mockResolvedValue({ id: 'task-soon' });
+
+      await svc.assignReviewer('doc-1', reviewer.id, manager);
+
+      expect(prisma.reviewTask.create).toHaveBeenCalledTimes(1);
+      expect(prisma.reviewTask.create.mock.calls[0][0].data.status).toBe('pending');
+    });
+
+    it('does NOT create a task when the document is not yet due (future nextReviewDate beyond lead time)', async () => {
+      const { svc, prisma } = setup({ nextReviewDate: new Date('2026-12-31T00:00:00.000Z') });
+
+      await svc.assignReviewer('doc-1', reviewer.id, manager);
+
+      expect(prisma.reviewTask.create).not.toHaveBeenCalled();
+    });
+
+    it('does NOT create a task for an archived document even if past due', async () => {
+      const { svc, prisma } = setup({ status: 'archived' });
+
+      await svc.assignReviewer('doc-1', reviewer.id, manager);
+
+      expect(prisma.reviewTask.create).not.toHaveBeenCalled();
+    });
+
+    it('is a no-op on re-assigning an ALREADY-assigned reviewer (no duplicate task, no audit spam)', async () => {
+      const { svc, prisma, audit } = setup();
+      prisma.reviewAssignment.findUnique.mockResolvedValue({ id: 'ra-x', createdAt: NOW }); // already assigned
+
+      await svc.assignReviewer('doc-1', reviewer.id, manager);
+
+      expect(prisma.reviewAssignment.create).not.toHaveBeenCalled();
+      expect(prisma.reviewTask.create).not.toHaveBeenCalled();
+      expect(audit.record).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('unassignReviewer', () => {
+    it('404s when the (document, reviewer) pair is not assigned', async () => {
+      const { svc, prisma } = build();
+      prisma.reviewAssignment.findUnique.mockResolvedValue(null);
+      await expect(svc.unassignReviewer('doc-1', 'rev-1', manager)).rejects.toThrow(
+        'Reviewer assignment not found',
+      );
+      expect(prisma.reviewAssignment.delete).not.toHaveBeenCalled();
+    });
+
+    it('deletes the assignment AND cancels the reviewer’s OPEN tasks for that document (not completed ones)', async () => {
+      const { svc, prisma, audit } = build();
+      prisma.reviewAssignment.findUnique.mockResolvedValue({ id: 'ra-1' });
+      prisma.reviewTask.updateMany.mockResolvedValue({ count: 2 });
+
+      await svc.unassignReviewer('doc-1', 'rev-1', manager);
+
+      expect(prisma.reviewAssignment.delete).toHaveBeenCalledWith({ where: { id: 'ra-1' } });
+      // Only open tasks for THIS (document, reviewer) are flipped to cancelled.
+      expect(prisma.reviewTask.updateMany).toHaveBeenCalledWith({
+        where: {
+          documentId: 'doc-1',
+          assignedToId: 'rev-1',
+          status: { in: ['pending', 'in_progress', 'overdue'] },
+        },
+        data: { status: 'cancelled' },
+      });
+      // The audit records how many open tasks were retired.
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metadata: expect.objectContaining({ op: 'remove', reviewerId: 'rev-1', cancelledOpenTasks: 2 }),
+        }),
+      );
+    });
+  });
+
   describe('completeTask', () => {
     const taskRow = (over: Record<string, unknown> = {}) => ({
       id: 'task-1',
@@ -336,6 +457,23 @@ describe('ReviewService', () => {
       await expect(svc.completeTask('task-1', {}, manager, {}, NOW)).rejects.toBeInstanceOf(
         BadRequestException,
       );
+    });
+
+    it('rejects completing a review the user has NOT viewed (no DOCUMENT_VIEWED for the version)', async () => {
+      const { svc, prisma, attestation } = build();
+      prisma.reviewTask.findUnique.mockResolvedValue(taskRow()); // version v1
+      prisma.auditEvent.count.mockResolvedValue(0); // user never opened v1
+
+      await expect(svc.completeTask('task-1', {}, manager, {}, NOW)).rejects.toThrow(
+        /must open and read the document/i,
+      );
+      // The view-gate check targets the reviewed version + this user.
+      expect(prisma.auditEvent.count).toHaveBeenCalledWith({
+        where: { action: 'document.viewed', actorUserId: manager.id, versionId: 'v1' },
+      });
+      // Nothing is written when the gate blocks.
+      expect(attestation.record).not.toHaveBeenCalled();
+      expect(prisma.reviewTask.update).not.toHaveBeenCalled();
     });
 
     it('requires newNextReviewDate for a custom-cadence document', async () => {

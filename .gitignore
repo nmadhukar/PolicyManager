@@ -17,3 +17,4 @@ prisma/*.db
 .turbo/
 *.tsbuildinfo
 packages/shared/dist/
+docker-compose.override.yml

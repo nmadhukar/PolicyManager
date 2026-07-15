@@ -107,7 +107,7 @@ export function DocumentAclPanel({ doc }: { doc: DocumentDetail }) {
             {grants.map((g) => (
               <li
                 key={g.id}
-                className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-1.5 text-sm"
+                className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-1.5 text-sm"
               >
                 <span className="min-w-0 truncate">
                   <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-ink-muted">

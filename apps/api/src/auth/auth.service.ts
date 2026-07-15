@@ -188,7 +188,7 @@ export class AuthService {
     });
 
     if (existingIdentity) {
-      if (existingIdentity.user.status !== 'active') {
+      if (existingIdentity.user.status !== 'active' || this.isLocked(existingIdentity.user)) {
         throw new UnauthorizedException(AuthService.INVALID_LOGIN);
       }
       const user = this.toAuthUser(existingIdentity.user);
@@ -202,7 +202,7 @@ export class AuthService {
     });
 
     if (existingUser) {
-      if (existingUser.status !== 'active') {
+      if (existingUser.status !== 'active' || this.isLocked(existingUser)) {
         throw new UnauthorizedException(AuthService.INVALID_LOGIN);
       }
       if (!profile.emailVerified) {
@@ -282,7 +282,7 @@ export class AuthService {
       where: { id: record.userId },
       include: this.userInclude(),
     });
-    if (!user || user.status !== 'active') {
+    if (!user || user.status !== 'active' || this.isLocked(user)) {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
@@ -439,10 +439,22 @@ export class AuthService {
       where: { id: userId },
       include: this.userInclude(),
     });
-    if (!user || user.status !== 'active') {
+    if (!user || user.status !== 'active' || this.isLocked(user)) {
       return null;
     }
     return this.toAuthUser(user);
+  }
+
+  /**
+   * True when the account is currently locked (brute-force auto-lock OR an
+   * explicit admin lock, both expressed as `lockedUntil` in the future). A
+   * locked account is denied login and refresh on EVERY auth path — local,
+   * SSO, and per-request resolution — mirroring the local-login check in
+   * {@link validateCredentials}. Lock is distinct from `status='disabled'`
+   * (permanent) — both must gate access.
+   */
+  private isLocked(user: { lockedUntil: Date | null }): boolean {
+    return !!user.lockedUntil && user.lockedUntil.getTime() > Date.now();
   }
 
   /** Prisma include tree that pulls roles and their permissions. */

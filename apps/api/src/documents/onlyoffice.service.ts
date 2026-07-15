@@ -68,6 +68,51 @@ export function editorFileType(fileName: string): string {
   return extensionOf(fileName);
 }
 
+/** Office/text mimetypes by extension, for naming an edited version's bytes. */
+const MIME_BY_EXTENSION: Record<string, string> = {
+  pdf: 'application/pdf',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  odt: 'application/vnd.oasis.opendocument.text',
+  rtf: 'application/rtf',
+  xls: 'application/vnd.ms-excel',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  ods: 'application/vnd.oasis.opendocument.spreadsheet',
+  ppt: 'application/vnd.ms-powerpoint',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  odp: 'application/vnd.oasis.opendocument.presentation',
+  txt: 'text/plain',
+};
+
+/**
+ * Resolves the filename + mimetype to store an OnlyOffice-edited version under.
+ *
+ * On save, OnlyOffice returns a `filetype` in its callback (e.g. it edits a
+ * legacy binary `.doc` but writes back modern `.docx` — it never round-trips
+ * `.doc`). When that differs from the source's extension, we adopt the NEW
+ * extension + mimetype so the stored bytes are labelled correctly. That also
+ * makes a `.doc`→`.docx` upgrade text-extractable (search + version compare),
+ * which the legacy `.doc` binary format is not. When the type is unchanged (or
+ * unknown), we keep the source name/mime so the version's identity is stable.
+ */
+export function editedFileMeta(
+  sourceFileName: string,
+  callbackFileType: string | undefined,
+  sourceMimeType: string,
+): { fileName: string; mimeType: string } {
+  const ext = (callbackFileType ?? '').toLowerCase().trim();
+  const sourceExt = extensionOf(sourceFileName);
+  // No change, or an extension we don't have a canonical mimetype for -> keep source.
+  if (!ext || ext === sourceExt || !MIME_BY_EXTENSION[ext]) {
+    return { fileName: sourceFileName, mimeType: sourceMimeType };
+  }
+  const stem =
+    sourceFileName.lastIndexOf('.') >= 0
+      ? sourceFileName.slice(0, sourceFileName.lastIndexOf('.'))
+      : sourceFileName;
+  return { fileName: `${stem}.${ext}`, mimeType: MIME_BY_EXTENSION[ext] };
+}
+
 /**
  * Whether a callback status means "persist the edited bytes as a new version".
  * 2 = document ready for saving (all editors closed); 6 = force-save while still
@@ -99,6 +144,17 @@ export class OnlyOfficeService {
   private readonly secret: string;
   private readonly apiInternalUrl: string;
   private readonly publicUrl: string;
+  /**
+   * Docs-server origin the API reaches server-side to fetch edited bytes on
+   * save. In Docker the Docs server builds its callback download URL from its
+   * OWN public address (`ONLYOFFICE_URL`, e.g. http://localhost:8080), which is
+   * NOT reachable from inside the API container — `localhost` there is the API
+   * itself. `ONLYOFFICE_INTERNAL_URL` is the Docker-network address (e.g.
+   * http://onlyoffice) the API rewrites those callback URLs to. Defaults to
+   * `ONLYOFFICE_URL` so a non-Docker/reverse-proxied deploy is unaffected.
+   * Mirrors the S3_ENDPOINT vs S3_PUBLIC_ENDPOINT split.
+   */
+  private readonly internalUrl: string;
   /** Hosts the save callback may fetch edited bytes from (SM1 — SSRF allow-list). */
   private readonly downloadAllowedHosts: Set<string>;
 
@@ -111,6 +167,10 @@ export class OnlyOfficeService {
       config.get<string>('ONLYOFFICE_API_INTERNAL_URL') || 'http://host.docker.internal:3000'
     ).replace(/\/$/, '');
     this.publicUrl = (config.get<string>('ONLYOFFICE_URL') || 'http://localhost:8080').replace(
+      /\/$/,
+      '',
+    );
+    this.internalUrl = (config.get<string>('ONLYOFFICE_INTERNAL_URL') || this.publicUrl).replace(
       /\/$/,
       '',
     );
@@ -131,6 +191,7 @@ export class OnlyOfficeService {
       if (h) hosts.add(h);
     };
     add(this.publicUrl);
+    add(this.internalUrl);
     add(this.apiInternalUrl);
     const override = this.config.get<string>('ONLYOFFICE_DOWNLOAD_ALLOWED_HOSTS');
     if (override && override.trim()) {
@@ -306,17 +367,20 @@ export class OnlyOfficeService {
    * in the callback body). Throws on a non-OK response so the caller can decline
    * to create a bogus version.
    *
-   * ⚠️ Networking caveat: `body.url` is built by the Docs server using its own
-   * view of the network. In a container setup that host may not equal the URL a
-   * browser sees. In production, ensure the API can reach the Docs server on the
-   * origin the callback uses (or front both behind a shared hostname).
+   * ⚠️ Networking: `body.url` is built by the Docs server from its OWN public
+   * address (`ONLYOFFICE_URL`, e.g. http://localhost:8080), which the API can't
+   * reach from inside its container. We rewrite the URL's origin to
+   * `ONLYOFFICE_INTERNAL_URL` (the Docker-network address) before fetching. The
+   * SSRF check runs on the ORIGINAL callback host (must be allow-listed); the
+   * rewrite only swaps a trusted public origin for its trusted internal twin.
    */
   async downloadEditedFile(url: string): Promise<Buffer> {
     this.assertDownloadUrlAllowed(url);
+    const fetchUrl = this.toInternalDownloadUrl(url);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 60_000);
     try {
-      const res = await fetch(url, { signal: controller.signal, redirect: 'error' });
+      const res = await fetch(fetchUrl, { signal: controller.signal, redirect: 'error' });
       if (!res.ok) {
         throw new Error(`OnlyOffice edited-file download failed: HTTP ${res.status}`);
       }
@@ -324,6 +388,35 @@ export class OnlyOfficeService {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * Rewrites a callback download URL whose origin is the Docs server's PUBLIC
+   * address (`publicUrl`) to the API-reachable INTERNAL address (`internalUrl`),
+   * preserving the path + query (the signed md5/expires token). A no-op when the
+   * two are equal (non-Docker deploy) or the URL is on some other allow-listed
+   * host (e.g. host.docker.internal). Same-origin swap only — never changes the
+   * path — so the Docs server's signature over path+query still validates.
+   */
+  private toInternalDownloadUrl(url: string): string {
+    if (this.internalUrl === this.publicUrl) return url;
+    let pub: URL;
+    let target: URL;
+    try {
+      pub = new URL(this.publicUrl);
+      target = new URL(this.internalUrl);
+    } catch {
+      return url;
+    }
+    const u = new URL(url);
+    // Only rewrite when the callback host matches the public Docs-server host.
+    if (u.host !== pub.host) return url;
+    u.protocol = target.protocol;
+    u.hostname = target.hostname;
+    // Set the port explicitly (empty when the target has none, e.g. :80/:443
+    // implied) — assigning hostname alone leaves the old port in place.
+    u.port = target.port;
+    return u.toString();
   }
 
   /**

@@ -1,4 +1,5 @@
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import type { AuthUser } from '@policymanager/shared';
 import type { RequestContext } from '../audit/request-context';
 import { AttestationService } from './attestation.service';
@@ -118,6 +119,24 @@ describe('AttestationService', () => {
       expect(data.versionId).toBeUndefined();
       expect(data.reviewTaskId).toBeUndefined();
       expect(data.ipAddress).toBeUndefined();
+    });
+
+    it('translates a duplicate-signoff DB conflict (P2002) into a friendly 400', async () => {
+      const { svc, prisma } = build();
+      prisma.attestation.create.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+          code: 'P2002',
+          clientVersion: 'test',
+        }),
+      );
+
+      await expect(
+        svc.record(
+          { documentId: 'doc-1', versionId: 'v-1', action: 'approved', signatureName: 'A' },
+          user,
+          ctx,
+        ),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 

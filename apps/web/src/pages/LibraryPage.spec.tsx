@@ -289,6 +289,8 @@ describe('LibraryPage', () => {
     renderLibrary();
     await waitFor(() => expect(screen.getByText('Seclusion & Restraint Policy')).toBeInTheDocument());
 
+    // Advanced filters live in a collapsible panel — open it to reach Status.
+    fireEvent.click(screen.getByRole('button', { name: /Filters/ }));
     fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'published' } });
     await waitFor(() =>
       expect(mockListDocuments).toHaveBeenCalledWith(expect.objectContaining({ status: 'published' })),

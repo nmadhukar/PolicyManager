@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AppShell } from './AppShell';
 
+const mockLogout = vi.fn();
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
     user: {
@@ -15,7 +16,7 @@ vi.mock('../auth/AuthContext', () => ({
     },
     status: 'authenticated',
     login: vi.fn(),
-    logout: vi.fn(),
+    logout: mockLogout,
     changePassword: vi.fn(),
     hasPermission: () => true,
   }),
@@ -62,5 +63,36 @@ describe('AppShell mobile navigation (FM1)', () => {
 
     fireEvent.click(within(drawer).getByRole('link', { name: 'Dashboard' }));
     expect(screen.queryByRole('dialog', { name: 'Navigation menu' })).not.toBeInTheDocument();
+  });
+});
+
+describe('AppShell user menu', () => {
+  beforeEach(() => mockLogout.mockReset());
+
+  it('opens a dropdown with Change password + Sign out from the avatar button', () => {
+    renderShell();
+    const trigger = screen.getByRole('button', { expanded: false, name: /Admin User/i });
+    expect(screen.queryByRole('menu', { name: 'User menu' })).not.toBeInTheDocument();
+
+    fireEvent.click(trigger);
+    const menu = screen.getByRole('menu', { name: 'User menu' });
+    expect(within(menu).getByRole('menuitem', { name: /Change password/i })).toBeInTheDocument();
+    expect(within(menu).getByRole('menuitem', { name: /Sign out/i })).toBeInTheDocument();
+  });
+
+  it('signs out when Sign out is chosen', () => {
+    renderShell();
+    fireEvent.click(screen.getByRole('button', { expanded: false, name: /Admin User/i }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /Sign out/i }));
+    expect(mockLogout).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes the menu on Escape', () => {
+    renderShell();
+    fireEvent.click(screen.getByRole('button', { expanded: false, name: /Admin User/i }));
+    expect(screen.getByRole('menu', { name: 'User menu' })).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('menu', { name: 'User menu' })).not.toBeInTheDocument();
   });
 });

@@ -4,6 +4,7 @@ import * as jwt from 'jsonwebtoken';
 import {
   OnlyOfficeService,
   callbackWantsSave,
+  editedFileMeta,
   editorFileType,
   isOnlyOfficeEditable,
   onlyOfficeDocumentType,
@@ -31,6 +32,45 @@ describe('OnlyOffice pure helpers', () => {
     expect(callbackWantsSave(1)).toBe(false); // editing
     expect(callbackWantsSave(4)).toBe(false); // closed, no changes
     expect(callbackWantsSave(3)).toBe(false); // save error
+  });
+
+  describe('editedFileMeta', () => {
+    const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
+    it('upgrades a legacy .doc to .docx when OnlyOffice returns filetype=docx', () => {
+      expect(editedFileMeta('sample.doc', 'docx', 'application/msword')).toEqual({
+        fileName: 'sample.docx',
+        mimeType: DOCX_MIME,
+      });
+    });
+
+    it('keeps the source name/mime when the filetype is unchanged', () => {
+      expect(editedFileMeta('policy.docx', 'docx', DOCX_MIME)).toEqual({
+        fileName: 'policy.docx',
+        mimeType: DOCX_MIME,
+      });
+    });
+
+    it('keeps the source when filetype is missing (older Docs servers)', () => {
+      expect(editedFileMeta('sample.doc', undefined, 'application/msword')).toEqual({
+        fileName: 'sample.doc',
+        mimeType: 'application/msword',
+      });
+    });
+
+    it('keeps the source when the returned filetype has no canonical mimetype', () => {
+      expect(editedFileMeta('sample.doc', 'weird', 'application/msword')).toEqual({
+        fileName: 'sample.doc',
+        mimeType: 'application/msword',
+      });
+    });
+
+    it('handles a source name with no extension', () => {
+      expect(editedFileMeta('untitled', 'docx', 'application/octet-stream')).toEqual({
+        fileName: 'untitled.docx',
+        mimeType: DOCX_MIME,
+      });
+    });
   });
 });
 
@@ -226,5 +266,64 @@ describe('OnlyOfficeService.downloadEditedFile SSRF guard (SM1)', () => {
     await expect(svc.downloadEditedFile('http://other.host/x')).rejects.toBeInstanceOf(
       BadRequestException,
     );
+  });
+});
+
+describe('OnlyOfficeService.downloadEditedFile Docker-network URL rewrite', () => {
+  const realFetch = global.fetch;
+  // @nestjs/config's ConfigService gives process.env PRECEDENCE over the
+  // constructor object, so these tests must control the env var directly
+  // (it is set in the API container, which would otherwise leak in).
+  const savedInternalUrl = process.env.ONLYOFFICE_INTERNAL_URL;
+  const savedUrl = process.env.ONLYOFFICE_URL;
+  afterEach(() => {
+    global.fetch = realFetch;
+    if (savedInternalUrl === undefined) delete process.env.ONLYOFFICE_INTERNAL_URL;
+    else process.env.ONLYOFFICE_INTERNAL_URL = savedInternalUrl;
+    if (savedUrl === undefined) delete process.env.ONLYOFFICE_URL;
+    else process.env.ONLYOFFICE_URL = savedUrl;
+  });
+
+  it('rewrites the callback URL origin from the public Docs host to ONLYOFFICE_INTERNAL_URL, keeping path+query', async () => {
+    process.env.ONLYOFFICE_URL = 'http://localhost:8080';
+    process.env.ONLYOFFICE_INTERNAL_URL = 'http://onlyoffice';
+    const svc = new OnlyOfficeService(
+      new ConfigService({
+        ONLYOFFICE_JWT_SECRET: SECRET,
+        ONLYOFFICE_URL: 'http://localhost:8080', // browser-facing, what the callback URL uses
+        ONLYOFFICE_INTERNAL_URL: 'http://onlyoffice', // API-reachable Docker host (port 80)
+      }),
+    );
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+    });
+    global.fetch = fetchMock as never;
+
+    // The callback URL the Docs server produces (host = localhost:8080).
+    const callbackUrl = 'http://localhost:8080/cache/files/data/abc/output.docx?md5=xyz&expires=123';
+    const buf = await svc.downloadEditedFile(callbackUrl);
+
+    expect(buf).toEqual(Buffer.from([1, 2, 3]));
+    // Fetched from the INTERNAL host, with the signed path + query preserved.
+    const fetchedUrl = fetchMock.mock.calls[0][0] as string;
+    expect(fetchedUrl).toBe('http://onlyoffice/cache/files/data/abc/output.docx?md5=xyz&expires=123');
+  });
+
+  it('does NOT rewrite when ONLYOFFICE_INTERNAL_URL is unset (equals public) — non-Docker deploy', async () => {
+    process.env.ONLYOFFICE_URL = 'http://localhost:8080';
+    delete process.env.ONLYOFFICE_INTERNAL_URL;
+    const svc = new OnlyOfficeService(
+      new ConfigService({ ONLYOFFICE_JWT_SECRET: SECRET, ONLYOFFICE_URL: 'http://localhost:8080' }),
+    );
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      arrayBuffer: async () => new Uint8Array([9]).buffer,
+    });
+    global.fetch = fetchMock as never;
+
+    const callbackUrl = 'http://localhost:8080/cache/files/x/output.docx?md5=q';
+    await svc.downloadEditedFile(callbackUrl);
+    expect(fetchMock.mock.calls[0][0]).toBe(callbackUrl); // unchanged
   });
 });

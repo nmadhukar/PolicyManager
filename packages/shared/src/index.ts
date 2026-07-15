@@ -587,6 +587,13 @@ export interface ReviewTaskItem {
   documentTitle: string | null;
   documentNumber: string | null;
   versionId: string | null;
+  /**
+   * The version the review actually signs off on: `versionId` when the task
+   * pins one, else the document's current version. Null only when the document
+   * has no versions yet. This is the version the "must view" gate checks and
+   * the id the UI opens in the read-only preview.
+   */
+  reviewedVersionId: string | null;
   dueDate: string;
   status: ReviewTaskStatus;
   assignedToId: string;
@@ -599,6 +606,12 @@ export interface ReviewTaskItem {
   reviewCadence: ReviewCadence;
   /** Open annotations on the task version/current version, for reviewer triage. */
   unresolvedAnnotationCount: number;
+  /**
+   * Whether the current user has opened/viewed the version being reviewed. The
+   * server requires a prior view before a review can be completed (compliance:
+   * you must read what you sign off on); the UI uses this to gate the button.
+   */
+  hasViewed: boolean;
 }
 
 /** Body for completing a review task. */

@@ -651,6 +651,11 @@ model Attestation {
   reviewTask               ReviewTask?               @relation("AttestationReviewTask", fields: [reviewTaskId], references: [id], onDelete: SetNull)
   acknowledgmentAssignment AcknowledgmentAssignment? @relation("AckAttestation", fields: [acknowledgmentAssignmentId], references: [id], onDelete: SetNull)
 
+  // One sign-off per (person, version, action): a user can approve/review/
+  // acknowledge a given version only once. A correction is still a NEW
+  // attestation against a NEW version, never a mutation of this row — this
+  // constraint only blocks a repeat signature on the SAME version.
+  @@unique([documentId, versionId, userId, action])
   @@index([documentId])
   @@index([versionId])
   @@index([userId])

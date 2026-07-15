@@ -56,6 +56,19 @@ export class DocumentApprovalService {
       throw new BadRequestException('Upload a version before approving this document');
     }
 
+    const alreadyApproved = await this.prisma.attestation.findFirst({
+      where: {
+        documentId,
+        versionId: doc.currentVersionId,
+        userId: user.id,
+        action: 'approved',
+      },
+      select: { id: true },
+    });
+    if (alreadyApproved) {
+      throw new BadRequestException('You have already approved this document version');
+    }
+
     const status: DocumentStatus = input.publish ? 'published' : 'approved';
 
     // C6/D4: the state change and its immutable sign-off commit ATOMICALLY — an

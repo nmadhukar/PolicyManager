@@ -36,6 +36,7 @@ import type {
 import {
   OnlyOfficeService,
   callbackWantsSave,
+  editedFileMeta,
   onlyOfficeDocumentType,
   type OnlyOfficeCallbackBody,
 } from './onlyoffice.service';
@@ -905,9 +906,18 @@ export class DocumentsService {
     }
 
     const buffer = await this.onlyOffice.downloadEditedFile(body.url);
+    // OnlyOffice may write back a different format than the source (notably it
+    // upgrades a legacy binary `.doc` to `.docx` on save — it never round-trips
+    // `.doc`). Adopt the returned filetype so the bytes are labelled correctly
+    // and, for `.doc`→`.docx`, become text-extractable (search + version diff).
+    const { fileName, mimeType } = editedFileMeta(
+      source.fileName,
+      typeof body.filetype === 'string' ? body.filetype : undefined,
+      source.mimeType,
+    );
     const file: VersionBytes = {
-      originalname: source.fileName,
-      mimetype: source.mimeType,
+      originalname: fileName,
+      mimetype: mimeType,
       buffer,
     };
     const version = await this.writeVersion(documentId, file, 'Edited in OnlyOffice', editorUserId);

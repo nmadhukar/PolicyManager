@@ -24,6 +24,16 @@ vi.mock('../api/reviews', () => ({
   runReviewSweep: (...a: unknown[]) => mockSweep(...a),
 }));
 
+// Stub the heavy read-only preview (pulls in pdf.js) — we only assert it opens.
+vi.mock('../ui/DocumentViewer', () => ({
+  default: ({ onClose }: { onClose: () => void }) => (
+    <div data-testid="doc-preview">
+      preview
+      <button onClick={onClose}>Close preview</button>
+    </div>
+  ),
+}));
+
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -50,6 +60,9 @@ const overdueTask = {
   notes: null,
   createdAt: '2019-12-01T00:00:00.000Z',
   reviewCadence: 'quarterly' as const,
+  unresolvedAnnotationCount: 0,
+  hasViewed: true, // viewed by default so the Complete button is enabled
+  reviewedVersionId: 'v1', // the version the preview opens / the gate checks
 };
 const upcomingTask = {
   ...overdueTask,
@@ -131,6 +144,26 @@ describe('ReviewsPage', () => {
         expect.objectContaining({ notes: 'Reviewed, all good' }),
       ),
     );
+  });
+
+  it('disables Complete review until viewed, and opens the read-only preview from the review row', async () => {
+    mockListTasks.mockResolvedValue({
+      items: [{ ...overdueTask, hasViewed: false }],
+      total: 1,
+      page: 1,
+      pageSize: 200,
+    });
+    renderPage();
+    await screen.findByText('Overdue Policy');
+
+    // Complete is blocked until the document is opened/viewed.
+    expect(screen.getByRole('button', { name: 'Complete review' })).toBeDisabled();
+    expect(screen.queryByTestId('doc-preview')).not.toBeInTheDocument();
+
+    // Clicking "Open document to review" opens the SAME preview overlay the
+    // acknowledgment flow uses (which records the view server-side).
+    fireEvent.click(screen.getByRole('button', { name: /Open document to review/ }));
+    expect(await screen.findByTestId('doc-preview')).toBeInTheDocument();
   });
 
   it('shows an empty state when there are no tasks', async () => {

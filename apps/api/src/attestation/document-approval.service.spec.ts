@@ -13,6 +13,9 @@ describe('DocumentApprovalService', () => {
   const makePrisma = (): any => {
     const prisma: any = {
       document: { findFirst: jest.fn(), update: jest.fn().mockResolvedValue({}) },
+      // No prior approval by this user/version by default (see the
+      // "already approved" test below for the duplicate case).
+      attestation: { findFirst: jest.fn().mockResolvedValue(null) },
     };
     // C6/D4: approve wraps the state change + sign-off in one transaction.
     prisma.$transaction = jest.fn((arg: unknown) =>
@@ -146,5 +149,18 @@ describe('DocumentApprovalService', () => {
     const { svc, prisma } = build();
     prisma.document.findFirst.mockResolvedValue(null);
     await expect(svc.approve('gone', {}, approver)).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('400s when this user already approved the current version, without recording a second sign-off', async () => {
+    const { svc, prisma, attestation } = build();
+    prisma.document.findFirst.mockResolvedValue(docRow());
+    prisma.attestation.findFirst.mockResolvedValue({ id: 'att-existing' });
+
+    await expect(svc.approve('doc-1', {}, approver)).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.attestation.findFirst).toHaveBeenCalledWith({
+      where: { documentId: 'doc-1', versionId: 'v-2', userId: approver.id, action: 'approved' },
+      select: { id: true },
+    });
+    expect(attestation.record).not.toHaveBeenCalled();
   });
 });

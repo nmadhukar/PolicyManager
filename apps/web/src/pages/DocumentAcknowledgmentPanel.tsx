@@ -193,15 +193,20 @@ function DistributeForm({ doc }: { doc: DocumentDetail }) {
       {users.length > 0 && (
         <fieldset>
           <legend className="mb-1 text-xs text-ink-muted">Individual users</legend>
-          <div className="max-h-32 space-y-1 overflow-y-auto rounded-lg border border-slate-200 p-2">
+          <div className="max-h-32 space-y-1 overflow-y-auto overflow-x-hidden rounded-lg border border-slate-200 p-2">
             {users.map((u) => (
-              <label key={u.id} className="flex items-center gap-2 text-xs text-ink-soft">
+              <label
+                key={u.id}
+                className="flex min-w-0 items-center gap-2 text-xs text-ink-soft"
+                title={`${u.name} (${u.email})`}
+              >
                 <input
                   type="checkbox"
+                  className="shrink-0"
                   checked={userIds.includes(u.id)}
                   onChange={() => setUserIds((ids) => toggle(ids, u.id))}
                 />
-                <span className="truncate">
+                <span className="min-w-0 truncate">
                   {u.name} <span className="text-ink-muted">({u.email})</span>
                 </span>
               </label>

@@ -56,6 +56,14 @@ vi.mock('../api/categories', () => ({
   flattenCategories: () => [],
 }));
 
+// Version-compare modal reads; each test that opens the modal sets its own
+// resolved value on mockCompareVersions.
+const mockCompareVersions = vi.fn();
+vi.mock('../api/documentCompare', () => ({
+  compareVersions: (...args: unknown[]) => mockCompareVersions(...args),
+  fetchComparePdf: vi.fn(),
+}));
+
 // The ACL panel (rendered for write users) pulls these; stub them to no-ops so
 // these detail-page tests stay focused on lifecycle actions.
 vi.mock('../api/acl', () => ({
@@ -159,26 +167,98 @@ describe('DocumentDetailPage', () => {
     mockRestoreVersion.mockReset().mockResolvedValue({});
     mockUpdateDocument.mockReset().mockResolvedValue({});
     mockUpdateReviewSchedule.mockReset().mockResolvedValue({});
+    mockCompareVersions.mockReset();
     mockNavigate.mockReset();
   });
 
-  it('offers a version Restore that confirms then calls restoreVersion for the chosen version', async () => {
+  it('offers a version Restore (in the overflow menu) that confirms then calls restoreVersion', async () => {
     mockHasPermission.mockReturnValue(true);
     mockGetDocument.mockResolvedValue(detail());
     renderDetail();
     await waitFor(() => expect(screen.getByText('Version history')).toBeInTheDocument());
 
-    // The current version (v2) has no Restore; the older v1 does.
-    const restoreButtons = screen.getAllByRole('button', { name: 'Restore' });
-    expect(restoreButtons).toHaveLength(1);
+    // Restore lives in the per-row "More actions" (⋯) overflow menu now.
+    // The current version (v2) has no overflow menu (only View + Download inline);
+    // the older v1 does — so there is exactly one "More actions" trigger.
+    const moreButtons = screen.getAllByRole('button', { name: 'More actions' });
+    expect(moreButtons).toHaveLength(1);
+    fireEvent.click(moreButtons[0]);
 
-    fireEvent.click(restoreButtons[0]);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Restore' }));
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).getByText('Restore v1?')).toBeInTheDocument();
     expect(mockRestoreVersion).not.toHaveBeenCalled();
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Restore version' }));
     await waitFor(() => expect(mockRestoreVersion).toHaveBeenCalledWith('doc-1', 'v-1'));
+  });
+
+  it('keeps View + Download inline and collapses Restore/Compare into a per-row overflow menu', async () => {
+    mockHasPermission.mockReturnValue(true);
+    mockGetDocument.mockResolvedValue(detail());
+    renderDetail();
+    await waitFor(() => expect(screen.getByText('Version history')).toBeInTheDocument());
+
+    // Primary actions are inline for every row (2 versions -> 2 View + 2 Download).
+    expect(screen.getAllByRole('button', { name: 'View' })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: 'Download' })).toHaveLength(2);
+
+    // Secondary actions are NOT in the DOM until the overflow menu is opened.
+    expect(screen.queryByRole('menuitem', { name: 'Restore' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: 'Compare' })).toBeNull();
+
+    // Only the non-current v1 row has overflow actions -> exactly one trigger.
+    const moreButtons = screen.getAllByRole('button', { name: 'More actions' });
+    expect(moreButtons).toHaveLength(1);
+    fireEvent.click(moreButtons[0]);
+
+    const menu = screen.getByRole('menu', { name: 'More version actions' });
+    expect(within(menu).getByRole('menuitem', { name: 'Restore' })).toBeInTheDocument();
+    expect(within(menu).getByRole('menuitem', { name: 'Compare' })).toBeInTheDocument();
+
+    // Escape closes it.
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('menu', { name: 'More version actions' })).not.toBeInTheDocument();
+  });
+
+  it('opens Version compare on the wide Modal card (no oversized inner wrapper) with wrapped checksum + a Close action', async () => {
+    mockHasPermission.mockReturnValue(true);
+    mockGetDocument.mockResolvedValue(detail());
+    // A metadata change with two 64-char checksum hashes — the exact overflow case.
+    mockCompareVersions.mockResolvedValue({
+      documentId: 'doc-1',
+      documentTitle: 'Seclusion & Restraint Policy',
+      fromVersionId: 'v-1',
+      toVersionId: 'v-2',
+      fromVersionNumber: 1,
+      toVersionNumber: 2,
+      textAvailable: true,
+      warnings: [],
+      summary: { added: 0, removed: 0, changed: 1, unchanged: 3 },
+      metadataChanges: [
+        { field: 'checksum', label: 'Checksum', oldValue: 'a'.repeat(64), newValue: 'b'.repeat(64) },
+      ],
+      hunks: [
+        { type: 'changed', oldLine: 1, newLine: 1, oldText: '<p>qwertyuio</p>', newText: '<p>qwertyuioqwertyj</p>' },
+      ],
+    });
+    renderDetail();
+    await waitFor(() => expect(screen.getByText('Version history')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Compare latest' }));
+    const dialog = await screen.findByRole('dialog');
+
+    // Width fix: it's on the shared Modal card (max-w-4xl), NOT a nested
+    // w-[min(56rem,...)] wrapper that would overflow the card.
+    expect(dialog).toHaveClass('max-w-4xl');
+    expect(dialog.querySelector('[class*="min(56rem"]')).toBeNull();
+
+    // The checksum value wraps instead of forcing horizontal overflow.
+    const oldChecksum = await within(dialog).findByText('a'.repeat(64));
+    expect(oldChecksum).toHaveClass('break-all', 'min-w-0');
+
+    // A11y: a visible Close action exists (not just Escape/backdrop).
+    expect(within(dialog).getByRole('button', { name: 'Close' })).toBeInTheDocument();
   });
 
   it('archives a published document from the header', async () => {

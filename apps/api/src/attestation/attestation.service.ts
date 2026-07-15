@@ -1,4 +1,9 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import {
   AUDIT_ACTIONS,
@@ -73,22 +78,33 @@ export class AttestationService {
     tx?: Prisma.TransactionClient,
   ): Promise<AttestationItem> {
     const client = tx ?? this.prisma;
-    const created = await client.attestation.create({
-      data: {
-        documentId: input.documentId,
-        versionId: input.versionId ?? undefined,
-        reviewTaskId: input.reviewTaskId ?? undefined,
-        acknowledgmentAssignmentId: input.acknowledgmentAssignmentId ?? undefined,
-        userId: user.id,
-        action: input.action,
-        signatureName: input.signatureName,
-        signatureRole: input.signatureRole ?? undefined,
-        comments: input.comments ?? undefined,
-        ipAddress: ctx.ipAddress ?? undefined,
-        userAgent: ctx.userAgent ?? undefined,
-      },
-      include: attestationInclude,
-    });
+    let created: AttestationWithJoins;
+    try {
+      created = await client.attestation.create({
+        data: {
+          documentId: input.documentId,
+          versionId: input.versionId ?? undefined,
+          reviewTaskId: input.reviewTaskId ?? undefined,
+          acknowledgmentAssignmentId: input.acknowledgmentAssignmentId ?? undefined,
+          userId: user.id,
+          action: input.action,
+          signatureName: input.signatureName,
+          signatureRole: input.signatureRole ?? undefined,
+          comments: input.comments ?? undefined,
+          ipAddress: ctx.ipAddress ?? undefined,
+          userAgent: ctx.userAgent ?? undefined,
+        },
+        include: attestationInclude,
+      });
+    } catch (err) {
+      // Last-resort guard against a race between two near-simultaneous
+      // sign-offs (callers already check-before-create; this only fires when
+      // both requests pass that check before either commits).
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        throw new BadRequestException(`You have already ${input.action} this document version`);
+      }
+      throw err;
+    }
 
     await this.audit.record({
       action: ATTESTATION_AUDIT_ACTION[input.action],

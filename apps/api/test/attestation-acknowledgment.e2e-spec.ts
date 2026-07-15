@@ -238,6 +238,23 @@ describe('Attestation, cover page & acknowledgment (e2e)', () => {
     expect(doc.body.status).toBe('approved');
   });
 
+  it('rejects a second approval by the same user on the same version (no duplicate Attestation)', async () => {
+    const before = await prisma.attestation.count({
+      where: { documentId: docId, action: 'approved' },
+    });
+
+    await request(app.getHttpServer())
+      .post(`/api/documents/${docId}/approve`)
+      .set('Authorization', asAdmin())
+      .send({})
+      .expect(400);
+
+    const after = await prisma.attestation.count({
+      where: { documentId: docId, action: 'approved' },
+    });
+    expect(after).toBe(before);
+  });
+
   it('GET cover-page returns a valid PDF', async () => {
     const res = await request(app.getHttpServer())
       .get(`/api/documents/${docId}/cover-page`)

@@ -64,7 +64,13 @@ Tickets:
 - PM-0206 - Add admin user-management UI.
 - PM-0207 - Add RBAC negative tests.
 - PM-0208 - Write auth developer and admin docs.
-- PM-0209 - Design OIDC implementation ADR.
+- PM-0209 - Design OIDC implementation ADR. **Resolved by ADR 0003** (Azure AD
+  SSO from ESS Portal) — Azure AD OIDC login implemented: `AzureOidcService`,
+  `AuthService.loginWithOidc` JIT provisioning/account-linking, `/auth/oidc/azure`
+  + `/auth/oidc/azure/callback` routes, `OidcState` CSRF/PKCE table, web
+  `AuthCallbackPage`. New SSO users default to the Staff role (no Azure AD
+  group -> role mapping yet — follow-up ticket needed once group names are
+  confirmed with the org).
 
 ## Phase 3: Documents And Versioning
 

@@ -8,11 +8,24 @@ import { useFocusTrap } from './useFocusTrap';
  * and backdrop dismissal are ignored so the action can't be interrupted midway.
  * Callers own the heading via `titleId` for aria-labelledby.
  */
+/**
+ * Named card widths. The whole app should size modals from this vocabulary
+ * rather than hand-rolling `max-w-*` / `w-[min(...)]` on inner content, so a
+ * modal's box is always the sized element (no child wider than its container).
+ */
+const MODAL_MAX_WIDTH = {
+  sm: 'max-w-md', //  ~28rem — confirm / ack / approve / api dialogs (default)
+  md: 'max-w-lg', //  ~32rem — binder-style forms
+  lg: 'max-w-3xl', // ~48rem — long-form content (matches TipTapEditor)
+  xl: 'max-w-4xl', // ~56rem — wide diff / version compare
+} as const;
+
 export function Modal({
   open,
   onClose,
   titleId,
   busy = false,
+  size = 'sm',
   children,
 }: {
   open: boolean;
@@ -20,6 +33,8 @@ export function Modal({
   titleId: string;
   /** When true, ignore Escape / backdrop dismissal (an action is running). */
   busy?: boolean;
+  /** Card max-width. Defaults to 'sm' (max-w-md) — the historical width. */
+  size?: keyof typeof MODAL_MAX_WIDTH;
   children: ReactNode;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -34,7 +49,7 @@ export function Modal({
 
   return (
     <div
-      className="fixed inset-0 z-50 grid place-items-center bg-slate-900/40 p-4"
+      className="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-slate-900/40 p-4"
       onMouseDown={requestClose}
     >
       <div
@@ -43,7 +58,7 @@ export function Modal({
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
-        className="card w-full max-w-md p-6 focus:outline-none"
+        className={`card w-full ${MODAL_MAX_WIDTH[size]} p-6 focus:outline-none`}
         onMouseDown={(e) => e.stopPropagation()}
       >
         {children}

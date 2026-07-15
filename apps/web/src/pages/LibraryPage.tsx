@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AxiosError } from 'axios';
@@ -267,20 +267,20 @@ function Library() {
         onChange={patch}
         categoryOptions={categoryOptions}
         ownerOptions={ownerOptions}
-      />
-
-      <SavedSearchControls
-        filters={filters}
-        sort={sort}
-        order={order}
-        searches={savedSearchesQuery.data ?? []}
-        onApply={(next, nextSort, nextOrder) => {
-          setFilters({ ...EMPTY_FILTERS, ...next });
-          if (nextSort) setSort(nextSort);
-          if (nextOrder) setOrder(nextOrder);
-          setPage(1);
-        }}
-      />
+      >
+        <SavedSearchControls
+          filters={filters}
+          sort={sort}
+          order={order}
+          searches={savedSearchesQuery.data ?? []}
+          onApply={(next, nextSort, nextOrder) => {
+            setFilters({ ...EMPTY_FILTERS, ...next });
+            if (nextSort) setSort(nextSort);
+            if (nextOrder) setOrder(nextOrder);
+            setPage(1);
+          }}
+        />
+      </FiltersBar>
 
       {bulkSchedulingEnabled && (
         <BulkReviewSchedulePanel
@@ -738,17 +738,45 @@ function BulkReviewSchedulePanel({
   );
 }
 
+// Detailed-filter fields that live inside the collapsible panel — everything
+// except the always-visible search (`q`) and the quick-filter chips (`dueState`).
+const ADVANCED_FILTER_KEYS: (keyof Filters)[] = [
+  'categoryId',
+  'ownerId',
+  'tag',
+  'tags',
+  'status',
+  'accessLevel',
+  'extractionStatus',
+  'reviewAfter',
+  'reviewBefore',
+  'effectiveAfter',
+  'effectiveBefore',
+];
+
 function FiltersBar({
   filters,
   onChange,
   categoryOptions,
   ownerOptions,
+  children,
 }: {
   filters: Filters;
   onChange: (part: Partial<Filters>) => void;
   categoryOptions: { id: string; name: string; depth: number }[];
   ownerOptions: Map<string, string>;
+  /** Extra collapsible content rendered below the filter grid (saved searches) —
+   * hidden/shown by the same Filters toggle. */
+  children?: ReactNode;
 }) {
+  const activeCount = useMemo(
+    () => ADVANCED_FILTER_KEYS.filter((k) => filters[k] !== '').length,
+    [filters],
+  );
+  // Open by default if any advanced filter is already applied (e.g. restored
+  // from a saved search), so active filters aren't hidden.
+  const [open, setOpen] = useState(activeCount > 0);
+
   return (
     <div className="card space-y-4 p-4">
       <div>
@@ -783,7 +811,34 @@ function FiltersBar({
           );
         })}
       </div>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="border-t border-slate-100 pt-3">
+        <button
+          type="button"
+          className="flex items-center gap-2 text-sm font-medium text-ink-soft hover:text-brand-600"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          aria-controls="lib-advanced-filters"
+        >
+          <svg
+            viewBox="0 0 20 20"
+            className={`h-4 w-4 transition-transform ${open ? 'rotate-180' : ''}`}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.75}
+            aria-hidden
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="m5 7.5 5 5 5-5" />
+          </svg>
+          Filters
+          {activeCount > 0 && (
+            <span className="rounded-full bg-brand-100 px-2 py-0.5 text-xs font-semibold text-brand-700">
+              {activeCount}
+            </span>
+          )}
+        </button>
+      </div>
+      {open && (
+      <div id="lib-advanced-filters" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <div>
           <label htmlFor="lib-category" className="label">
             Category
@@ -947,6 +1002,10 @@ function FiltersBar({
           />
         </div>
       </div>
+      )}
+      {open && children && (
+        <div className="border-t border-slate-100 pt-4">{children}</div>
+      )}
     </div>
   );
 }

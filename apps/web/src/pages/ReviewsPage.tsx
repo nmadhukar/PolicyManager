@@ -1,4 +1,4 @@
-import { FormEvent, useMemo, useState } from 'react';
+import { FormEvent, Suspense, lazy, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AxiosError } from 'axios';
@@ -22,6 +22,11 @@ import { AppShell } from '../ui/AppShell';
 import { Modal } from '../ui/Modal';
 import { EmptyState, ErrorState, LoadingState } from '../ui/states';
 import { useToast } from '../ui/Toast';
+
+// Read-only document preview overlay (same one the acknowledgments flow uses).
+// Opening it records DOCUMENT_VIEWED, which satisfies the "must view" gate.
+// Lazy so ReviewsPage doesn't pull in pdf.js until a reviewer opens a document.
+const DocumentViewer = lazy(() => import('../ui/DocumentViewer'));
 
 /** Start-of-day (local) for a date, for calendar/day comparisons. */
 function startOfDay(d: Date): Date {
@@ -66,11 +71,19 @@ export function ReviewsPage() {
 function ReviewsDashboard() {
   const { hasPermission } = useAuth();
   const canManage = hasPermission(PERMISSIONS.REVIEW_MANAGE);
+  const queryClient = useQueryClient();
 
   const tasksQuery = useQuery({
     queryKey: ['review-tasks', 'mine'],
     queryFn: () => listReviewTasks({ mine: true, pageSize: 200 }),
   });
+
+  // Re-pull the list (and the compliance panel, when shown) so a review
+  // assigned after this page loaded appears without a full page reload.
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ['review-tasks'] });
+    if (canManage) void queryClient.invalidateQueries({ queryKey: ['compliance-summary'] });
+  };
 
   if (tasksQuery.isLoading) return <LoadingState label="Loading your reviews…" />;
   if (tasksQuery.isError) {
@@ -83,6 +96,16 @@ function ReviewsDashboard() {
 
   return (
     <div className="space-y-6">
+      <div className="flex justify-end">
+        <button
+          className="btn-secondary !py-1.5 text-sm"
+          onClick={refresh}
+          disabled={tasksQuery.isFetching}
+          title="Reload the reviews list to pick up newly assigned reviews"
+        >
+          {tasksQuery.isFetching ? 'Refreshing…' : 'Refresh'}
+        </button>
+      </div>
       {canManage && <ComplianceCards />}
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
@@ -244,11 +267,29 @@ function TaskSection({
 
 function TaskRow({ task }: { task: ReviewTaskItem }) {
   const [open, setOpen] = useState(false);
+  const [viewing, setViewing] = useState(false);
+  const queryClient = useQueryClient();
   const closed = task.status === 'completed' || task.status === 'cancelled';
+  // The version to preview (and that the "must view" gate checks). Only openable
+  // when the document actually has a version.
+  const canOpen = !!task.reviewedVersionId;
+
+  const openPreview = () => {
+    if (canOpen) setViewing(true);
+  };
+  const closePreview = () => {
+    setViewing(false);
+    // Opening the preview recorded the view — refresh so hasViewed flips true
+    // and the Complete button enables without a manual reload.
+    void queryClient.invalidateQueries({ queryKey: ['review-tasks'] });
+  };
 
   return (
     <li className="flex flex-wrap items-center justify-between gap-2 py-3">
       <div className="min-w-0">
+        {/* The title navigates to the full library detail view. Opening the
+         * read-only preview (which records the view) is the dedicated
+         * "Open document to review" action below. */}
         <Link to={`/library/${task.documentId}`} className="font-medium text-ink hover:underline">
           {task.documentTitle ?? 'Untitled document'}
         </Link>
@@ -272,11 +313,40 @@ function TaskRow({ task }: { task: ReviewTaskItem }) {
         </div>
       </div>
       {!closed && (
-        <button className="btn-primary !py-1.5 text-sm" onClick={() => setOpen(true)}>
-          Complete review
-        </button>
+        <div className="flex flex-col items-end gap-1">
+          <button
+            className="btn-primary !py-1.5 text-sm"
+            onClick={() => setOpen(true)}
+            disabled={!task.hasViewed}
+            title={
+              task.hasViewed
+                ? undefined
+                : 'Open the document first — you must read it before completing the review.'
+            }
+          >
+            Complete review
+          </button>
+          {canOpen && (
+            <button
+              type="button"
+              className="text-xs font-medium text-brand-600 hover:underline"
+              onClick={openPreview}
+            >
+              {task.hasViewed ? 'Re-open document →' : 'Open document to review →'}
+            </button>
+          )}
+        </div>
       )}
       {open && <CompleteModal task={task} onClose={() => setOpen(false)} />}
+      {viewing && task.reviewedVersionId && (
+        <Suspense fallback={null}>
+          <DocumentViewer
+            documentId={task.documentId}
+            version={{ id: task.reviewedVersionId, fileName: task.documentTitle ?? 'Document' }}
+            onClose={closePreview}
+          />
+        </Suspense>
+      )}
     </li>
   );
 }
@@ -324,10 +394,17 @@ function CompleteModal({ task, onClose }: { task: ReviewTaskItem; onClose: () =>
       onClose();
     },
     onError: (err) => {
-      const status = (err as AxiosError).response?.status;
+      const res = (err as AxiosError<{ message?: string | string[] }>).response;
+      const status = res?.status;
+      // The 400 covers two distinct, user-facing rules (must view the document
+      // first, or must choose a next review date) — surface the server's own
+      // message so the reviewer sees the right one, rather than a fixed guess.
+      const serverMessage = Array.isArray(res?.data?.message)
+        ? res?.data?.message[0]
+        : res?.data?.message;
       setError(
         status === 400
-          ? 'Please choose the next review date.'
+          ? serverMessage || 'Please choose the next review date.'
           : status === 403
             ? 'You can only complete your own review tasks.'
             : 'Could not complete the review. Please try again.',
