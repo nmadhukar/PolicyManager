@@ -40,6 +40,14 @@ import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { Modal } from '../ui/Modal';
 import { EmptyState, ErrorState, ForbiddenState, LoadingState } from '../ui/states';
 import { TagInput } from '../ui/TagInput';
+import {
+  AccessIcon,
+  AcknowledgmentIcon,
+  CardSection,
+  DetailsIcon,
+  GovernanceIcon,
+  SectionCard,
+} from '../ui/SectionCard';
 import { useToast } from '../ui/Toast';
 import { useFocusTrap } from '../ui/useFocusTrap';
 import { apiErrorMessage } from '../lib/apiError';
@@ -203,18 +211,55 @@ function Detail({ id }: { id: string }) {
       )}
 
       <VersionsCard doc={doc} canWrite={canWrite} />
-      {/* Masonry via CSS columns: cards flow to fill vertical space so a short
-       * card (e.g. Tags) doesn't leave a gap below it the way a fixed grid row
-       * would. Each child gets break-inside-avoid so it isn't split across a
-       * column boundary, and mb-6 for the vertical rhythm (columns have no gap).
-       * `[&>*]:min-w-0` keeps a card with wide inner content from overflowing. */}
-      <div className="gap-6 [column-fill:balance] md:columns-2 xl:columns-3 [&>*]:mb-6 [&>*]:break-inside-avoid [&>*]:min-w-0">
-        <MetadataCard doc={doc} canWrite={canWrite} />
-        <DocumentSignoffPanel doc={doc} />
-        {canManageReviews && <DocumentAcknowledgmentPanel doc={doc} />}
-        {canManageReviews && <DocumentReviewersPanel doc={doc} />}
-        {canWrite && <DocumentAclPanel doc={doc} />}
-        {canWrite && <QuickTags doc={doc} />}
+
+      {/* Elegant 2x2 governance grid below the full-width version history.
+       * items-stretch + each SectionCard's `h-full flex-col` give equal-height
+       * rows. Source order is [Details, Governance, Access, Acknowledgment] so
+       * row-major 2-col placement puts the two content-heavy cards (Governance,
+       * Acknowledgment) in the RIGHT column and pairs one heavy + one light card
+       * per row. Permission-gated quadrants simply drop out and the grid reflows
+       * (e.g. a canWrite-only user without review.manage gets Q1 + Q2 + Q4 = one
+       * orphaned card on row 2) — acceptable per the brief; Sign-off is read for
+       * all so Q2 (Governance) is never empty. */}
+      <div className="grid grid-cols-1 items-stretch gap-6 lg:grid-cols-2">
+        {/* Q1 — Details (metadata body + Tags merged) */}
+        <Q1Details doc={doc} canWrite={canWrite} />
+
+        {/* Q2 — Governance (Sign-off always; Review schedule when canManageReviews) */}
+        <SectionCard
+          icon={<GovernanceIcon />}
+          title="Governance"
+          subtitle="Sign-off, cover page & review schedule."
+        >
+          <DocumentSignoffPanel doc={doc} bare />
+          {canManageReviews && (
+            <CardSection title="Review schedule" divider>
+              <DocumentReviewersPanel doc={doc} bare />
+            </CardSection>
+          )}
+        </SectionCard>
+
+        {/* Q4 — Access control (document.write only) */}
+        {canWrite && (
+          <SectionCard
+            icon={<AccessIcon />}
+            title="Access control"
+            subtitle="Who can see and use this document."
+          >
+            <DocumentAclPanel doc={doc} bare />
+          </SectionCard>
+        )}
+
+        {/* Q3 — Staff acknowledgment (review.manage only) */}
+        {canManageReviews && (
+          <SectionCard
+            icon={<AcknowledgmentIcon />}
+            title="Staff acknowledgment"
+            subtitle="Distribute the current version for staff to read & sign."
+          >
+            <DocumentAcknowledgmentPanel doc={doc} bare />
+          </SectionCard>
+        )}
       </div>
     </div>
   );
@@ -287,10 +332,73 @@ function DocumentActions({ doc }: { doc: DocumentDetail }) {
   );
 }
 
-function MetadataCard({ doc, canWrite }: { doc: DocumentDetail; canWrite: boolean }) {
+/**
+ * Q1 quadrant: the Details metadata body + Tags merged into one SectionCard.
+ * Owns the edit toggle (swapping the whole quadrant to <EditMetadata>, which
+ * keeps its own card/form) and the tags mutation (hoisted from the old
+ * QuickTags). For canWrite users Tags is an editable TagInput; for read-only
+ * users it falls back to read-only chips so tags stay visible.
+ */
+function Q1Details({ doc, canWrite }: { doc: DocumentDetail; canWrite: boolean }) {
   const [editing, setEditing] = useState(false);
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const tagsMutation = useMutation({
+    mutationFn: (tags: string[]) => updateDocument(doc.id, { tags }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['document', doc.id] }),
+    onError: (err) => toast.error(apiErrorMessage(err, 'Could not update tags.')),
+  });
+
+  // Editing swaps the whole quadrant to EditMetadata (its own `card p-5` form).
   if (editing) return <EditMetadata doc={doc} onDone={() => setEditing(false)} />;
 
+  return (
+    <SectionCard
+      icon={<DetailsIcon />}
+      title="Details"
+      action={
+        canWrite ? (
+          <button
+            className="text-xs font-medium text-brand-600 hover:underline"
+            onClick={() => setEditing(true)}
+          >
+            Edit
+          </button>
+        ) : undefined
+      }
+    >
+      <MetadataBody doc={doc} />
+      {canWrite ? (
+        <CardSection title="Tags" divider>
+          <TagInput
+            value={doc.tags}
+            onChange={(tags) => tagsMutation.mutate(tags)}
+            ariaLabel="Edit document tags"
+          />
+          {tagsMutation.isPending && <p className="mt-2 text-xs text-ink-muted">Saving…</p>}
+        </CardSection>
+      ) : (
+        doc.tags.length > 0 && (
+          <CardSection title="Tags" divider>
+            <div className="flex flex-wrap gap-1.5">
+              {doc.tags.map((t) => (
+                <span
+                  key={t}
+                  className="rounded-md bg-slate-100 px-2 py-0.5 text-xs font-medium text-ink-soft"
+                >
+                  {t}
+                </span>
+              ))}
+            </div>
+          </CardSection>
+        )
+      )}
+    </SectionCard>
+  );
+}
+
+/** The Details <dl> rows + optional Description block (no card, no header, no tags). */
+function MetadataBody({ doc }: { doc: DocumentDetail }) {
   const rows: [string, string][] = [
     ['Document number', doc.documentNumber ?? '—'],
     ['Category', doc.categoryName ?? 'Uncategorized'],
@@ -308,45 +416,27 @@ function MetadataCard({ doc, canWrite }: { doc: DocumentDetail; canWrite: boolea
   ];
 
   return (
-    <div className="card p-5">
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-muted">Details</h2>
-        {canWrite && (
-          <button
-            className="text-xs font-medium text-brand-600 hover:underline"
-            onClick={() => setEditing(true)}
-          >
-            Edit
-          </button>
-        )}
-      </div>
+    <>
       <dl className="space-y-2 text-sm">
         {rows.map(([label, value]) => (
           <div key={label} className="flex justify-between gap-4">
-            <dt className="text-ink-muted">{label}</dt>
-            <dd className="text-right font-medium text-ink">{value}</dd>
+            <dt className="shrink-0 text-ink-muted">{label}</dt>
+            <dd className="min-w-0 break-words text-right font-medium text-ink">{value}</dd>
           </div>
         ))}
       </dl>
       {doc.description && (
         <div className="mt-4 border-t border-slate-100 pt-3">
           <dt className="text-xs uppercase tracking-wide text-ink-muted">Description</dt>
-          <dd className="mt-1 text-sm text-ink-soft">{doc.description}</dd>
+          {/* overflow-wrap:anywhere + whitespace-pre-wrap so a long unbroken
+           * string (e.g. a pasted URL/error log) breaks and wraps inside the
+           * card instead of overflowing its right edge. */}
+          <dd className="mt-1 whitespace-pre-wrap text-sm text-ink-soft [overflow-wrap:anywhere]">
+            {doc.description}
+          </dd>
         </div>
       )}
-      {doc.tags.length > 0 && (
-        <div className="mt-4 flex flex-wrap gap-1.5">
-          {doc.tags.map((t) => (
-            <span
-              key={t}
-              className="rounded-md bg-slate-100 px-2 py-0.5 text-xs font-medium text-ink-soft"
-            >
-              {t}
-            </span>
-          ))}
-        </div>
-      )}
-    </div>
+    </>
   );
 }
 
@@ -550,28 +640,6 @@ function EditMetadata({ doc, onDone }: { doc: DocumentDetail; onDone: () => void
         </button>
       </div>
     </form>
-  );
-}
-
-function QuickTags({ doc }: { doc: DocumentDetail }) {
-  const queryClient = useQueryClient();
-  const toast = useToast();
-  const mutation = useMutation({
-    mutationFn: (tags: string[]) => updateDocument(doc.id, { tags }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['document', doc.id] }),
-    onError: (err) => toast.error(apiErrorMessage(err, 'Could not update tags.')),
-  });
-
-  return (
-    <div className="card p-5">
-      <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-muted">Tags</h2>
-      <TagInput
-        value={doc.tags}
-        onChange={(tags) => mutation.mutate(tags)}
-        ariaLabel="Edit document tags"
-      />
-      {mutation.isPending && <p className="mt-2 text-xs text-ink-muted">Saving…</p>}
-    </div>
   );
 }
 
@@ -880,8 +948,14 @@ function CompareModal({
 
   return (
     <Modal open onClose={onClose} titleId="compare-title" busy={exportPdf.isPending} size="xl">
-      <div className="max-h-[78vh] overflow-y-auto [scrollbar-gutter:stable]">
-        <div className="min-w-0 border-b border-slate-200 pb-4">
+      {/* Bound the whole dialog to the viewport (minus the backdrop p-4 = 2rem and
+          the card p-6 = 3rem) and lay it out as a flex column: the header and footer
+          stay pinned while only the middle body scrolls, so the card itself — and the
+          backdrop — never overflow. */}
+      <div className="flex max-h-[calc(100vh-5rem)] flex-col">
+        {/* Header + close pinned above the scroll area, so the scrollbar starts
+            below them and never crowds the close button in the top-right corner. */}
+        <div className="relative min-w-0 shrink-0 border-b border-slate-200 pb-4 pr-10">
           <h2 id="compare-title" className="text-base font-semibold text-ink">
             {query.data?.documentTitle ?? 'Version compare'}
           </h2>
@@ -889,8 +963,21 @@ function CompareModal({
             Comparing v{query.data?.fromVersionNumber ?? from.versionNumber} (old) to v
             {query.data?.toVersionNumber ?? to.versionNumber} (new)
           </p>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={exportPdf.isPending}
+            aria-label="Close comparison"
+            title="Close"
+            className="absolute right-0 top-0 rounded-md p-1.5 text-ink-soft hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-brand-100 disabled:opacity-50"
+          >
+            <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden>
+              <path d="M5 5l10 10M15 5L5 15" strokeLinecap="round" />
+            </svg>
+          </button>
         </div>
 
+        <div className="min-h-0 flex-1 overflow-y-auto pt-4 [scrollbar-gutter:stable]">
         {query.isLoading ? (
           <div className="mt-4">
             <LoadingState label="Comparing versions..." />
@@ -988,7 +1075,10 @@ function CompareModal({
             </div>
           </div>
         )}
-        <div className="mt-5 flex justify-end gap-2 border-t border-slate-200 pt-4">
+      </div>
+
+        {/* Footer pinned below the scroll area. */}
+        <div className="mt-4 flex shrink-0 justify-end gap-2 border-t border-slate-200 pt-4">
           <button type="button" className="btn-secondary" onClick={onClose} disabled={exportPdf.isPending}>
             Close
           </button>

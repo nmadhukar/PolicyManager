@@ -102,6 +102,10 @@ export type DocumentStatus =
 export type ReviewCadence = 'none' | 'quarterly' | 'annual' | 'custom';
 export type ExtractionStatus = 'pending' | 'processing' | 'done' | 'failed' | 'skipped';
 
+/** RAG embedding lifecycle for a DocumentVersion (ADR-0002). Mirrors the
+ *  Prisma `EmbeddingStatus` enum; shared so API + UI type it uniformly. */
+export type EmbeddingStatus = 'pending' | 'processing' | 'done' | 'failed' | 'skipped';
+
 // Enumerations as ordered arrays for validation (API) and dropdowns (UI).
 export const DOCUMENT_STATUSES: readonly DocumentStatus[] = [
   'draft',
@@ -392,6 +396,11 @@ export const AUDIT_ACTIONS = {
   NOTIFICATION_PREFERENCES_UPDATED: 'notification_preferences.updated',
   NOTIFICATION_DIGEST_SENT: 'notification_digest.sent',
   NOTIFICATION_DIGEST_FAILED: 'notification_digest.failed',
+  // RAG Phase 1 — semantic embedding index (ADR-0002).
+  EMBEDDING_INDEXED: 'embedding.indexed',
+  EMBEDDING_FAILED: 'embedding.failed',
+  // RAG Phase 4 — grounded chat.
+  RAG_CHAT: 'rag.chat',
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
@@ -452,6 +461,9 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   [AUDIT_ACTIONS.NOTIFICATION_PREFERENCES_UPDATED]: 'Notification preferences updated',
   [AUDIT_ACTIONS.NOTIFICATION_DIGEST_SENT]: 'Notification digest sent',
   [AUDIT_ACTIONS.NOTIFICATION_DIGEST_FAILED]: 'Notification digest failed',
+  [AUDIT_ACTIONS.EMBEDDING_INDEXED]: 'Embedding indexed',
+  [AUDIT_ACTIONS.EMBEDDING_FAILED]: 'Embedding failed',
+  [AUDIT_ACTIONS.RAG_CHAT]: 'Policy chatbot answer',
 };
 
 /** One row of the audit trail as surfaced to the audit query API + UI. */
@@ -1280,4 +1292,58 @@ export interface NotificationDigestRunResult {
   usersConsidered: number;
   digestsSent: number;
   failed: number;
+}
+
+// ---------------------------------------------------------------------------
+// RAG chatbot — retrieval, citations, and grounded-answer contracts (ADR-0002,
+// RAG Phases 3–5). Shared so the API, the agent layer, and the ESS Portal /
+// PolicyManager chat UI all speak the same shapes.
+// ---------------------------------------------------------------------------
+
+/**
+ * A source reference for a grounded answer. `index` is the 1-based citation
+ * marker used in the answer text ([1], [2], …) and matches the position in the
+ * context passed to the LLM. Carries enough to render + deep-link the source.
+ */
+export interface RagCitation {
+  index: number;
+  documentId: string;
+  versionId: string;
+  chunkId: string;
+  documentTitle: string;
+  documentNumber: string | null;
+  /** A short excerpt of the cited chunk, for display. */
+  snippet: string;
+}
+
+/** The grounding context built from retrieved chunks, ready for the LLM. */
+export interface RagContext {
+  /** Numbered, chunk-delimited passage block the model grounds its answer on. */
+  contextText: string;
+  citations: RagCitation[];
+  /** True when no in-scope sources were found (drives an "I don't know" answer). */
+  empty: boolean;
+}
+
+/** A single chat message in a RAG conversation. */
+export interface RagChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  /** Assistant messages carry the citations backing the answer. */
+  citations?: RagCitation[];
+}
+
+/** Request to the chat endpoint (Phase 4). `conversationId` continues a thread. */
+export interface RagChatRequest {
+  message: string;
+  conversationId?: string;
+}
+
+/** Response from the chat endpoint (Phase 4). */
+export interface RagChatResponse {
+  conversationId: string;
+  answer: string;
+  citations: RagCitation[];
+  /** True when the model had no sources and declined to answer from documents. */
+  grounded: boolean;
 }

@@ -1,6 +1,7 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { RagModule } from '../rag/rag.module';
 import { DocumentAccessService } from './document-access.service';
 import { DocumentAclController } from './document-acl.controller';
 import { DocumentAclService } from './document-acl.service';
@@ -25,7 +26,7 @@ import { TextExtractionService } from './text-extraction.service';
  * AuditModule for AuditService, and AuthModule for the guards/strategy.
  */
 @Module({
-  imports: [AuthModule, NotificationsModule],
+  imports: [AuthModule, NotificationsModule, forwardRef(() => RagModule)],
   controllers: [
     DocumentsController,
     DocumentsEditorController,

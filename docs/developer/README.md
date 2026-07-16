@@ -20,6 +20,7 @@ Sections to fill as the app is built:
 - Import & consolidation. See [Import & Consolidation](./import-consolidation.md).
 - OCR/search and review annotations. See [OCR, Search, and Review Annotations](./ocr-search-and-annotations.md).
 - Compare, evidence binder, advanced search, and notifications. See [Compare, Evidence Binder, Search, And Notifications](./compare-binder-search-notifications.md).
+- RAG embedding pipeline (pgvector semantic index). See [RAG Embedding Pipeline](./rag-embedding-pipeline.md).
 - Testing strategy.
 - Code comment standards.
 

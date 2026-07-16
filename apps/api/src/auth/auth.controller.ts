@@ -130,8 +130,14 @@ export class AuthController {
    */
   @Get('oidc/azure')
   @ApiOperation({ summary: 'Redirect to Azure AD to start a single sign-on login.' })
-  async startAzureLogin(@Res() res: Response): Promise<void> {
-    const url = await this.azureOidc.buildAuthorizationUrl();
+  async startAzureLogin(
+    @Res() res: Response,
+    @Query('returnTo') returnTo?: string,
+  ): Promise<void> {
+    // `returnTo` (optional) lets a trusted app (e.g. the ESS Portal) receive the
+    // tokens at its own /auth/callback. It is allow-list-validated in the service;
+    // an unlisted value is ignored (defaults to this app's web callback).
+    const url = await this.azureOidc.buildAuthorizationUrl(returnTo);
     res.redirect(url);
   }
 
@@ -148,7 +154,7 @@ export class AuthController {
     @Res() res: Response,
     @ReqContext() ctx: RequestContext,
   ): Promise<void> {
-    const webBase = (
+    const defaultBase = (
       this.config.get<string>('WEB_APP_URL') ||
       this.config.get<string>('FRONTEND_URL') ||
       'http://localhost:5173'
@@ -163,14 +169,18 @@ export class AuthController {
         actorUserId: result.user.id,
         targetType: 'user',
         ...ctx,
-        metadata: { provider: AZURE_OIDC_PROVIDER },
+        metadata: { provider: AZURE_OIDC_PROVIDER, crossApp: !!profile.returnTo },
       });
 
       const fragment = new URLSearchParams({
         accessToken: result.accessToken,
         refreshToken: result.refreshToken,
       });
-      res.redirect(`${webBase}/auth/callback#${fragment.toString()}`);
+      // `profile.returnTo` (when present) is the caller's FULL, allow-list-validated
+      // callback URL (e.g. https://portal.example.com/auth/pm-callback). Otherwise
+      // fall back to this app's own web callback.
+      const target = profile.returnTo ?? `${defaultBase}/auth/callback`;
+      res.redirect(`${target}#${fragment.toString()}`);
     } catch (err) {
       await this.audit.record({
         action: AUDIT_ACTIONS.USER_LOGIN_OIDC_FAILED,
@@ -178,7 +188,7 @@ export class AuthController {
         ...ctx,
         metadata: { provider: AZURE_OIDC_PROVIDER },
       });
-      res.redirect(`${webBase}/auth/callback#error=sso_failed`);
+      res.redirect(`${defaultBase}/auth/callback#error=sso_failed`);
     }
   }
 }

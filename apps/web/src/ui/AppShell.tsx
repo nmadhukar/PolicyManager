@@ -75,6 +75,7 @@ const UsersIcon = svgIcon('M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 
 const CircleStackIcon = svgIcon('M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125');
 const EnvelopeIcon = svgIcon('M21.75 6.75v10.5a2.25 2.25 0 0 1-2.25 2.25h-15a2.25 2.25 0 0 1-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25m19.5 0v.243a2.25 2.25 0 0 1-1.07 1.916l-7.5 4.615a2.25 2.25 0 0 1-2.36 0L3.32 8.91a2.25 2.25 0 0 1-1.07-1.916V6.75');
 const CommandLineIcon = svgIcon('m6.75 7.5 3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 18V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v12a2.25 2.25 0 0 0 2.25 2.25Z');
+const ChatIcon = svgIcon('M8 10h8M8 14h5M21 12a9 9 0 0 1-9 9 9 9 0 0 1-4-.9L3 21l1.9-5A9 9 0 1 1 21 12z');
 
 /**
  * ESS-style user menu: an avatar-icon + name button that opens a dropdown with
@@ -168,6 +169,7 @@ const NAV: NavItem[] = [
   { label: 'Dashboard', to: '/', icon: HomeIcon },
   { label: 'Library', to: '/library', icon: BookOpenIcon, requires: PERMISSIONS.DOCUMENT_READ },
   { label: 'Import', to: '/library/import', icon: ArrowUpTrayIcon, requires: PERMISSIONS.DOCUMENT_WRITE },
+  { label: 'Chat', to: '/chat', icon: ChatIcon },
   { label: 'Notifications', to: '/notifications', icon: BellIcon },
   // Personal dashboard: any signed-in user may be assigned as a reviewer.
   { label: 'Reviews', to: '/reviews', icon: DocumentCheckIcon },

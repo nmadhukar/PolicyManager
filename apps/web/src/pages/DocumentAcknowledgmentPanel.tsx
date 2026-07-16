@@ -30,7 +30,13 @@ function ackBadge(status: AckStatus): string {
  * version to selected roles/users and shows per-assignee completion. The API
  * enforces review.manage; a new version re-triggers acknowledgment on publish.
  */
-export function DocumentAcknowledgmentPanel({ doc }: { doc: DocumentDetail }) {
+export function DocumentAcknowledgmentPanel({
+  doc,
+  bare = false,
+}: {
+  doc: DocumentDetail;
+  bare?: boolean;
+}) {
   const statusQuery = useQuery({
     queryKey: ['ack-status', doc.id],
     queryFn: () => getAcknowledgmentStatus(doc.id),
@@ -39,16 +45,20 @@ export function DocumentAcknowledgmentPanel({ doc }: { doc: DocumentDetail }) {
   const forbidden = (statusQuery.error as AxiosError | null)?.response?.status === 403;
   const summary = statusQuery.data;
 
-  return (
-    <div className="card space-y-4 p-5">
-      <div>
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-muted">
-          Staff acknowledgment
-        </h2>
-        <p className="mt-1 text-xs text-ink-muted">
-          Distribute the current version for staff to read &amp; sign.
-        </p>
-      </div>
+  // In bare mode the SectionCard supplies the icon + 'Staff acknowledgment'
+  // title + subtitle, so the leading header block renders only in full mode.
+  const body = (
+    <>
+      {!bare && (
+        <div>
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-muted">
+            Staff acknowledgment
+          </h2>
+          <p className="mt-1 text-xs text-ink-muted">
+            Distribute the current version for staff to read &amp; sign.
+          </p>
+        </div>
+      )}
 
       {forbidden ? (
         <p className="text-sm text-ink-muted">You don&apos;t have access to manage acknowledgments.</p>
@@ -73,7 +83,7 @@ export function DocumentAcknowledgmentPanel({ doc }: { doc: DocumentDetail }) {
               aria-hidden
             />
           </div>
-          <ul className="space-y-1.5">
+          <ul className="max-h-56 space-y-1.5 overflow-y-auto pr-1">
             {summary.rows.map((r) => (
               <li
                 key={r.assignmentId}
@@ -101,8 +111,11 @@ export function DocumentAcknowledgmentPanel({ doc }: { doc: DocumentDetail }) {
       )}
 
       {!forbidden && <DistributeForm doc={doc} />}
-    </div>
+    </>
   );
+
+  if (bare) return <div className="space-y-4">{body}</div>;
+  return <div className="card space-y-4 p-5">{body}</div>;
 }
 
 function DistributeForm({ doc }: { doc: DocumentDetail }) {

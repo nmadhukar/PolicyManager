@@ -174,4 +174,72 @@ describe('DocumentExtractionService', () => {
     // Only MAX_EAGER_CONCURRENCY (4) reached the claim; the rest returned early.
     expect(prisma.documentVersion.updateMany).toHaveBeenCalledTimes(4);
   });
+
+  // --- RAG embedding hook (Phase 1) ---
+
+  it('triggers embedding after a successful (done, non-empty) extraction', async () => {
+    const prisma = makePrisma();
+    const embedding = { embedVersion: jest.fn().mockResolvedValue('done') };
+    const svc = new DocumentExtractionService(
+      prisma,
+      makeS3() as never,
+      makeText() as never,
+      makeAudit() as never,
+      embedding as never,
+    );
+
+    await svc.processVersion('v-1');
+
+    expect(embedding.embedVersion).toHaveBeenCalledWith('v-1');
+  });
+
+  it('does NOT trigger embedding when extraction is skipped (no text)', async () => {
+    const prisma = makePrisma();
+    const text = {
+      extractWithStatus: jest
+        .fn()
+        .mockResolvedValue({ text: '', status: 'skipped', ocrApplied: false, error: null }),
+    };
+    const embedding = { embedVersion: jest.fn().mockResolvedValue('skipped') };
+    const svc = new DocumentExtractionService(
+      prisma,
+      makeS3() as never,
+      text as never,
+      makeAudit() as never,
+      embedding as never,
+    );
+
+    await svc.processVersion('v-1');
+
+    expect(embedding.embedVersion).not.toHaveBeenCalled();
+  });
+
+  it('embedding failure never affects the extraction result (fire-and-forget)', async () => {
+    const prisma = makePrisma();
+    const embedding = { embedVersion: jest.fn().mockRejectedValue(new Error('embed down')) };
+    const svc = new DocumentExtractionService(
+      prisma,
+      makeS3() as never,
+      makeText() as never,
+      makeAudit() as never,
+      embedding as never,
+    );
+
+    // Extraction still resolves 'done' despite the embedding trigger rejecting.
+    await expect(svc.processVersion('v-1')).resolves.toBe('done');
+    expect(embedding.embedVersion).toHaveBeenCalled();
+  });
+
+  it('works with no EmbeddingService wired in (embedding optional)', async () => {
+    const prisma = makePrisma();
+    const svc = new DocumentExtractionService(
+      prisma,
+      makeS3() as never,
+      makeText() as never,
+      makeAudit() as never,
+    );
+
+    // No 5th arg → no embedding; extraction is unaffected.
+    await expect(svc.processVersion('v-1')).resolves.toBe('done');
+  });
 });

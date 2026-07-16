@@ -16,8 +16,10 @@ import { useToast } from '../ui/Toast';
  */
 export function DocumentReviewersPanel({
   doc,
+  bare = false,
 }: {
   doc: DocumentDetail;
+  bare?: boolean;
 }) {
   const queryClient = useQueryClient();
   const [editingSchedule, setEditingSchedule] = useState(false);
@@ -31,25 +33,50 @@ export function DocumentReviewersPanel({
   const reviewers = reviewersQuery.data ?? [];
   const forbidden = (reviewersQuery.error as AxiosError | null)?.response?.status === 403;
 
-  return (
-    <div className="card space-y-4 p-5">
-      <div>
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-muted">Review schedule</h2>
-          {!forbidden && (
-            <button
-              type="button"
-              className="text-xs font-medium text-brand-600 hover:underline"
-              onClick={() => setEditingSchedule((v) => !v)}
-            >
-              {editingSchedule ? 'Cancel' : 'Edit schedule'}
-            </button>
-          )}
+  // Header block: full mode shows the h2 + subtitle + edit toggle; bare mode
+  // (composed under the Governance card's 'Review schedule' CardSection sub-
+  // header, which already supplies the title) shows only a compact edit-toggle
+  // row + subtitle.
+  const header = bare ? (
+    <div>
+      {!forbidden && (
+        <div className="mb-1 flex justify-end">
+          <button
+            type="button"
+            className="text-xs font-medium text-brand-600 hover:underline"
+            onClick={() => setEditingSchedule((v) => !v)}
+          >
+            {editingSchedule ? 'Cancel' : 'Edit schedule'}
+          </button>
         </div>
-        <p className="mt-1 text-xs text-ink-muted">
-          Reviewers are notified when this document comes due for QC review.
-        </p>
+      )}
+      <p className="text-xs text-ink-muted">
+        Reviewers are notified when this document comes due for QC review.
+      </p>
+    </div>
+  ) : (
+    <div>
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-muted">Review schedule</h2>
+        {!forbidden && (
+          <button
+            type="button"
+            className="text-xs font-medium text-brand-600 hover:underline"
+            onClick={() => setEditingSchedule((v) => !v)}
+          >
+            {editingSchedule ? 'Cancel' : 'Edit schedule'}
+          </button>
+        )}
       </div>
+      <p className="mt-1 text-xs text-ink-muted">
+        Reviewers are notified when this document comes due for QC review.
+      </p>
+    </div>
+  );
+
+  const body = (
+    <>
+      {header}
 
       {editingSchedule ? (
         <EditScheduleForm doc={doc} onDone={() => setEditingSchedule(false)} />
@@ -100,8 +127,11 @@ export function DocumentReviewersPanel({
       </div>
 
       {!forbidden && <AddReviewerForm documentId={doc.id} onAdded={invalidate} />}
-    </div>
+    </>
   );
+
+  if (bare) return <div className="space-y-4">{body}</div>;
+  return <div className="card space-y-4 p-5">{body}</div>;
 }
 
 function EditScheduleForm({ doc, onDone }: { doc: DocumentDetail; onDone: () => void }) {

@@ -26,6 +26,8 @@ export interface AzureOidcProfile {
   /** Whether Azure AD asserts the email claim is verified. */
   emailVerified: boolean;
   name: string;
+  /** Allow-listed origin to hand tokens back to (null = default web app). */
+  returnTo?: string | null;
 }
 
 /**
@@ -86,10 +88,52 @@ export class AzureOidcService {
   }
 
   /**
-   * Starts a login: persists state/nonce/PKCE, returns the Azure AD authorize
-   * URL to redirect the browser to.
+   * Web origins allowed to receive SSO tokens via `returnTo`. PolicyManager's own
+   * web app is always allowed; additional trusted apps (the ESS Portal) are added
+   * via SSO_ALLOWED_RETURN_ORIGINS (comma-separated). An unlisted origin is
+   * ignored (falls back to the default web app), so a captured start URL can't
+   * redirect tokens to an attacker's site.
    */
-  async buildAuthorizationUrl(): Promise<string> {
+  private allowedReturnOrigins(): string[] {
+    const own = [
+      this.configService.get<string>('WEB_APP_URL'),
+      this.configService.get<string>('FRONTEND_URL'),
+    ];
+    const extra = (this.configService.get<string>('SSO_ALLOWED_RETURN_ORIGINS') || '').split(',');
+    return [...own, ...extra]
+      .filter((v): v is string => !!v)
+      .map((s) => s.trim().replace(/\/+$/, ''))
+      .filter(Boolean);
+  }
+
+  /**
+   * Validates a caller-supplied `returnTo` against the allow-list. The value may
+   * be a bare origin OR a full callback URL (origin + path); we validate the
+   * ORIGIN against the allow-list but return the FULL normalized URL (minus any
+   * trailing slash), so a trusted app can name its own callback path
+   * (e.g. https://portal.example.com/auth/pm-callback). Returns null if the origin
+   * is not allow-listed or the input isn't a valid absolute URL — preventing an
+   * open redirect. Query/fragment are stripped (tokens are appended as a fragment).
+   */
+  validateReturnTo(returnTo: string | undefined): string | null {
+    if (!returnTo) return null;
+    let url: URL;
+    try {
+      url = new URL(returnTo);
+    } catch {
+      return null;
+    }
+    if (!this.allowedReturnOrigins().includes(url.origin)) return null;
+    // Keep only origin + path (drop query/hash); strip a trailing slash.
+    return `${url.origin}${url.pathname}`.replace(/\/+$/, '');
+  }
+
+  /**
+   * Starts a login: persists state/nonce/PKCE, returns the Azure AD authorize
+   * URL to redirect the browser to. `returnTo` (an allow-listed origin) lets a
+   * second trusted app receive the tokens at its own /auth/callback.
+   */
+  async buildAuthorizationUrl(returnTo?: string): Promise<string> {
     this.requireEnabled();
     const client = await this.getClient();
 
@@ -104,6 +148,7 @@ export class AzureOidcService {
         nonce,
         codeVerifier,
         redirectUri: this.callbackUrl(),
+        returnTo: this.validateReturnTo(returnTo),
         expiresAt: new Date(Date.now() + OIDC_STATE_TTL_MS),
       },
     });
@@ -167,6 +212,9 @@ export class AzureOidcService {
       // any Azure-asserted email as verified for account-linking purposes.
       emailVerified: true,
       name: (claims.name as string | undefined) ?? email,
+      // Re-validate against the current allow-list at callback time (defence in
+      // depth: the allow-list could have tightened since login started).
+      returnTo: this.validateReturnTo(record.returnTo ?? undefined),
     };
   }
 }

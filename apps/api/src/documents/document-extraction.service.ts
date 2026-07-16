@@ -3,11 +3,13 @@ import { Interval } from '@nestjs/schedule';
 import type { Prisma } from '@prisma/client';
 import type { ExtractionStatus, AuthUser } from '@policymanager/shared';
 import { AUDIT_ACTIONS } from '@policymanager/shared';
+import { Optional } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { S3Service } from '../storage/s3.service';
 import { AuditService } from '../audit/audit.service';
 import type { RequestContext } from '../audit/request-context';
 import { TextExtractionService } from './text-extraction.service';
+import { EmbeddingService } from '../rag/embedding.service';
 
 export interface ExtractionBatchResult {
   queued?: number;
@@ -48,7 +50,26 @@ export class DocumentExtractionService {
     private readonly s3: S3Service,
     private readonly textExtraction: TextExtractionService,
     private readonly audit: AuditService,
+    // Optional so extraction is fully functional without RAG wired in (and so
+    // existing unit tests that construct this service with 4 args still compile).
+    // When present, a successful extraction triggers best-effort embedding.
+    @Optional() private readonly embedding?: EmbeddingService,
   ) {}
+
+  /**
+   * Best-effort, fire-and-forget embedding trigger after a successful extraction.
+   * Embedding is decoupled from extraction: a failure here is swallowed (the
+   * EmbeddingService also has its own poller/retry), and it never affects the
+   * extraction result or the version bytes. No-op when RAG isn't wired in.
+   */
+  private triggerEmbedding(versionId: string): void {
+    if (!this.embedding) return;
+    void this.embedding
+      .embedVersion(versionId)
+      .catch((err) =>
+        this.logger.warn(`Embedding trigger failed for version ${versionId}: ${(err as Error).message}`),
+      );
+  }
 
   @Interval(POLL_INTERVAL_MS)
   async pollPending(): Promise<void> {
@@ -216,6 +237,11 @@ export class DocumentExtractionService {
         },
       });
       await this.recordProcessed(version.documentId, version.id, extracted.status, extracted.ocrApplied);
+      // On successful extraction, kick off best-effort semantic embedding. Only
+      // when text was actually produced — an empty `done` has nothing to embed.
+      if (extracted.status === 'done' && extracted.text.length > 0) {
+        this.triggerEmbedding(version.id);
+      }
       return extracted.status;
     } catch (err) {
       const message = (err as Error).message;

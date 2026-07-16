@@ -65,6 +65,7 @@ model User {
   notificationDeliveries    NotificationDelivery[]      @relation("NotificationDeliveryRecipient")
   savedSearches             SavedSearch[]              @relation("SavedSearchOwner")
   evidenceBinderJobs        EvidenceBinderJob[]         @relation("EvidenceBinderRequester")
+  ragConversations          RagConversation[]          @relation("RagConversationOwner")
 
   @@schema("policytracker")
 }
@@ -166,6 +167,10 @@ model OidcState {
   nonce        String
   codeVerifier String
   redirectUri  String
+  // Allow-listed web origin to hand the tokens back to after login. Lets a second
+  // trusted app (e.g. the ESS Portal) start SSO here and receive the token at its
+  // own /auth/callback. Null = PolicyManager's own web app (the default).
+  returnTo     String?
   expiresAt    DateTime
   createdAt    DateTime @default(now())
 
@@ -215,6 +220,19 @@ enum ExtractionStatus {
   @@schema("policytracker")
 }
 
+/// Lifecycle of the RAG embedding index for a DocumentVersion (ADR-0002).
+/// Mirrors ExtractionStatus so the embedding worker can reuse the same
+/// compare-and-swap claim + bounded-retry design as the extraction worker.
+enum EmbeddingStatus {
+  pending
+  processing
+  done
+  failed
+  skipped
+
+  @@schema("policytracker")
+}
+
 /// Hierarchical folder for documents (Policies & Procedures, Job Descriptions,
 /// IOP/PHP Curriculum, Forms…). `parentId` gives an arbitrary-depth tree.
 model DocumentCategory {
@@ -248,6 +266,11 @@ model Document {
   // A plain `@unique` would collide with soft-deleted rows and mis-report a
   // re-import of a number whose only holder is in the trash (C4/D3).
   documentNumber   String?
+  // Document-type-neutral discriminator (ADR-0004 D2). FREE STRING, never an enum:
+  // the corpus is open-ended (policy | sop | procedure | handbook | clinical_manual
+  // | contract | regulatory | training | report | ... | unstructured), so a closed
+  // Postgres enum would need ALTER TYPE per new type. Null until classified.
+  documentType     String?
   categoryId       String?
   ownerId          String
   description      String?
@@ -258,6 +281,10 @@ model Document {
   reviewCadence    ReviewCadence   @default(none)
   nextReviewDate   DateTime?
   effectiveDate    DateTime?
+  // Document-type-specific attributes (jurisdiction, contract party, regulatory
+  // citation, …) without a migration per type (ADR-0004). Empty object default.
+  // MUST NOT hold secrets. Orthogonal to categoryId (folder) and documentType.
+  metadata         Json            @default("{}")
   // Soft-delete only (AGENTS.md §9): a non-null `deletedAt` hides the document
   // from default lists/reads but never removes the row or its version bytes.
   // `deletedById` records who trashed it. Both cleared on restore.
@@ -285,6 +312,7 @@ model Document {
   importItems               ImportItem[]               @relation("ImportItemDocument")
   annotations               DocumentAnnotation[]        @relation("DocumentAnnotationDoc")
   evidenceBinderJobs        EvidenceBinderJob[]         @relation("EvidenceBinderDocument")
+  chunks                    DocumentChunk[]             @relation("ChunkDocument")
 
   @@index([title])
   @@index([categoryId])
@@ -329,6 +357,16 @@ model DocumentVersion {
   extractionAttempts  Int            @default(0)
   extractionStartedAt DateTime?
   searchVector     Unsupported("tsvector")?
+  // RAG embedding lifecycle (ADR-0002). Independent of extraction: embedding
+  // runs after extraction succeeds and is best-effort/env-gated. Own status +
+  // error + claim timestamp + attempt cap because this model has no @updatedAt,
+  // so the embedding worker reclaims stale `processing` rows the same way the
+  // extraction worker does (see embeddingStartedAt / embeddingAttempts).
+  embeddingStatus     EmbeddingStatus @default(pending)
+  embeddingError      String?         @db.Text
+  embeddingAttempts   Int             @default(0)
+  embeddingStartedAt  DateTime?
+  embeddedAt          DateTime?
   createdAt      DateTime       @default(now())
 
   document                  Document                   @relation("DocumentVersions", fields: [documentId], references: [id], onDelete: Cascade)
@@ -338,12 +376,85 @@ model DocumentVersion {
   acknowledgmentAssignments AcknowledgmentAssignment[] @relation("AckVersion")
   annotations               DocumentAnnotation[]       @relation("AnnotationVersion")
   evidenceBinderJobs        EvidenceBinderJob[]        @relation("EvidenceBinderVersion")
+  chunks                    DocumentChunk[]            @relation("ChunkVersion")
 
   @@unique([documentId, versionNumber])
   @@index([documentId])
   @@index([extractionStatus])
+  @@index([embeddingStatus])
   // Dedup hot path: import checksum lookups scan by checksum (D7).
   @@index([checksum])
+  @@schema("policytracker")
+}
+
+/// A single embedded chunk of a DocumentVersion's extracted text (ADR-0002).
+/// One row per chunk; the embedding vector is stored in a pgvector column that
+/// Prisma can't type, so it's declared Unsupported and managed by raw-SQL
+/// migration (mirrors DocumentVersion.searchVector). Chunks carry documentId +
+/// versionId so retrieval (Phase 2/3) re-filters through the same ACL/visibility
+/// seam as document download (AGENTS.md §8). Chunks cascade-delete with their
+/// version, and are replaced wholesale on re-index (idempotent embedding).
+model DocumentChunk {
+  id            String   @id @default(uuid())
+  documentId    String
+  versionId     String
+  chunkIndex    Int
+  content       String   @db.Text
+  tokenCount    Int
+  embedding     Unsupported("vector")?
+  embeddingModel String
+  createdAt     DateTime @default(now())
+  /// Stored generated tsvector over `content` (mirrors DocumentVersion.searchVector).
+  /// Lets full-text search retrieve a chunk independently of vector search, so
+  /// exact phrases (policy numbers, regulation names, section titles) can be
+  /// found via lexical match alone (RAG hybrid retrieval).
+  searchVector  Unsupported("tsvector")?
+
+  // --- Generic structural metadata (ADR-0004, Option A) -------------------
+  // Document-type-neutral section/page provenance stored INLINE on the chunk
+  // (no separate section table). All nullable/defaulted: an UNSTRUCTURED doc,
+  // or a chunk produced before the structure detector exists, degrades cleanly
+  // to null/[]/{}. Populated by the structure-aware chunker; the two hot
+  // retrieval legs read these as scalar `dc.*` with ZERO new joins.
+  /// Coarse structural class this chunk belongs to. FREE STRING, never an enum
+  /// (type-neutrality): e.g. "policy" | "sop" | "procedure" | "clause" |
+  /// "article" | "section" | "chapter" | "appendix". Null for unstructured docs.
+  sectionType                 String?
+  /// Raw human-facing identifier as printed ("705", "SOP-0045", "8.3", "IV",
+  /// "Appendix B", "42 CFR Part 2"). Null when no identifier was detected.
+  sectionIdentifier           String?
+  /// Case/format-folded identifier for EXACT lookup + boosting (retrieval joins
+  /// on this, not the raw form). Roman numerals are folded to arabic where the
+  /// detector can ("iv" -> "4"). Null when there is no identifier.
+  normalizedSectionIdentifier String?
+  /// Human title of the section ("Controlled Substance Handling").
+  sectionTitle                String?
+  /// Ordered heading breadcrumb, root->leaf (["Chapter 7","705","705.3"]). Empty
+  /// array for unstructured docs. text[] (NOT ltree — identifiers contain dots/
+  /// spaces/dashes ltree labels forbid); also the materialization source for a
+  /// future normalized DocumentSection tree (ADR-0004 D5).
+  headingPath                 String[]  @default([])
+  /// 1-based inclusive page span this chunk covers. Null when the extractor
+  /// yields no page geometry. `pageEnd >= pageStart` enforced by a DB CHECK.
+  pageStart                   Int?
+  pageEnd                     Int?
+  /// Detector-/type-specific extras (list depth, table flag, clause refs) with no
+  /// migration per doc type. Empty object default. MUST NOT hold secrets.
+  metadata                    Json      @default("{}")
+
+  document Document        @relation("ChunkDocument", fields: [documentId], references: [id], onDelete: Cascade)
+  version  DocumentVersion @relation("ChunkVersion", fields: [versionId], references: [id], onDelete: Cascade)
+
+  @@unique([versionId, chunkIndex])
+  @@index([documentId])
+  @@index([versionId])
+  // Exact-identifier retrieval hot paths. The PARTIAL predicates (only rows that
+  // carry an identifier / type) are added in the migration raw SQL — Prisma can't
+  // express `WHERE ... IS NOT NULL`, so these @@index lines are the base shape and
+  // the migration replaces them with partial indexes of the same name.
+  @@index([documentId, normalizedSectionIdentifier])
+  @@index([normalizedSectionIdentifier])
+  @@index([sectionType])
   @@schema("policytracker")
 }
 
@@ -984,5 +1095,55 @@ model NotificationDelivery {
 
   @@index([recipientId, channel, createdAt])
   @@index([notificationId])
+  @@schema("policytracker")
+}
+
+// ---------------------------------------------------------------------------
+// RAG chatbot — conversation storage (RAG Phase 4, ADR-0002)
+// ---------------------------------------------------------------------------
+
+enum RagMessageRole {
+  user
+  assistant
+
+  @@schema("policytracker")
+}
+
+/// A chat thread between a user and the policy chatbot. Owned by one user;
+/// retrieval within it is still ACL-scoped to what that user may see.
+model RagConversation {
+  id        String   @id @default(uuid())
+  userId    String
+  title     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User         @relation("RagConversationOwner", fields: [userId], references: [id], onDelete: Cascade)
+  messages RagMessage[] @relation("RagMessageConversation")
+
+  @@index([userId, updatedAt])
+  @@schema("policytracker")
+}
+
+/// One turn in a conversation. Assistant messages carry the citations (JSON) that
+/// backed the grounded answer, so the thread is fully reconstructable.
+model RagMessage {
+  id             String         @id @default(uuid())
+  conversationId String
+  role           RagMessageRole
+  content        String         @db.Text
+  /// RagCitation[] for assistant turns; null/empty for user turns. Stored as JSON
+  /// (not a relation) so a citation survives even if a doc is later re-versioned.
+  citations      Json?
+  grounded       Boolean        @default(false)
+  createdAt      DateTime       @default(now())
+  /// Monotonic per-row tiebreaker. A `createMany` batch (user + assistant turn)
+  /// binds one `now()` to every row in the statement, so `createdAt` alone cannot
+  /// order same-turn messages; this autoincrement always reflects insertion order.
+  sequence       Int            @default(autoincrement())
+
+  conversation RagConversation @relation("RagMessageConversation", fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, sequence])
   @@schema("policytracker")
 }

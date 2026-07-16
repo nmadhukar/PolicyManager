@@ -20,7 +20,7 @@ import { useToast } from '../ui/Toast';
  * the access level (editable) plus the per-document ACL grants with add/remove,
  * and explains confidential semantics inline. Server enforces the real boundary.
  */
-export function DocumentAclPanel({ doc }: { doc: DocumentDetail }) {
+export function DocumentAclPanel({ doc, bare = false }: { doc: DocumentDetail; bare?: boolean }) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const aclQuery = useQuery({ queryKey: ['acl', doc.id], queryFn: () => listAcl(doc.id) });
@@ -39,14 +39,18 @@ export function DocumentAclPanel({ doc }: { doc: DocumentDetail }) {
   const grants = aclQuery.data ?? [];
   const forbidden = (aclQuery.error as AxiosError | null)?.response?.status === 403;
 
-  return (
-    <div className="card space-y-4 p-5">
-      <div>
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-muted">Access control</h2>
-        <p className="mt-1 text-xs text-ink-muted">
-          Who can see and use this document.
-        </p>
-      </div>
+  // In bare mode the SectionCard supplies the icon + 'Access control' title +
+  // subtitle, so the leading header block renders only in full mode.
+  const body = (
+    <>
+      {!bare && (
+        <div>
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-muted">Access control</h2>
+          <p className="mt-1 text-xs text-ink-muted">
+            Who can see and use this document.
+          </p>
+        </div>
+      )}
 
       {/* Access level */}
       <div>
@@ -124,8 +128,11 @@ export function DocumentAclPanel({ doc }: { doc: DocumentDetail }) {
       </div>
 
       {!forbidden && <AddGrantForm documentId={doc.id} onAdded={invalidate} />}
-    </div>
+    </>
   );
+
+  if (bare) return <div className="space-y-4">{body}</div>;
+  return <div className="card space-y-4 p-5">{body}</div>;
 }
 
 function RemoveGrantButton({

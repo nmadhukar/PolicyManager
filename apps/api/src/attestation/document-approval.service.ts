@@ -18,6 +18,7 @@ import { DocumentAccessService, type AccessDocument } from '../documents/documen
 import { AttestationService } from './attestation.service';
 import { AcknowledgmentService } from './acknowledgment.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { EmbeddingService } from '../rag/embedding.service';
 
 /**
  * Document approval / publish sign-off (PM-0602). Approving records an immutable
@@ -36,7 +37,19 @@ export class DocumentApprovalService {
     private readonly attestation: AttestationService,
     private readonly acknowledgment: AcknowledgmentService,
     private readonly notifications?: NotificationsService,
+    // Optional (like notifications): when RAG is wired in, publishing ensures the
+    // current version is embedded so it's retrievable. Best-effort, non-blocking.
+    private readonly embedding?: EmbeddingService,
   ) {}
+
+  /** Fire-and-forget embedding of a version after publish. No-op without RAG. */
+  private triggerEmbedding(versionId: string): void {
+    if (!this.embedding) return;
+    void this.embedding.embedVersion(versionId).catch(() => {
+      // Swallowed: the EmbeddingService has its own poller/retry; a publish must
+      // never fail because embedding did.
+    });
+  }
 
   async approve(
     documentId: string,
@@ -121,6 +134,10 @@ export class DocumentApprovalService {
         ctx,
       );
       await this.notifications?.notifyPolicyPublished(documentId, doc.currentVersionId, user);
+      // Ensure the now-published current version is embedded so the RAG chatbot
+      // can retrieve it. Idempotent (skips if already `done`) and best-effort —
+      // a failure here never affects the publish result.
+      this.triggerEmbedding(doc.currentVersionId);
     }
 
     return { documentId, status, attestation, acknowledgmentsRetriggered };

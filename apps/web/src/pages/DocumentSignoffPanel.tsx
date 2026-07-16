@@ -21,6 +21,7 @@ import { downloadBlob } from '../lib/download';
 import { apiErrorMessage } from '../lib/apiError';
 import { formatDateTime } from '../lib/format';
 import { Modal } from '../ui/Modal';
+import { CardSection } from '../ui/SectionCard';
 
 /** Sanitizes a document identifier into a safe file-name stem. */
 function fileStem(doc: DocumentDetail): string {
@@ -44,7 +45,7 @@ function actionBadge(action: AttestationItem['action']): string {
  * Approve action (document.approve → typed sign-off), and the compliance cover
  * page (preview + cover-prepended export). Read for any document.read user.
  */
-export function DocumentSignoffPanel({ doc }: { doc: DocumentDetail }) {
+export function DocumentSignoffPanel({ doc, bare = false }: { doc: DocumentDetail; bare?: boolean }) {
   const { user, hasPermission } = useAuth();
   const canApprove = hasPermission(PERMISSIONS.DOCUMENT_APPROVE);
   const [signing, setSigning] = useState(false);
@@ -61,6 +62,63 @@ export function DocumentSignoffPanel({ doc }: { doc: DocumentDetail }) {
     (a) => a.action === 'approved' && a.userId === user?.id && a.versionId === doc.currentVersion?.id,
   );
 
+  // The Approve control (or the "already approved" note). In bare mode it rides
+  // in the CardSection action slot; in full mode it's the card header action.
+  const approveAction = (
+    <>
+      {canApprove && !alreadyApproved && (
+        <button className="btn-primary !py-1.5 text-sm" onClick={() => setSigning(true)}>
+          Approve
+        </button>
+      )}
+      {canApprove && alreadyApproved && (
+        <span className="text-xs text-ink-muted">You already approved this version.</span>
+      )}
+    </>
+  );
+
+  const approvalChain = chainQuery.isLoading ? (
+    <p className="text-sm text-ink-muted">Loading sign-offs…</p>
+  ) : chainQuery.isError ? (
+    <p className="text-sm text-red-600">Couldn&apos;t load sign-offs.</p>
+  ) : chain.length === 0 ? (
+    <p className="text-sm text-ink-muted">No sign-offs recorded yet.</p>
+  ) : (
+    <ul className="max-h-56 space-y-2 overflow-y-auto pr-1">
+      {chain.map((a) => (
+        <li key={a.id} className="rounded-lg border border-slate-200 px-3 py-2 text-sm">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-medium text-ink">{a.signatureName}</span>
+            <span
+              className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${actionBadge(a.action)}`}
+            >
+              {ATTESTATION_ACTION_LABELS[a.action]}
+            </span>
+          </div>
+          <div className="mt-0.5 text-xs text-ink-muted">
+            {a.signatureRole ? `${a.signatureRole} · ` : ''}
+            {formatDateTime(a.signedAt)}
+            {a.versionNumber != null ? ` · v${a.versionNumber}` : ''}
+          </div>
+          {a.comments && <div className="mt-1 text-xs text-ink-soft">“{a.comments}”</div>}
+        </li>
+      ))}
+    </ul>
+  );
+
+  if (bare) {
+    return (
+      <>
+        <CardSection title="Sign-off" action={approveAction}>
+          {approvalChain}
+        </CardSection>
+        <CoverPageActions doc={doc} />
+        <EvidenceBinderActions doc={doc} />
+        {signing && <ApproveModal doc={doc} onClose={() => setSigning(false)} />}
+      </>
+    );
+  }
+
   return (
     <div className="card space-y-4 p-5">
       <div className="flex items-center justify-between gap-2">
@@ -68,48 +126,14 @@ export function DocumentSignoffPanel({ doc }: { doc: DocumentDetail }) {
           <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-muted">Sign-off</h2>
           <p className="mt-1 text-xs text-ink-muted">Approval chain &amp; compliance cover page.</p>
         </div>
-        {canApprove && !alreadyApproved && (
-          <button className="btn-primary !py-1.5 text-sm" onClick={() => setSigning(true)}>
-            Approve
-          </button>
-        )}
-        {canApprove && alreadyApproved && (
-          <span className="text-xs text-ink-muted">You already approved this version.</span>
-        )}
+        {approveAction}
       </div>
 
       <div className="border-t border-slate-100 pt-3">
         <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-muted">
           Approval chain
         </h3>
-        {chainQuery.isLoading ? (
-          <p className="text-sm text-ink-muted">Loading sign-offs…</p>
-        ) : chainQuery.isError ? (
-          <p className="text-sm text-red-600">Couldn&apos;t load sign-offs.</p>
-        ) : chain.length === 0 ? (
-          <p className="text-sm text-ink-muted">No sign-offs recorded yet.</p>
-        ) : (
-          <ul className="space-y-2">
-            {chain.map((a) => (
-              <li key={a.id} className="rounded-lg border border-slate-200 px-3 py-2 text-sm">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium text-ink">{a.signatureName}</span>
-                  <span
-                    className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${actionBadge(a.action)}`}
-                  >
-                    {ATTESTATION_ACTION_LABELS[a.action]}
-                  </span>
-                </div>
-                <div className="mt-0.5 text-xs text-ink-muted">
-                  {a.signatureRole ? `${a.signatureRole} · ` : ''}
-                  {formatDateTime(a.signedAt)}
-                  {a.versionNumber != null ? ` · v${a.versionNumber}` : ''}
-                </div>
-                {a.comments && <div className="mt-1 text-xs text-ink-soft">“{a.comments}”</div>}
-              </li>
-            ))}
-          </ul>
-        )}
+        {approvalChain}
       </div>
 
       <CoverPageActions doc={doc} />

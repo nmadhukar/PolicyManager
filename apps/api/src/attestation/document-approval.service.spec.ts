@@ -163,4 +163,76 @@ describe('DocumentApprovalService', () => {
     });
     expect(attestation.record).not.toHaveBeenCalled();
   });
+
+  // RAG Phase 2: publishing best-effort embeds the now-current version so the
+  // chatbot can retrieve it. The hook is fire-and-forget and must never make a
+  // publish fail. `embedding` is the optional 7th constructor arg (after the
+  // optional 6th `notifications`), so we pass notifications=undefined.
+  const makeEmbedding = () => ({ embedVersion: jest.fn().mockResolvedValue('done') });
+  const buildWithEmbedding = (embedding = makeEmbedding()) => {
+    const prisma = makePrisma();
+    const audit = makeAudit();
+    const access = makeAccess();
+    const attestation = makeAttestation();
+    const ack = makeAck();
+    return {
+      prisma,
+      audit,
+      access,
+      attestation,
+      ack,
+      embedding,
+      svc: new DocumentApprovalService(
+        prisma as never,
+        audit as never,
+        access as never,
+        attestation as never,
+        ack as never,
+        undefined, // notifications (6th, optional)
+        embedding as never, // embedding (7th, optional)
+      ),
+    };
+  };
+
+  it('triggers embedding for the current version on publish', async () => {
+    const { svc, prisma, embedding } = buildWithEmbedding();
+    prisma.document.findFirst.mockResolvedValue(docRow());
+
+    await svc.approve('doc-1', { publish: true }, approver);
+
+    // triggerEmbedding fires synchronously (void promise) before approve resolves.
+    expect(embedding.embedVersion).toHaveBeenCalledWith('v-2');
+  });
+
+  it('does NOT trigger embedding when not publishing', async () => {
+    const { svc, prisma, embedding } = buildWithEmbedding();
+    prisma.document.findFirst.mockResolvedValue(docRow());
+
+    await svc.approve('doc-1', { publish: false }, approver);
+
+    expect(embedding.embedVersion).not.toHaveBeenCalled();
+  });
+
+  it('publish still succeeds when embedding throws (non-blocking)', async () => {
+    const embedding = makeEmbedding();
+    embedding.embedVersion.mockRejectedValue(new Error('embed down'));
+    const { svc, prisma } = buildWithEmbedding(embedding);
+    prisma.document.findFirst.mockResolvedValue(docRow());
+
+    // The rejected embedding is swallowed inside triggerEmbedding's .catch —
+    // approve must resolve normally with a published result.
+    const res = await svc.approve('doc-1', { publish: true }, approver);
+
+    expect(embedding.embedVersion).toHaveBeenCalledWith('v-2');
+    expect(res).toMatchObject({ status: 'published' });
+  });
+
+  it('works with no embedding service injected', async () => {
+    const { svc, prisma } = build(); // no 6th/7th arg
+    prisma.document.findFirst.mockResolvedValue(docRow());
+
+    const res = await svc.approve('doc-1', { publish: true }, approver);
+
+    expect(res).toMatchObject({ status: 'published' });
+  });
 });

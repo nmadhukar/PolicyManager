@@ -6,6 +6,7 @@ import { ApiClientsPage } from './pages/ApiClientsPage';
 import { AuditLogPage } from './pages/AuditLogPage';
 import { AuthCallbackPage } from './pages/AuthCallbackPage';
 import { ChangePasswordPage } from './pages/ChangePasswordPage';
+import { ChatPage } from './pages/ChatPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { DocumentDetailPage } from './pages/DocumentDetailPage';
 import { EmailAdminPage } from './pages/EmailAdminPage';
@@ -67,6 +68,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <DocumentDetailPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/chat"
+        element={
+          <ProtectedRoute>
+            <ChatPage />
           </ProtectedRoute>
         }
       />

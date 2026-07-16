@@ -128,7 +128,17 @@ export class TextExtractionService {
         typeof (result as { total?: unknown }).total === 'number'
           ? ((result as { total: number }).total)
           : null;
-      return { text: result.text ?? '', pages };
+      // Preserve PAGE BOUNDARIES with a form-feed (\f) between pages so the
+      // structure-aware chunker (RAG Phase 2) can attribute each chunk to a page
+      // range for citations. When per-page text is available we join it with \f;
+      // otherwise we fall back to the flat concatenated text (no page geometry, and
+      // pageStart/pageEnd degrade to null downstream — safe for non-paginated docs).
+      const perPage = (result as { pages?: Array<{ text?: string }> }).pages;
+      const text =
+        Array.isArray(perPage) && perPage.length > 1
+          ? perPage.map((p) => p.text ?? '').join('\f')
+          : (result.text ?? '');
+      return { text, pages };
     } finally {
       // Release the pdf.js worker so tests/process don't hang on open handles.
       await parser.destroy().catch(() => undefined);

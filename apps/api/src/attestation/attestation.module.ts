@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { DocumentsModule } from '../documents/documents.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { RagModule } from '../rag/rag.module';
 import { AcknowledgmentService } from './acknowledgment.service';
 import { AcknowledgmentsController } from './acknowledgments.controller';
 import { AttestationService } from './attestation.service';
@@ -20,7 +21,7 @@ import { DocumentSignoffController } from './document-signoff.controller';
  * Phase 5 completion seam (record a `reviewed` sign-off) and sweep acknowledgments.
  */
 @Module({
-  imports: [AuthModule, DocumentsModule, NotificationsModule],
+  imports: [AuthModule, DocumentsModule, NotificationsModule, RagModule],
   controllers: [DocumentSignoffController, AcknowledgmentsController],
   providers: [
     AttestationService,

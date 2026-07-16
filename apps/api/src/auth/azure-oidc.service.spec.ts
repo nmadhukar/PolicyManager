@@ -46,6 +46,50 @@ describe('AzureOidcService', () => {
     });
   });
 
+  describe('validateReturnTo (cross-app SSO allow-list)', () => {
+    const svc = (env: Record<string, string> = {}) => build(makePrisma(), env);
+
+    it('returns null for undefined/empty/malformed input', () => {
+      const s = svc({ FRONTEND_URL: 'http://localhost:5173' });
+      expect(s.validateReturnTo(undefined)).toBeNull();
+      expect(s.validateReturnTo('')).toBeNull();
+      expect(s.validateReturnTo('not a url')).toBeNull();
+    });
+
+    it("allows this app's own FRONTEND_URL / WEB_APP_URL origin (keeps the path)", () => {
+      const s = svc({ FRONTEND_URL: 'http://localhost:5173' });
+      // Full callback URL preserved (origin validated, path kept, trailing slash trimmed).
+      expect(s.validateReturnTo('http://localhost:5173/auth/callback')).toBe(
+        'http://localhost:5173/auth/callback',
+      );
+      // A bare origin normalizes to just the origin.
+      expect(s.validateReturnTo('http://localhost:5173/')).toBe('http://localhost:5173');
+    });
+
+    it('allows a full callback URL on an allow-listed origin (e.g. the ESS Portal)', () => {
+      const s = svc({
+        FRONTEND_URL: 'http://localhost:5173',
+        SSO_ALLOWED_RETURN_ORIGINS: 'https://portal.example.com, http://localhost:5200',
+      });
+      // The caller names its OWN callback path; we keep it (origin is allow-listed).
+      expect(s.validateReturnTo('http://localhost:5200/auth/pm-callback')).toBe(
+        'http://localhost:5200/auth/pm-callback',
+      );
+      expect(s.validateReturnTo('https://portal.example.com/auth/pm-callback?x=1#y')).toBe(
+        'https://portal.example.com/auth/pm-callback',
+      );
+    });
+
+    it('REJECTS an unlisted origin (security: no open redirect)', () => {
+      const s = svc({
+        FRONTEND_URL: 'http://localhost:5173',
+        SSO_ALLOWED_RETURN_ORIGINS: 'https://portal.example.com',
+      });
+      expect(s.validateReturnTo('https://evil.example.com/steal')).toBeNull();
+      expect(s.validateReturnTo('http://localhost:9999')).toBeNull();
+    });
+  });
+
   describe('disabled provider', () => {
     it('buildAuthorizationUrl refuses when OIDC_ENABLED is not "true"', async () => {
       const prisma = makePrisma();
