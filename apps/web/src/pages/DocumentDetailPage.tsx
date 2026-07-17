@@ -668,26 +668,39 @@ function VersionsCard({ doc, canWrite }: { doc: DocumentDetail; canWrite: boolea
     close();
   };
 
-  // While saving: the new version landed (count grew) -> stop.
-  const savedArrived = savingBaseline !== null && doc.versions.length > savingBaseline;
+  // While saving we keep the overlay up until the new version is not just PRESENT
+  // but SEARCH-READY: extraction has reached a terminal state ('done' = "Search
+  // ready", or 'failed'/'skipped' so a non-extractable save can't hang). This is
+  // why the version reveals already showing "Search ready" instead of flashing
+  // "Queued" first. A terminal-state check (not just 'done') prevents an overlay
+  // that never closes when extraction legitimately can't produce text.
+  const EXTRACTION_TERMINAL = ['done', 'failed', 'skipped'];
+  const newestVersion = doc.versions[0];
+  const saveComplete =
+    savingBaseline !== null &&
+    doc.versions.length > savingBaseline &&
+    !!newestVersion &&
+    EXTRACTION_TERMINAL.includes(newestVersion.extractionStatus);
   useEffect(() => {
     if (savingBaseline === null) return;
-    if (savedArrived) {
+    if (saveComplete) {
       setSavingBaseline(null);
       return;
     }
-    // Poll for the async save-back, and give up after ~15s so the overlay can't
-    // hang forever — e.g. a no-change close (OnlyOffice writes no new version)
-    // or a failed save. A real save's version row appears within a few seconds.
+    // Poll for the async save-back AND the async extraction that follows it, so the
+    // overlay stays up until the version is search-ready. Give up after ~30s so the
+    // overlay can't hang forever — e.g. a no-change close (OnlyOffice writes no new
+    // version) or a stuck extraction. Extraction of a typical edit lands in a few
+    // seconds; the wider ceiling accommodates larger documents.
     const poll = setInterval(() => {
       void queryClient.invalidateQueries({ queryKey: ['document', doc.id] });
     }, 1500);
-    const giveUp = setTimeout(() => setSavingBaseline(null), 15_000);
+    const giveUp = setTimeout(() => setSavingBaseline(null), 30_000);
     return () => {
       clearInterval(poll);
       clearTimeout(giveUp);
     };
-  }, [savingBaseline, savedArrived, queryClient, doc.id]);
+  }, [savingBaseline, saveComplete, queryClient, doc.id]);
 
   const current = doc.currentVersion;
   // What editor (if any) applies to the current version.
