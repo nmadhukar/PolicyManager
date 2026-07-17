@@ -60,30 +60,62 @@ describe('RagChatController', () => {
   });
 
   describe('GET conversations', () => {
-    it('delegates to chatService.listConversations with the current user', async () => {
+    it('delegates to chatService.listConversations with the user + pagination', async () => {
       const service = makeService();
-      const rows = [{ id: 'c-1', title: 't', createdAt: 'x', updatedAt: 'y' }];
-      service.listConversations.mockResolvedValue(rows as never);
+      const page = { items: [{ id: 'c-1', title: 't', createdAt: 'x', updatedAt: 'y' }], hasMore: true };
+      service.listConversations.mockResolvedValue(page as never);
       const controller = build(service);
 
-      const result = await controller.listConversations(user);
+      // Query params arrive as strings; the controller parses them to ints.
+      const result = await controller.listConversations(user, '5', '0');
 
-      expect(service.listConversations).toHaveBeenCalledWith(user);
-      expect(result).toBe(rows);
+      expect(service.listConversations).toHaveBeenCalledWith(user, { limit: 5, offset: 0 });
+      expect(result).toBe(page);
+    });
+
+    it('parses omitted/blank pagination to undefined (no 400 on absent params)', async () => {
+      const service = makeService();
+      service.listConversations.mockResolvedValue({ items: [], hasMore: false } as never);
+      const controller = build(service);
+
+      await controller.listConversations(user, undefined, '');
+
+      expect(service.listConversations).toHaveBeenCalledWith(user, {
+        limit: undefined,
+        offset: undefined,
+      });
     });
   });
 
   describe('GET conversations/:id', () => {
-    it('delegates to chatService.getConversation with the id and current user', async () => {
+    it('delegates to chatService.getConversation with id, user + message pagination', async () => {
       const service = makeService();
-      const convo = { id: 'c-1', title: 't', messages: [] };
+      const convo = { id: 'c-1', title: 't', messages: [], hasMoreOlder: true, oldestSequence: 11 };
       service.getConversation.mockResolvedValue(convo as never);
       const controller = build(service);
 
-      const result = await controller.getConversation('c-1', user);
+      const result = await controller.getConversation('c-1', user, '10', '11');
 
-      expect(service.getConversation).toHaveBeenCalledWith('c-1', user);
+      expect(service.getConversation).toHaveBeenCalledWith('c-1', user, {
+        messageLimit: 10,
+        before: 11,
+      });
       expect(result).toBe(convo);
+    });
+
+    it('loads the latest page when no cursor is given (absent params → undefined)', async () => {
+      const service = makeService();
+      service.getConversation.mockResolvedValue({ messages: [], hasMoreOlder: false } as never);
+      const controller = build(service);
+
+      // messageLimit present, before ABSENT — the exact shape the frontend sends,
+      // and the exact case that used to 400 with ParseIntPipe({optional}).
+      await controller.getConversation('c-1', user, '10', undefined);
+
+      expect(service.getConversation).toHaveBeenCalledWith('c-1', user, {
+        messageLimit: 10,
+        before: undefined,
+      });
     });
   });
 

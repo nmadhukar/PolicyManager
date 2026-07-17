@@ -39,6 +39,8 @@ describe('EmbeddingService', () => {
       // simulate an unchanged version and exercise the skip-reembed path.
       documentChunk: {
         findMany: jest.fn().mockResolvedValue([]),
+        // Backs pruneOtherVersionChunks (delete stale prior-version chunks after embed).
+        deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
       // $transaction(cb) runs the callback with a tx that shares $executeRaw.
       $transaction: jest.fn(async (cb: (tx: unknown) => Promise<unknown>) =>
@@ -190,6 +192,34 @@ describe('EmbeddingService', () => {
     expect(sql).toMatch(/DELETE FROM .*DocumentChunk/i);
   });
 
+  it('batches inserts and raises the tx timeout for a LARGE document (regression: 5s tx timeout)', async () => {
+    // A big document produces many chunks. Regression guard for the real failure
+    // "Transaction already closed (5000ms)" on a ~700-chunk manual: inserts must be
+    // BATCHED (few INSERT round-trips, not one per chunk) inside a transaction whose
+    // timeout is raised well above Prisma's 5s default.
+    const bigText = 'A meaningful policy sentence about restraint and safety. '.repeat(4000);
+    const prisma = makePrisma({ extractedText: bigText });
+    const provider = makeProvider();
+    const svc = build(prisma, provider, makeAudit());
+
+    await expect(svc.embedVersion('v-1')).resolves.toBe('done');
+
+    // The transaction was called with an explicit timeout option well above 5s.
+    const txCall = prisma.$transaction.mock.calls[0];
+    expect(txCall[1]).toMatchObject({ timeout: expect.any(Number) });
+    expect(txCall[1].timeout).toBeGreaterThan(5000);
+
+    // Inserts are batched: the number of INSERT statements is far below the number
+    // of chunks (1 DELETE + a handful of batched INSERTs, not ~N inserts).
+    const insertCount = prisma._executeRaw.mock.calls.filter((call: unknown[]) => {
+      const s = call[0];
+      const sql = Array.isArray(s) ? s.join('') : String(s);
+      return /INSERT INTO .*DocumentChunk/i.test(sql);
+    }).length;
+    expect(insertCount).toBeGreaterThan(0);
+    expect(insertCount).toBeLessThan(50); // batched, not hundreds of round-trips
+  });
+
   it('INSERT carries the structural metadata columns (RAG-P7/Option A)', async () => {
     const prisma = makePrisma();
     const provider = makeProvider();
@@ -197,15 +227,18 @@ describe('EmbeddingService', () => {
 
     await svc.embedVersion('v-1');
 
-    // The INSERT statements are every raw call after the leading DELETE.
-    const insertCall = prisma._executeRaw.mock.calls.find((call: unknown[]) => {
-      const raw = call[0];
-      const sql = Array.isArray(raw) ? raw.join('') : String(raw);
-      return /INSERT INTO .*DocumentChunk/i.test(sql);
-    });
+    // The INSERT is a batched multi-row statement composed with Prisma.sql, so the
+    // static SQL text (column list) lives in the Prisma.Sql object's `.strings`.
+    const sqlTextOf = (raw: unknown): string => {
+      if (Array.isArray(raw)) return raw.join('');
+      const o = raw as { strings?: string[]; sql?: string };
+      return o?.strings?.join(' ') ?? o?.sql ?? String(raw);
+    };
+    const insertCall = prisma._executeRaw.mock.calls.find((call: unknown[]) =>
+      /INSERT INTO .*DocumentChunk/i.test(sqlTextOf(call[0])),
+    );
     expect(insertCall).toBeDefined();
-    const raw = insertCall![0];
-    const sql = Array.isArray(raw) ? raw.join('') : String(raw);
+    const sql = sqlTextOf(insertCall![0]);
     // Every new structural column must be present in the column list so the
     // Phase-2 detector only has to POPULATE TextChunk, never re-touch this INSERT.
     for (const col of [
@@ -231,18 +264,21 @@ describe('EmbeddingService', () => {
 
     // The plain chunker never sets structural fields, so the bound params for
     // headingPath / metadata must be a real empty array / '{}' — never null/
-    // undefined (the DB columns are NOT NULL DEFAULT). Prisma tagged-template
-    // interpolations arrive as the trailing args of the $executeRaw call.
+    // undefined (the DB columns are NOT NULL DEFAULT). Chunks are inserted in a
+    // BATCHED multi-row INSERT built with Prisma.sql/Prisma.join: the tagged
+    // template's strings are call[0]; the joined-rows Prisma.Sql (call[1]) holds
+    // every interpolated param flattened in its `.values` array.
     const insertCall = prisma._executeRaw.mock.calls.find((call: unknown[]) => {
-      const rawArg = call[0];
-      const sql = Array.isArray(rawArg) ? rawArg.join('') : String(rawArg);
+      const s = call[0];
+      const sql = Array.isArray(s) ? s.join('') : String(s);
       return /INSERT INTO .*DocumentChunk/i.test(sql);
     });
-    const params = (insertCall as unknown[]).slice(1);
+    expect(insertCall).toBeDefined();
+    const values = ((insertCall as unknown[])[1] as { values?: unknown[] })?.values ?? [];
     // headingPath is passed as an actual array param.
-    expect(params).toContainEqual([]);
+    expect(values).toContainEqual([]);
     // metadata is passed as the JSON string '{}' (cast to ::jsonb in SQL).
-    expect(params).toContain('{}');
+    expect(values).toContain('{}');
   });
 
   it('never throws on failure — returns a terminal status instead (AC7/AC10)', async () => {
@@ -300,6 +336,54 @@ describe('EmbeddingService', () => {
       await expect(svc.embedVersion('v-1')).resolves.toBe('done');
       expect(provider.embed).toHaveBeenCalled();
       expect(prisma.$transaction).toHaveBeenCalled();
+    });
+  });
+
+  describe('stale prior-version chunk cleanup', () => {
+    it('deletes OTHER versions\' chunks after a full re-embed (keeps only the latest)', async () => {
+      const prisma = makePrisma();
+      const svc = build(prisma, makeProvider(), makeAudit());
+
+      await expect(svc.embedVersion('v-1')).resolves.toBe('done');
+
+      // After embedding v-1, prior versions' chunks for the same document are purged.
+      expect(prisma.documentChunk.deleteMany).toHaveBeenCalledWith({
+        where: { documentId: 'doc-1', versionId: { not: 'v-1' } },
+      });
+    });
+
+    it('also prunes on the safe-reprocessing (no re-embed) path', async () => {
+      const prisma = makePrisma();
+      const provider = makeProvider();
+      const { ChunkingService: CS } = await import('./chunking.service');
+      const { StructureDetectorService: SDS } = await import('./structure-detector.service');
+      const { StructureAwareChunkingService: SACS } = await import(
+        './structure-aware-chunking.service'
+      );
+      const expectedChunks = new SACS(new CS(), new SDS()).chunk(DONE_TEXT, {
+        maxTokens: 500,
+        overlapTokens: 60,
+      });
+      prisma.documentChunk.findMany.mockResolvedValueOnce(
+        expectedChunks.map((c) => ({ content: c.content, embeddingModel: provider.model })),
+      );
+      const svc = build(prisma, provider, makeAudit());
+
+      await expect(svc.embedVersion('v-1')).resolves.toBe('done');
+      // No re-embed happened, but stale prior-version chunks are still pruned.
+      expect(provider.embed).not.toHaveBeenCalled();
+      expect(prisma.documentChunk.deleteMany).toHaveBeenCalledWith({
+        where: { documentId: 'doc-1', versionId: { not: 'v-1' } },
+      });
+    });
+
+    it('a prune failure is swallowed and never turns a successful embed into a failure', async () => {
+      const prisma = makePrisma();
+      prisma.documentChunk.deleteMany.mockRejectedValueOnce(new Error('db blip'));
+      const svc = build(prisma, makeProvider(), makeAudit());
+
+      // Embed still resolves 'done' despite the cleanup throwing.
+      await expect(svc.embedVersion('v-1')).resolves.toBe('done');
     });
   });
 

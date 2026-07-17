@@ -26,6 +26,12 @@ const MAX_EMBEDDING_ATTEMPTS = 3;
 /** A `processing` row older than this is treated as orphaned (worker crashed). */
 const STALE_PROCESSING_MS = 10 * 60_000;
 const DEFAULT_BATCH_LIMIT = 10;
+/** Chunks written per multi-row INSERT (keeps round-trips low for big documents). */
+const INSERT_BATCH_SIZE = 100;
+/** Interactive-transaction budget for the delete+insert of one version's chunks.
+ *  Well above Prisma's 5s default so a large document (many hundreds of chunks)
+ *  never trips "Transaction already closed"; batching keeps real time far below this. */
+const REPLACE_CHUNKS_TX_TIMEOUT_MS = 120_000;
 
 /**
  * Semantic embedding worker (RAG Phase 1, ADR-0002).
@@ -161,6 +167,8 @@ export class EmbeddingService {
           source: 'system',
           metadata: { chunks: chunks.length, model: this.provider.model, reembedded: false },
         });
+        // Keep only this (current, published) version's chunks in the index.
+        await this.pruneOtherVersionChunks(version.documentId, version.id);
         return 'done';
       }
 
@@ -185,6 +193,9 @@ export class EmbeddingService {
         source: 'system',
         metadata: { chunks: chunks.length, model: this.provider.model, reembedded: true },
       });
+      // Keep only this (current, published) version's chunks in the index — a new
+      // version supersedes the prior version's now-stale embeddings.
+      await this.pruneOtherVersionChunks(version.documentId, version.id);
       return 'done';
     } catch (err) {
       const message = (err as Error).message ?? 'Unknown embedding error';
@@ -258,36 +269,48 @@ export class EmbeddingService {
       );
     }
     const model = this.provider.model;
-    await this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`
-        DELETE FROM "policytracker"."DocumentChunk" WHERE "versionId" = ${versionId}
-      `;
-      for (let i = 0; i < chunks.length; i++) {
-        const chunk = chunks[i];
-        const embeddingSql = toSql(vectors[i]);
-        // Structural metadata (ADR-0004, Option A). The plain chunker leaves these
-        // unset, so they persist as null/[]/{}; the structure-aware chunker (Phase 2)
-        // fills them and this same INSERT carries them — no second write path.
-        // headingPath binds as a Postgres text[] array param; metadata as ::jsonb.
-        const headingPath = chunk.headingPath ?? [];
-        const metadata = JSON.stringify(chunk.metadata ?? {});
+    await this.prisma.$transaction(
+      async (tx) => {
         await tx.$executeRaw`
-          INSERT INTO "policytracker"."DocumentChunk"
-            ("id", "documentId", "versionId", "chunkIndex", "content", "tokenCount",
-             "embedding", "embeddingModel",
-             "sectionType", "sectionIdentifier", "normalizedSectionIdentifier",
-             "sectionTitle", "headingPath", "pageStart", "pageEnd", "metadata",
-             "createdAt")
-          VALUES
-            (gen_random_uuid(), ${documentId}, ${versionId}, ${chunk.chunkIndex}, ${chunk.content},
-             ${chunk.tokenCount}, ${embeddingSql}::"policytracker"."vector", ${model},
-             ${chunk.sectionType ?? null}, ${chunk.sectionIdentifier ?? null},
-             ${chunk.normalizedSectionIdentifier ?? null}, ${chunk.sectionTitle ?? null},
-             ${headingPath}, ${chunk.pageStart ?? null}, ${chunk.pageEnd ?? null},
-             ${metadata}::jsonb, now())
+          DELETE FROM "policytracker"."DocumentChunk" WHERE "versionId" = ${versionId}
         `;
-      }
-    });
+        // Insert in BATCHES of multi-row VALUES rather than one round-trip per chunk.
+        // A large document produces many hundreds of chunks; ~1 INSERT per chunk
+        // inside a single interactive transaction blows the (default 5s) timeout
+        // (a real failure hit on a ~700-chunk manual). Batching cuts the round-trips
+        // by INSERT_BATCH_SIZE× and, with the raised timeout below, keeps even very
+        // large documents well inside the transaction budget.
+        for (let start = 0; start < chunks.length; start += INSERT_BATCH_SIZE) {
+          const slice = chunks.slice(start, start + INSERT_BATCH_SIZE);
+          const rows = slice.map((chunk, j) => {
+            const headingPath = chunk.headingPath ?? [];
+            const metadata = JSON.stringify(chunk.metadata ?? {});
+            // Structural metadata (ADR-0004, Option A). headingPath binds as a
+            // Postgres text[] array param; metadata as ::jsonb.
+            return Prisma.sql`(
+              gen_random_uuid(), ${documentId}, ${versionId}, ${chunk.chunkIndex}, ${chunk.content},
+              ${chunk.tokenCount}, ${toSql(vectors[start + j])}::"policytracker"."vector", ${model},
+              ${chunk.sectionType ?? null}, ${chunk.sectionIdentifier ?? null},
+              ${chunk.normalizedSectionIdentifier ?? null}, ${chunk.sectionTitle ?? null},
+              ${headingPath}, ${chunk.pageStart ?? null}, ${chunk.pageEnd ?? null},
+              ${metadata}::jsonb, now()
+            )`;
+          });
+          await tx.$executeRaw`
+            INSERT INTO "policytracker"."DocumentChunk"
+              ("id", "documentId", "versionId", "chunkIndex", "content", "tokenCount",
+               "embedding", "embeddingModel",
+               "sectionType", "sectionIdentifier", "normalizedSectionIdentifier",
+               "sectionTitle", "headingPath", "pageStart", "pageEnd", "metadata",
+               "createdAt")
+            VALUES ${Prisma.join(rows)}
+          `;
+        }
+      },
+      // Raise the interactive-transaction timeout well above the default 5s so a
+      // large document's delete+insert completes; batching keeps actual time low.
+      { timeout: REPLACE_CHUNKS_TX_TIMEOUT_MS },
+    );
   }
 
   /**
@@ -317,6 +340,39 @@ export class EmbeddingService {
         `;
       }
     });
+  }
+
+  /**
+   * Delete chunks belonging to OTHER versions of the same document, keeping only
+   * `keepVersionId`'s chunks. Called after a version is embedded so that only the
+   * latest-embedded (current, published) version's chunks remain in the index — a
+   * new version's publish supersedes the prior version's embeddings, which are
+   * retrieval-invisible anyway (retrieval filters to `currentVersionId`) and only
+   * waste storage + bloat the vector index. Best-effort: a failure here is logged
+   * and swallowed — it must never turn a successful embed into a failure, and the
+   * leftover rows remain harmless (never retrieved). Version BYTES are untouched
+   * (AGENTS.md §9 immutability applies to source objects, not the derived index).
+   */
+  private async pruneOtherVersionChunks(documentId: string, keepVersionId: string): Promise<void> {
+    try {
+      const deleted = await this.prisma.documentChunk.deleteMany({
+        where: { documentId, versionId: { not: keepVersionId } },
+      });
+      if (deleted.count > 0) {
+        await this.audit.record({
+          action: AUDIT_ACTIONS.EMBEDDING_INDEXED,
+          documentId,
+          versionId: keepVersionId,
+          targetType: 'version',
+          source: 'system',
+          metadata: { prunedStaleChunks: deleted.count },
+        });
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Pruning stale chunks for document ${documentId} failed: ${(err as Error).message}`,
+      );
+    }
   }
 
   /**

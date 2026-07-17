@@ -15,6 +15,22 @@ export interface ChatInput {
 }
 
 const MAX_TITLE_CHARS = 80;
+/** Default conversations returned per page (matches the UI's "5 at a time"). */
+const DEFAULT_CONVERSATION_PAGE_SIZE = 5;
+/** Upper bound so a client can't request an unbounded conversation page. */
+const MAX_CONVERSATION_PAGE_SIZE = 50;
+/** Default message ROWS per page (a turn = user+assistant, so 10 rows ≈ 5 turns). */
+const DEFAULT_MESSAGE_PAGE_SIZE = 10;
+/** Upper bound on message rows per page. */
+const MAX_MESSAGE_PAGE_SIZE = 100;
+
+/** One row in the paginated conversation list (dates serialized to ISO strings). */
+export interface ConversationSummaryDto {
+  id: string;
+  title: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
 
 /**
  * The grounded-answer service (RAG Phase 4). Ties the Phase 3 orchestrator to an
@@ -94,22 +110,38 @@ export class ChatService {
     }
 
     // Keep only citations the answer actually references ([n] markers present).
-    const citations = this.filterReferencedCitations(answer, context.citations);
+    let citations = this.filterReferencedCitations(answer, context.citations);
 
-    // The grounded model was given (weak) context but cited NOTHING — meaning the
-    // sources didn't actually answer the question (a greeting, small talk, or a
-    // near-miss). Rather than show the cold grounded refusal, give the warm
-    // conversational reply. This is the robust signal that a distance threshold
-    // alone can't provide (a greeting can out-score a loosely-worded real query).
+    // The model cited NOTHING. Two very different cases hide behind this, and they
+    // must NOT be treated the same (the old bug: a real, correct answer that merely
+    // forgot its [n] markers was discarded and replaced with "I couldn't find…",
+    // which is why the SAME question failed once then worked on retry):
+    //
+    //  (a) The model actually declined to answer (a greeting, small talk, or an
+    //      honest "I don't have a source for that"). → show the warm conversational
+    //      reply, no sources.
+    //  (b) The model DID answer substantively from the context but omitted the
+    //      bracket markers (LLMs do this intermittently). → keep the answer and
+    //      attach the sources we gave it, rather than throwing a good answer away.
     if (citations.length === 0) {
-      let reply: string;
-      try {
-        reply = (await this.llm.complete(buildConversationalMessages(message, history))).trim();
-      } catch {
-        reply = NO_SOURCE_ANSWER;
+      if (this.looksLikeNonAnswer(answer)) {
+        let reply: string;
+        try {
+          reply = (await this.llm.complete(buildConversationalMessages(message, history))).trim();
+        } catch {
+          reply = NO_SOURCE_ANSWER;
+        }
+        this.logger.log('chat answered: grounded=false (model declined to answer)');
+        return this.persistAndRespond(user, input.conversationId, message, reply, [], false, ctx);
       }
-      this.logger.log('chat answered: grounded=false (no citations in grounded answer)');
-      return this.persistAndRespond(user, input.conversationId, message, reply, [], false, ctx);
+      // Substantive answer with no markers → salvage it: attach the sources that
+      // were in the grounding context (already ACL-scoped) so the user still gets
+      // the answer AND its provenance. Deterministic, no extra LLM call.
+      citations = context.citations;
+      this.logger.log(
+        `chat answered: grounded=true (recovered ${citations.length} uncited sources)`,
+      );
+      return this.persistAndRespond(user, input.conversationId, message, answer, citations, true, ctx);
     }
 
     // PII-safe observability: log the outcome shape only — never the question,
@@ -209,31 +241,82 @@ export class ChatService {
   }
 
   /**
-   * Retain only citations whose [n] marker actually appears in the answer. If the
-   * model cited nothing, return NONE — an answer that references no source is not
-   * grounded in one, so we must not attach (misleading) sources to it. This is
-   * what prevents an "I don't have a source" reply from showing a Sources list.
+   * Retain only citations whose [n] marker actually appears in the answer. This is
+   * what maps an answer's inline markers back to the sources it used.
    */
   private filterReferencedCitations(answer: string, citations: RagCitation[]): RagCitation[] {
     return citations.filter((c) => answer.includes(`[${c.index}]`));
   }
 
-  /** List the caller's conversations (most recent first). */
-  async listConversations(user: AuthUser) {
+  /**
+   * Heuristic: does an UNCITED grounded reply read as the model DECLINING to answer
+   * (a refusal / greeting / "no source") rather than a real answer that merely forgot
+   * its [n] markers? Used to decide whether to fall back to the conversational reply
+   * or salvage the answer + attach sources. Deliberately conservative — it only
+   * matches clear refusal phrasing and very short replies, so a genuine answer is
+   * never mistaken for a non-answer.
+   */
+  private looksLikeNonAnswer(answer: string): boolean {
+    const text = answer.trim().toLowerCase();
+    // Very short replies are greetings/acknowledgements, not policy answers.
+    if (text.length < 40) return true;
+    // Explicit "I couldn't find / don't have a source" style refusals.
+    const refusalPatterns = [
+      /\b(i (do not|don't|couldn't|could not|cannot|can't))\b.*\b(find|have|see|locate)\b/,
+      /\bno (policy|document|source|information)\b.*\b(cover|found|available|match)/,
+      /\bi('?m| am) (unable|not able)\b/,
+      /\bcontact (the|your) (policy owner|administrator|hr)\b/,
+    ];
+    return refusalPatterns.some((re) => re.test(text));
+  }
+
+  /**
+   * List the caller's conversations, most-recent-first, PAGINATED. Fetches
+   * `limit + 1` rows to cheaply detect whether more pages exist (`hasMore`) without
+   * a second count query. `limit`/`offset` are clamped to sane bounds. Default page 5.
+   */
+  async listConversations(
+    user: AuthUser,
+    opts: { limit?: number; offset?: number } = {},
+  ): Promise<{ items: ConversationSummaryDto[]; hasMore: boolean }> {
+    const limit = Math.min(
+      Math.max(1, Math.floor(opts.limit ?? DEFAULT_CONVERSATION_PAGE_SIZE)),
+      MAX_CONVERSATION_PAGE_SIZE,
+    );
+    const offset = Math.max(0, Math.floor(opts.offset ?? 0));
+
     const rows = await this.prisma.ragConversation.findMany({
       where: { userId: user.id },
       orderBy: { updatedAt: 'desc' },
       select: { id: true, title: true, createdAt: true, updatedAt: true },
+      skip: offset,
+      take: limit + 1, // one extra row → tells us if another page exists
     });
-    return rows.map((r) => ({
+    const hasMore = rows.length > limit;
+    const items = rows.slice(0, limit).map((r) => ({
       ...r,
       createdAt: r.createdAt.toISOString(),
       updatedAt: r.updatedAt.toISOString(),
     }));
+    return { items, hasMore };
   }
 
-  /** Load one conversation's messages — only if the caller owns it (else 403/404). */
-  async getConversation(id: string, user: AuthUser) {
+  /**
+   * Load a conversation with a PAGE of its messages, newest-anchored. The chat UI
+   * shows the most recent turns first and lazily loads OLDER ones as the user
+   * scrolls up (reverse infinite scroll), so:
+   *  - with no `before` cursor we return the NEWEST `messageLimit` rows;
+   *  - with `before` (a sequence) we return the `messageLimit` rows just older than it.
+   * Either way the returned `messages` are in ASCENDING (oldest→newest) order for
+   * display. `hasMoreOlder` tells the client whether an older page exists, and
+   * `oldestSequence` is the cursor to request it. A page is `messageLimit` message
+   * ROWS (a turn is a user+assistant pair, so 10 rows ≈ 5 turns).
+   */
+  async getConversation(
+    id: string,
+    user: AuthUser,
+    opts: { messageLimit?: number; before?: number } = {},
+  ) {
     const convo = await this.prisma.ragConversation.findUnique({
       where: { id },
       select: { id: true, userId: true, title: true, createdAt: true, updatedAt: true },
@@ -241,17 +324,36 @@ export class ChatService {
     if (!convo) throw new NotFoundException('Conversation not found');
     if (convo.userId !== user.id) throw new ForbiddenException('Not your conversation');
 
-    const messages = await this.prisma.ragMessage.findMany({
-      where: { conversationId: id },
-      orderBy: { sequence: 'asc' },
-      select: { role: true, content: true, citations: true, grounded: true, createdAt: true },
+    const limit = Math.min(
+      Math.max(2, Math.floor(opts.messageLimit ?? DEFAULT_MESSAGE_PAGE_SIZE)),
+      MAX_MESSAGE_PAGE_SIZE,
+    );
+    const before = typeof opts.before === 'number' ? opts.before : undefined;
+
+    // Fetch NEWEST-first (descending), bounded by the cursor, taking limit+1 to detect
+    // whether an even-older page exists. Then reverse to ascending for display.
+    const rows = await this.prisma.ragMessage.findMany({
+      where: {
+        conversationId: id,
+        ...(before !== undefined ? { sequence: { lt: before } } : {}),
+      },
+      orderBy: { sequence: 'desc' },
+      take: limit + 1,
+      select: { sequence: true, role: true, content: true, citations: true, grounded: true, createdAt: true },
     });
+    const hasMoreOlder = rows.length > limit;
+    const page = rows.slice(0, limit).reverse(); // oldest→newest for rendering
+    const oldestSequence = page.length > 0 ? page[0].sequence : null;
+
     return {
       id: convo.id,
       title: convo.title,
       createdAt: convo.createdAt.toISOString(),
       updatedAt: convo.updatedAt.toISOString(),
-      messages: messages.map((m) => ({
+      hasMoreOlder,
+      oldestSequence,
+      messages: page.map((m) => ({
+        sequence: m.sequence,
         role: m.role,
         content: m.content,
         grounded: m.grounded,

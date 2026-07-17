@@ -7,6 +7,7 @@ import {
   listConversations,
   sendChat,
   type ConversationMessage,
+  type ConversationSummary,
 } from '../api/ragChat';
 import { apiErrorMessage } from '../lib/apiError';
 import { AppShell } from '../ui/AppShell';
@@ -51,7 +52,9 @@ export function ChatPage() {
 
   const conversationsQuery = useQuery({
     queryKey: ['rag-conversations'],
-    queryFn: listConversations,
+    // The API is paginated ({ items, hasMore }); this page shows a generous first
+    // page (no infinite scroll here — the ESS Portal assistant drives that).
+    queryFn: async () => (await listConversations({ limit: 50 })).items,
   });
 
   const sendMutation = useMutation({
@@ -120,15 +123,21 @@ export function ChatPage() {
   };
 
   return (
-    <AppShell>
-      <div className="mx-auto max-w-6xl">
-        <h1 className="text-2xl font-semibold text-ink">Policy chatbot</h1>
-        <p className="mt-1 text-sm text-ink-muted">
-          Ask a question about your clinic&apos;s policies and get answers grounded in your
-          documents, with links to the sources.
-        </p>
+    <AppShell fill>
+      {/* Fill the fixed-height <main>: header stays put, the panels below take the
+          remaining height and scroll only their INNER regions (never the page). */}
+      <div className="mx-auto flex h-full max-w-6xl flex-col">
+        <div className="shrink-0">
+          <h1 className="text-2xl font-semibold text-ink">Policy chatbot</h1>
+          <p className="mt-1 text-sm text-ink-muted">
+            Ask a question about your clinic&apos;s policies and get answers grounded in your
+            documents, with links to the sources.
+          </p>
+        </div>
 
-        <div className="mt-5 grid gap-4 lg:grid-cols-[16rem_1fr]">
+        {/* Stacked (< lg): sidebar row auto-sizes (capped), chat row takes the rest.
+            Wide (lg+): two full-height columns. min-h-0 lets children scroll. */}
+        <div className="mt-5 grid min-h-0 flex-1 grid-rows-[auto_1fr] gap-4 lg:grid-cols-[16rem_1fr] lg:grid-rows-1">
           <ConversationSidebar
             query={conversationsQuery}
             activeId={conversationId}
@@ -155,7 +164,7 @@ function ConversationSidebar({
   onSelect,
   onNewChat,
 }: {
-  query: ReturnType<typeof useQuery<Awaited<ReturnType<typeof listConversations>>>>;
+  query: ReturnType<typeof useQuery<ConversationSummary[]>>;
   activeId: string | null;
   onSelect: (id: string) => void;
   onNewChat: () => void;
@@ -163,7 +172,9 @@ function ConversationSidebar({
   const conversations = query.data ?? [];
   return (
     <aside
-      className="card flex h-[calc(100vh-14rem)] min-h-[28rem] flex-col gap-3 p-3"
+      // Full height alongside the chat on wide screens; when stacked (< lg) it is
+      // capped so it can't eat the whole viewport and hide the chat below it.
+      className="card flex max-h-56 min-h-0 flex-col gap-3 p-3 lg:max-h-none lg:h-full"
       aria-label="Conversations"
     >
       <button className="btn-primary w-full" onClick={onNewChat}>
@@ -231,13 +242,13 @@ function ChatThread({
   }, [thread]);
 
   return (
-    <div className="card flex h-[calc(100vh-14rem)] min-h-[28rem] flex-col p-0">
+    <div className="card flex h-full min-h-0 flex-col p-0">
       <div
         ref={logRef}
         role="log"
         aria-live="polite"
         aria-label="Conversation"
-        className="flex-1 space-y-4 overflow-y-auto p-4"
+        className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4"
       >
         {thread.length === 0 ? (
           <EmptyState
@@ -258,7 +269,7 @@ function ChatThread({
       </div>
 
       <form
-        className="flex items-end gap-2 border-t border-slate-200 p-3"
+        className="flex shrink-0 items-end gap-2 border-t border-slate-200 p-3"
         onSubmit={(e) => {
           e.preventDefault();
           onSend();

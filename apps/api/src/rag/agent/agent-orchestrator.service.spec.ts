@@ -14,6 +14,17 @@ describe('AgentOrchestrator', () => {
     score: 0.9,
     documentTitle: 'Policy',
     documentNumber: 'PP-1',
+    versionNumber: 1,
+    effectiveDate: null,
+    exactMatch: false,
+    adjacent: false,
+    sectionType: null,
+    sectionIdentifier: null,
+    normalizedSectionIdentifier: null,
+    sectionTitle: null,
+    headingPath: [],
+    pageStart: null,
+    pageEnd: null,
   });
 
   const searchTool = (chunks: RetrievedChunk[]): AgentTool => ({

@@ -13,6 +13,17 @@ describe('SearchPolicyDocumentsTool', () => {
     score: 0.8,
     documentTitle: 'Policy',
     documentNumber: null,
+    versionNumber: 1,
+    effectiveDate: null,
+    exactMatch: false,
+    adjacent: false,
+    sectionType: null,
+    sectionIdentifier: null,
+    normalizedSectionIdentifier: null,
+    sectionTitle: null,
+    headingPath: [],
+    pageStart: null,
+    pageEnd: null,
   });
 
   const makeRetriever = (chunks: RetrievedChunk[] = [chunk()]) =>

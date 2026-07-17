@@ -2,7 +2,7 @@ import { DocumentExtractionService } from './document-extraction.service';
 
 describe('DocumentExtractionService', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const makePrisma = (): any => ({
+  const makePrisma = (docOver: Record<string, unknown> = {}): any => ({
     documentVersion: {
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       findUnique: jest.fn().mockResolvedValue({
@@ -14,6 +14,17 @@ describe('DocumentExtractionService', () => {
       }),
       update: jest.fn().mockResolvedValue({}),
       findMany: jest.fn().mockResolvedValue([{ id: 'v-1' }]),
+    },
+    // Backs the published-status gate for the embedding trigger. Defaults to a
+    // PUBLISHED document whose current version is v-1 (so the embed fires); tests
+    // override to a draft / non-current version to prove embedding is withheld.
+    document: {
+      findUnique: jest.fn().mockResolvedValue({
+        status: 'published',
+        currentVersionId: 'v-1',
+        deletedAt: null,
+        ...docOver,
+      }),
     },
   });
   const makeS3 = () => ({ getObjectBuffer: jest.fn().mockResolvedValue(Buffer.from('bytes')) });
@@ -175,10 +186,10 @@ describe('DocumentExtractionService', () => {
     expect(prisma.documentVersion.updateMany).toHaveBeenCalledTimes(4);
   });
 
-  // --- RAG embedding hook (Phase 1) ---
+  // --- RAG embedding hook: embed ONLY when the document is PUBLISHED ---
 
-  it('triggers embedding after a successful (done, non-empty) extraction', async () => {
-    const prisma = makePrisma();
+  it('triggers embedding after extraction WHEN the document is published', async () => {
+    const prisma = makePrisma(); // default: published, current version = v-1
     const embedding = { embedVersion: jest.fn().mockResolvedValue('done') };
     const svc = new DocumentExtractionService(
       prisma,
@@ -191,6 +202,55 @@ describe('DocumentExtractionService', () => {
     await svc.processVersion('v-1');
 
     expect(embedding.embedVersion).toHaveBeenCalledWith('v-1');
+  });
+
+  it('does NOT embed a DRAFT document after extraction (embed only on publish)', async () => {
+    const prisma = makePrisma({ status: 'draft' });
+    const embedding = { embedVersion: jest.fn().mockResolvedValue('done') };
+    const svc = new DocumentExtractionService(
+      prisma,
+      makeS3() as never,
+      makeText() as never,
+      makeAudit() as never,
+      embedding as never,
+    );
+
+    await svc.processVersion('v-1');
+
+    // Extraction still succeeds; embedding is withheld until the doc is published.
+    expect(embedding.embedVersion).not.toHaveBeenCalled();
+  });
+
+  it('does NOT embed when the extracted version is not the current version', async () => {
+    const prisma = makePrisma({ status: 'published', currentVersionId: 'v-newer' });
+    const embedding = { embedVersion: jest.fn().mockResolvedValue('done') };
+    const svc = new DocumentExtractionService(
+      prisma,
+      makeS3() as never,
+      makeText() as never,
+      makeAudit() as never,
+      embedding as never,
+    );
+
+    await svc.processVersion('v-1');
+
+    expect(embedding.embedVersion).not.toHaveBeenCalled();
+  });
+
+  it('does NOT embed a soft-deleted document', async () => {
+    const prisma = makePrisma({ status: 'published', deletedAt: new Date() });
+    const embedding = { embedVersion: jest.fn().mockResolvedValue('done') };
+    const svc = new DocumentExtractionService(
+      prisma,
+      makeS3() as never,
+      makeText() as never,
+      makeAudit() as never,
+      embedding as never,
+    );
+
+    await svc.processVersion('v-1');
+
+    expect(embedding.embedVersion).not.toHaveBeenCalled();
   });
 
   it('does NOT trigger embedding when extraction is skipped (no text)', async () => {

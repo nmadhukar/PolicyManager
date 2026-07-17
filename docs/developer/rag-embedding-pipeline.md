@@ -74,10 +74,16 @@ The migration is additive and `policytracker`-only: [`prisma/migrations/20260716
 
 ## Pipeline flow
 
-Embedding runs **after** extraction succeeds, reusing the extraction worker's async/claim design (input is the already-persisted `DocumentVersion.extractedText`, so there is no S3 re-fetch):
+**Embedding policy: a version is embedded ONLY when its document is PUBLISHED.** Drafts are never embedded, so no OpenAI cost is spent on unpublished or still-churning documents. Extraction and publish can complete in either order, and the version is embedded exactly once — whichever happens last fires the embed:
+
+- **Extraction finishes while already published** → the extraction worker embeds it (gated on live published status).
+- **Publish happens after extraction is already done** → `DocumentApprovalService.approve(..., { publish: true })` embeds the current version.
+- **Publish happens before extraction finishes** → the publish-time embed skips (extraction not `done`), and the extraction worker embeds it when extraction completes (it re-checks published status live).
+
+Embedding reuses the extraction worker's async/claim design (input is the already-persisted `DocumentVersion.extractedText`, so there is no S3 re-fetch):
 
 1. `DocumentExtractionService` extracts a version's text and sets `extractionStatus = done`.
-2. On `done`, a **bounded, fire-and-forget** hook (mirroring `startVersion`) calls `EmbeddingService.embedVersion(versionId)`. This hook never blocks or fails the extraction result — an embedding failure is not an extraction failure.
+2. On `done`, a **bounded, fire-and-forget** hook (`triggerEmbeddingIfPublished`) checks the document's live status and only calls `EmbeddingService.embedVersion(versionId)` **if the document is published and this is its current version**. This hook never blocks or fails the extraction result — an embedding failure is not an extraction failure.
 3. `EmbeddingService` performs a compare-and-swap claim (`pending → processing`), mirroring `claimableConditions()` since `DocumentVersion` has no `@updatedAt`.
 4. `StructureAwareChunkingService` splits `extractedText` **within detected structural units** (see below), honoring `RAG_CHUNK_MAX_TOKENS` and `RAG_CHUNK_OVERLAP_TOKENS`, and stamps each chunk with its section/page metadata. It never emits empty chunks and never lets a chunk span two sections.
 5. **Safe reprocessing gate:** before embedding, the service compares the new chunks' content + boundaries + model against the version's existing chunks. If **unchanged**, it does a metadata-only refresh (no OpenAI call, no vector churn) and returns `done` with `reembedded: false`. Only when content/boundaries actually change does it proceed to embed.
@@ -177,6 +183,35 @@ A `RetrievedChunk` carries enough context for Phase 3 grounding and citations:
 The retriever blends pgvector cosine similarity with the existing weighted tsvector full-text ranking, fuses the two with Reciprocal Rank Fusion, then re-filters the surviving documents through the **same ACL/visibility seam as document access** (AGENTS.md §8). It is additive and internal: Phase 2 adds **no HTTP route** and does not touch the public `ApiSearchHit` contract (see [Contract preservation](#contract-preservation)). Phase 3 wires it into the agent tool and chat.
 
 Like the rest of the pipeline, retrieval is **gated and fail-closed**: when `EmbeddingProvider.isConfigured()` is false (RAG off or no key), `retrieve` returns `[]` immediately — **zero embed calls and zero vector SQL**.
+
+### Production retrieval (Phase 3): three independent legs + exact-identifier priority
+
+`RetrievedChunk` now also carries structural provenance (`sectionType`, `sectionIdentifier`, `normalizedSectionIdentifier`, `sectionTitle`, `headingPath`, `pageStart`, `pageEnd`) plus `exactMatch` and `adjacent` flags — surfaced straight off the chunk (all legs `SELECT` the structural columns, so no extra join).
+
+Retrieval runs up to **three fully independent legs**, fused by RRF keyed by `chunkId`:
+
+1. **Vector KNN** — pgvector cosine similarity (HNSW), the semantic leg.
+2. **Full-text search** — chunk `searchVector` + document title/number/description, the lexical leg.
+3. **Exact-identifier leg (new)** — fires **only when the query names a structural identifier**. The query is analyzed with the same `StructureDetectorService` used at ingestion, so `Policy 705`, `Section 504`, `SOP-0045`, `Clause 8.3`, `Article IV` (→`4`), `42 CFR Part 2`, and identifiers embedded in a natural-language question all normalize to the folded id, which is looked up on the partial index `DocumentChunk_normalizedSectionIdentifier_idx`. Plain semantic queries skip this leg entirely (two legs only).
+
+**Exact-match priority:** a chunk from the exact leg gets an additive `RAG_EXACT_MATCH_BOOST`, so when a user asks for "Policy 705" that section ranks ahead of merely-similar chunks. The boost is additive — it never silences the vector/FTS legs.
+
+**Deterministic ranking:** ties on fused score are broken by `(documentId, chunkIndex)`, so identical inputs always yield an identical ordering.
+
+**Adjacent-chunk expansion:** after the top-K anchors are chosen, `chunkIndex ± RAG_ADJACENT_EXPANSION` neighbors are pulled in (one batched query) for continuous context. Neighbors stay within the **same version and the same section** (`normalizedSectionIdentifier`), so expansion never crosses a section boundary; they are flagged `adjacent: true` and inherit their anchor's rank position. This runs entirely over already-ACL-visible documents — no new authorization surface.
+
+All three legs apply the identical current-version / published / not-deleted scoping, and the fused candidates still pass through the **same ACL/visibility re-filter** (`DocumentAccessService.buildListWhere`) — authorization is unchanged.
+
+### Multi-document intelligence (Phase 4)
+
+`retrieveWithIntelligence(query, opts)` returns `{ chunks, collisions }`; `retrieve()` remains a thin wrapper returning just the chunks. On top of Phase 3, this layer adds:
+
+- **Document diversity + per-document caps** — anchors are selected in fused-score order but any single document may contribute at most `RAG_MAX_CHUNKS_PER_DOCUMENT` (default 3), so one large document can't fill `topK` and starve other relevant documents on a broad query. **Exact-identifier matches bypass the cap**, so an explicit "Policy 705" request can still assemble the whole section.
+- **Duplicate-identifier detection** — when a named identifier resolves to **more than one visible document** (e.g. two manuals each with a "Policy 705"), the collision is reported in `collisions` so the chat layer can present the options / ask one clarifying question instead of silently blending unrelated sections. Single-document matches produce no collision.
+- **Version-aware citations** — `hydrateDocuments` now also fetches the source version's `versionNumber` and the document's `effectiveDate`. `RetrievedChunk` and `RagCitation` carry `versionNumber`, `effectiveDate`, `sectionIdentifier`, `sectionTitle`, `pageStart`, `pageEnd`, so a reader knows exactly **which document, which version, which section, and which page** answered — never an opaque UUID.
+- **Richer source labels** — the grounding-context passage header now reads e.g. `[1] Clinical Policy Manual (PP-42) · § Policy 705 Seclusion · pp. 3–4 · v2`, so two documents sharing a section number are never confusable in the model's context.
+
+**Acceptance corpus:** [`test/rag-multidoc.e2e-spec.ts`](../../apps/api/test/rag-multidoc.e2e-spec.ts) seeds the ten required document types (policy manual, SOP, handbook, contract, regulatory, unstructured, duplicate identifiers, multiple versions, one large + several small) with deterministic embeddings and drives the retriever end-to-end, verifying exact-identifier retrieval, semantic retrieval, duplicate-identifier detection, current-version preference, large-document diversity, unstructured searchability, citation correctness, and determinism.
 
 ### Superseded chunks (filter, don't delete)
 

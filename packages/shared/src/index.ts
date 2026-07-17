@@ -1312,6 +1312,14 @@ export interface RagCitation {
   chunkId: string;
   documentTitle: string;
   documentNumber: string | null;
+  /** Version-aware citation fields (RAG Phase 4). Null when unknown/unset. */
+  versionNumber: number | null;
+  effectiveDate: string | null;
+  /** Structural provenance so a citation can name the exact section + page. */
+  sectionIdentifier: string | null;
+  sectionTitle: string | null;
+  pageStart: number | null;
+  pageEnd: number | null;
   /** A short excerpt of the cited chunk, for display. */
   snippet: string;
 }

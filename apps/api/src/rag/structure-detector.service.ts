@@ -305,12 +305,23 @@ export class StructureDetectorService {
   detectHeadings(text: string): DetectedHeading[] {
     const headings: DetectedHeading[] = [];
     const MAX_HEADING_LEN = 140;
+    const lines = text.split('\n');
     let offset = 0;
-    for (const line of text.split('\n')) {
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
       const trimmed = line.trim();
       if (trimmed.length > 0 && trimmed.length <= MAX_HEADING_LEN) {
         const match = this.matchHeadingLine(trimmed);
         if (match) {
+          // Cover-page / label-value layout ("Policy #<tab>705" with the title on a
+          // separate "Title<tab>Release of Information" line): when the matched
+          // heading has NO inline title, look a few lines ahead for a "Title …"
+          // label and adopt its value. Generic across policy/SOP/procedure manuals
+          // that use a tabular cover block; degrades to null when no such line.
+          if (!match.sectionTitle) {
+            const nearbyTitle = this.lookAheadTitle(lines, i);
+            if (nearbyTitle) match.sectionTitle = nearbyTitle;
+          }
           headings.push({ offset, rawLine: trimmed, ...match });
         }
       }
@@ -319,6 +330,24 @@ export class StructureDetectorService {
       offset += line.length + 1;
     }
     return headings;
+  }
+
+  /**
+   * In a label/value cover block, the section title sits on its own line as
+   * `Title <sep> <value>`. Scan a small window after the identifier line for such a
+   * line and return the value. Bounded look-ahead (a handful of lines) so it only
+   * picks up an adjacent cover block, never a distant paragraph.
+   */
+  private lookAheadTitle(lines: string[], from: number): string | null {
+    const WINDOW = 6;
+    for (let j = from + 1; j <= from + WINDOW && j < lines.length; j++) {
+      const m = lines[j].trim().match(/^Title\b[\s:#\-–—]*\t?\s*(.+)$/i);
+      if (m) {
+        const value = m[1].trim();
+        if (value.length > 0) return value;
+      }
+    }
+    return null;
   }
 
   /**

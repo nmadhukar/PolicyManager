@@ -120,6 +120,25 @@ describe('StructureDetectorService', () => {
       const text = 'Just some free-flowing notes.\n\nNo headings here at all, only sentences and paragraphs.';
       expect(svc.detectHeadings(text)).toEqual([]);
     });
+
+    it('detects a tab-separated cover-page block ("Policy #<tab>705" + "Title<tab>…")', () => {
+      // Real-world policy-manual cover layout: the number and title are on separate
+      // label/value lines. The identifier is matched inline; the title is adopted
+      // from the nearby "Title" line via bounded look-ahead.
+      const text = [
+        'Administrative Policies',
+        'Policy # \t705',
+        'Section \tClient Records',
+        'Title \tRelease of Information',
+        'Date \t01/03/2020',
+        'The purpose of this policy is to govern release of client information.',
+      ].join('\n');
+      const headings = svc.detectHeadings(text);
+      const h = headings.find((x) => x.normalizedSectionIdentifier === 'policy 705');
+      expect(h).toBeDefined();
+      expect(h!.sectionIdentifier).toBe('Policy 705');
+      expect(h!.sectionTitle).toBe('Release of Information');
+    });
   });
 
   describe('segment — never merges sections, builds heading breadcrumbs', () => {

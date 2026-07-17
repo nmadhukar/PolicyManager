@@ -67,6 +67,14 @@ export class ContextBuilder {
         chunkId: chunk.chunkId,
         documentTitle: chunk.documentTitle,
         documentNumber: chunk.documentNumber,
+        // Version-aware citation fields (Phase 4): which version + effective date
+        // answered, and the exact section + page, so a reader can locate the source.
+        versionNumber: chunk.versionNumber,
+        effectiveDate: chunk.effectiveDate ? chunk.effectiveDate.toISOString() : null,
+        sectionIdentifier: chunk.sectionIdentifier,
+        sectionTitle: chunk.sectionTitle,
+        pageStart: chunk.pageStart,
+        pageEnd: chunk.pageEnd,
         snippet: this.snippet(chunk.content),
       });
 
@@ -80,10 +88,34 @@ export class ContextBuilder {
     };
   }
 
-  /** Human-readable source label for a passage header. */
+  /**
+   * Human-readable source label for a passage header. Names the document, its
+   * number, the section (identifier + title), the page span, and the version — so
+   * the grounding context itself tells the model exactly which source each passage
+   * is, and two documents sharing a section number are never confusable.
+   */
   private sourceLabel(chunk: RetrievedChunk): string {
-    const number = chunk.documentNumber ? ` (${chunk.documentNumber})` : '';
-    return `${chunk.documentTitle}${number}`;
+    const parts: string[] = [chunk.documentTitle];
+    if (chunk.documentNumber) parts[0] += ` (${chunk.documentNumber})`;
+    const section = this.sectionLabel(chunk);
+    if (section) parts.push(section);
+    if (chunk.pageStart) {
+      parts.push(chunk.pageEnd && chunk.pageEnd !== chunk.pageStart
+        ? `pp. ${chunk.pageStart}–${chunk.pageEnd}`
+        : `p. ${chunk.pageStart}`);
+    }
+    if (chunk.versionNumber) parts.push(`v${chunk.versionNumber}`);
+    return parts.join(' · ');
+  }
+
+  /** "§ <identifier> <title>" when a section is known, else "". */
+  private sectionLabel(chunk: RetrievedChunk): string {
+    const id = chunk.sectionIdentifier?.trim();
+    const title = chunk.sectionTitle?.trim();
+    if (id && title) return `§ ${id} ${title}`;
+    if (id) return `§ ${id}`;
+    if (title) return title;
+    return '';
   }
 
   /** A trimmed, single-line-ish excerpt for citation display. */

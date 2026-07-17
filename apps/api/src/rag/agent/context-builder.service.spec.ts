@@ -12,6 +12,17 @@ describe('ContextBuilder', () => {
     score: 0.9,
     documentTitle: 'Seclusion Policy',
     documentNumber: 'PP-42',
+    versionNumber: 1,
+    effectiveDate: null,
+    exactMatch: false,
+    adjacent: false,
+    sectionType: null,
+    sectionIdentifier: null,
+    normalizedSectionIdentifier: null,
+    sectionTitle: null,
+    headingPath: [],
+    pageStart: null,
+    pageEnd: null,
     ...over,
   });
 
@@ -79,7 +90,47 @@ describe('ContextBuilder', () => {
   });
 
   it('null documentNumber renders without parens', () => {
-    const ctx = build().build([chunk({ documentNumber: null })]);
+    const ctx = build().build([chunk({ documentNumber: null, versionNumber: null })]);
+    // No number, no version → just the bare title on the header line.
     expect(ctx.contextText).toMatch(/\[1\] Seclusion Policy\n/);
+  });
+
+  it('source label is version-aware: names section, page, and version (Phase 4)', () => {
+    const ctx = build().build([
+      chunk({
+        documentNumber: 'PP-42',
+        versionNumber: 3,
+        sectionIdentifier: 'Policy 705',
+        sectionTitle: 'Seclusion',
+        pageStart: 4,
+        pageEnd: 5,
+      }),
+    ]);
+    // e.g. "[1] Seclusion Policy (PP-42) · § Policy 705 Seclusion · pp. 4–5 · v3"
+    expect(ctx.contextText).toContain('Seclusion Policy (PP-42)');
+    expect(ctx.contextText).toContain('§ Policy 705 Seclusion');
+    expect(ctx.contextText).toContain('pp. 4–5');
+    expect(ctx.contextText).toContain('v3');
+  });
+
+  it('surfaces version-aware citation fields (Phase 4)', () => {
+    const eff = new Date('2024-01-15T00:00:00.000Z');
+    const ctx = build().build([
+      chunk({
+        versionNumber: 2,
+        effectiveDate: eff,
+        sectionIdentifier: 'Policy 705',
+        sectionTitle: 'Seclusion',
+        pageStart: 4,
+        pageEnd: 4,
+      }),
+    ]);
+    const c = ctx.citations[0];
+    expect(c.versionNumber).toBe(2);
+    expect(c.effectiveDate).toBe(eff.toISOString());
+    expect(c.sectionIdentifier).toBe('Policy 705');
+    expect(c.sectionTitle).toBe('Seclusion');
+    expect(c.pageStart).toBe(4);
+    expect(c.pageEnd).toBe(4);
   });
 });

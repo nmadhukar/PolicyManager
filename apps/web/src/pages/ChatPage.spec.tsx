@@ -40,7 +40,7 @@ function ask(message: string) {
 
 describe('ChatPage', () => {
   beforeEach(() => {
-    vi.spyOn(ragChatApi, 'listConversations').mockResolvedValue([]);
+    vi.spyOn(ragChatApi, 'listConversations').mockResolvedValue({ items: [], hasMore: false });
   });
   afterEach(() => vi.restoreAllMocks());
 
@@ -63,6 +63,12 @@ describe('ChatPage', () => {
           chunkId: 'c-1',
           documentTitle: 'Seclusion Policy',
           documentNumber: 'PP-42',
+          versionNumber: 1,
+          effectiveDate: null,
+          sectionIdentifier: null,
+          sectionTitle: null,
+          pageStart: null,
+          pageEnd: null,
           snippet: 'Seclusion is a last resort.',
         },
       ],

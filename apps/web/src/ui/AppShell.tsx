@@ -208,7 +208,19 @@ function NavItems({ items, onNavigate }: { items: NavItem[]; onNavigate?: () => 
   );
 }
 
-export function AppShell({ children }: { children: ReactNode }) {
+export function AppShell({
+  children,
+  /**
+   * When true, the content area fills exactly the viewport height and does NOT
+   * scroll — the page itself never grows past the fold. The page's own children
+   * are responsible for scrolling their inner regions (e.g. the chat message log).
+   * Default false: normal document-flow pages scroll vertically as usual.
+   */
+  fill = false,
+}: {
+  children: ReactNode;
+  fill?: boolean;
+}) {
   const { user, logout, hasPermission } = useAuth();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const drawerRef = useRef<HTMLDivElement>(null);
@@ -228,7 +240,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   useFocusTrap(mobileNavOpen, drawerRef, closeMobileNav);
 
   return (
-    <div className="flex min-h-screen">
+    <div className={`flex ${fill ? 'h-screen overflow-hidden' : 'min-h-screen'}`}>
       <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-slate-200 bg-white md:flex">
         <div className="flex h-16 shrink-0 items-center gap-2 border-b border-slate-200 px-5">
           <span className="grid h-8 w-8 place-items-center rounded-lg bg-brand-600 text-sm font-bold text-white">
@@ -322,7 +334,15 @@ export function AppShell({ children }: { children: ReactNode }) {
             )}
           </div>
         </header>
-        <main className="flex-1 p-4 sm:p-6">{children}</main>
+        <main
+          className={
+            fill
+              ? 'min-h-0 flex-1 overflow-hidden p-4 sm:p-6'
+              : 'flex-1 p-4 sm:p-6'
+          }
+        >
+          {children}
+        </main>
       </div>
     </div>
   );

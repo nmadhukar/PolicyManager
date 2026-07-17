@@ -57,13 +57,24 @@ export class DocumentExtractionService {
   ) {}
 
   /**
-   * Best-effort, fire-and-forget embedding trigger after a successful extraction.
-   * Embedding is decoupled from extraction: a failure here is swallowed (the
-   * EmbeddingService also has its own poller/retry), and it never affects the
-   * extraction result or the version bytes. No-op when RAG isn't wired in.
+   * Best-effort embedding trigger after a successful extraction — but ONLY if the
+   * document is PUBLISHED (embedding policy: drafts are never embedded). Checks the
+   * document's live status and that this version is the current one, then fires the
+   * embed. Fire-and-forget: a failure is swallowed (EmbeddingService has its own
+   * retry) and never affects the extraction result. No-op when RAG isn't wired in.
    */
-  private triggerEmbedding(versionId: string): void {
+  private async triggerEmbeddingIfPublished(versionId: string, documentId: string): Promise<void> {
     if (!this.embedding) return;
+    const doc = await this.prisma.document.findUnique({
+      where: { id: documentId },
+      select: { status: true, currentVersionId: true, deletedAt: true },
+    });
+    // Only embed the CURRENT version of a PUBLISHED, non-deleted document. A draft
+    // (or a superseded version) is skipped — it will be embedded if/when it is
+    // published (the publish flow triggers the embed for the then-current version).
+    if (!doc || doc.deletedAt || doc.status !== 'published' || doc.currentVersionId !== versionId) {
+      return;
+    }
     void this.embedding
       .embedVersion(versionId)
       .catch((err) =>
@@ -237,10 +248,14 @@ export class DocumentExtractionService {
         },
       });
       await this.recordProcessed(version.documentId, version.id, extracted.status, extracted.ocrApplied);
-      // On successful extraction, kick off best-effort semantic embedding. Only
-      // when text was actually produced — an empty `done` has nothing to embed.
+      // Embedding policy: a version is embedded ONLY when its document is PUBLISHED
+      // (drafts are never embedded — no wasted OpenAI cost on unpublished/churning
+      // documents). Extraction and publish can complete in either order:
+      //  - publish THEN extraction finishes → this trigger embeds it here;
+      //  - extraction THEN publish → the publish flow (DocumentApprovalService) embeds it.
+      // Either way the version is embedded exactly once, only once published + extracted.
       if (extracted.status === 'done' && extracted.text.length > 0) {
-        this.triggerEmbedding(version.id);
+        await this.triggerEmbeddingIfPublished(version.id, version.documentId);
       }
       return extracted.status;
     } catch (err) {

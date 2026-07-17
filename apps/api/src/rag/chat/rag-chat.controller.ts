@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { PERMISSIONS, type AuthUser, type RagChatResponse } from '@policymanager/shared';
@@ -67,14 +67,47 @@ export class RagChatController {
   }
 
   @Get('conversations')
-  @ApiOperation({ summary: "List the caller's chat conversations (most recent first)." })
-  listConversations(@CurrentUser() user: AuthUser) {
-    return this.chatService.listConversations(user);
+  @ApiOperation({
+    summary:
+      "List the caller's chat conversations (most recent first), paginated via limit/offset.",
+  })
+  listConversations(
+    @CurrentUser() user: AuthUser,
+    // Parse the pagination params in-handler rather than via ParseIntPipe({optional}):
+    // in this Nest/pipe setup an ABSENT optional param still throws 400. toInt()
+    // returns undefined for missing/blank/non-numeric values and the service clamps.
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    return this.chatService.listConversations(user, {
+      limit: toInt(limit),
+      offset: toInt(offset),
+    });
   }
 
   @Get('conversations/:id')
-  @ApiOperation({ summary: "Get one of the caller's conversations with its full message history." })
-  getConversation(@Param('id') id: string, @CurrentUser() user: AuthUser) {
-    return this.chatService.getConversation(id, user);
+  @ApiOperation({
+    summary:
+      "Get one of the caller's conversations. Messages are paginated newest-first: " +
+      'omit `before` for the latest page, then pass the returned `oldestSequence` as ' +
+      '`before` to load older turns (reverse infinite scroll).',
+  })
+  getConversation(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthUser,
+    @Query('messageLimit') messageLimit?: string,
+    @Query('before') before?: string,
+  ) {
+    return this.chatService.getConversation(id, user, {
+      messageLimit: toInt(messageLimit),
+      before: toInt(before),
+    });
   }
+}
+
+/** Parse a query string to a finite integer, or undefined when absent/blank/invalid. */
+function toInt(value: string | undefined): number | undefined {
+  if (value === undefined || value === '') return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.trunc(n) : undefined;
 }

@@ -111,6 +111,17 @@ export class RagConfigService {
     return Number(this.config.get('RAG_ADJACENT_EXPANSION') ?? 1);
   }
 
+  /**
+   * Max ANCHOR chunks any single document may contribute to the final result
+   * (RAG Phase 4 anti-monopolization); default 3. Prevents one large document from
+   * filling topK and starving other relevant documents on a broad query. An EXACT
+   * section request bypasses this cap for the requested section so a whole section
+   * can still be assembled. 0 disables the cap.
+   */
+  get maxChunksPerDocument(): number {
+    return Number(this.config.get('RAG_MAX_CHUNKS_PER_DOCUMENT') ?? 3);
+  }
+
   /** Max characters of grounding context assembled from chunks; default 8000. */
   get contextMaxChars(): number {
     return Number(this.config.get('RAG_CONTEXT_MAX_CHARS') ?? 8000);
