@@ -16,6 +16,7 @@ import {
 } from '@policymanager/shared';
 import { AuditService } from '../audit/audit.service';
 import type { RequestContext } from '../audit/request-context';
+import { mapWithConcurrency } from '../common/concurrency.util';
 import { MailService } from '../mail/mail.service';
 import { PrismaService } from '../prisma/prisma.service';
 import type { ListNotificationsQueryDto } from './dto/list-notifications-query.dto';
@@ -38,6 +39,9 @@ interface CreateNotificationInput {
 
 const DEFAULT_PAGE_SIZE = 25;
 const MAX_PAGE_SIZE = 100;
+
+/** Cap on concurrent digest sends, mirroring the import pipeline's bound (ImportsService). */
+const DIGEST_CONCURRENCY = 8;
 
 const notificationInclude = {
   actor: { select: { name: true } },
@@ -120,8 +124,14 @@ export class NotificationsService {
       }),
       this.prisma.notification.count({ where }),
     ]);
-    const items: NotificationItem[] = [];
-    for (const row of rows) items.push(await this.toItem(row, user));
+    // FINDING-004: resolve linked-document visibility for the WHOLE page in a
+    // small constant number of queries instead of one canSeeLinkedDocument()
+    // chain per row (up to 3 sequential DB calls per row previously).
+    const documentIds = Array.from(
+      new Set(rows.map((r) => r.documentId).filter((id): id is string => !!id)),
+    );
+    const visibility = await this.resolveDocumentVisibility(user, documentIds);
+    const items = rows.map((row) => this.toItem(row, visibility));
     return { items, total, page, pageSize };
   }
 
@@ -150,7 +160,11 @@ export class NotificationsService {
       data: { readAt: new Date() },
       include: notificationInclude,
     });
-    return this.toItem(row, user);
+    const visibility = await this.resolveDocumentVisibility(
+      user,
+      row.documentId ? [row.documentId] : [],
+    );
+    return this.toItem(row, visibility);
   }
 
   async readAll(user: AuthUser): Promise<{ updated: number }> {
@@ -230,10 +244,13 @@ export class NotificationsService {
     });
     let sent = 0;
     let failed = 0;
-    for (const pref of prefs) {
-      if (pref.user.status !== 'active' || (!force && !shouldSend(pref, now))) continue;
+    // Each user's digest is independent (own DB rows, own mail send, own watermark
+    // update), so the sweep fans out with a bounded worker pool instead of sending
+    // one digest at a time — mirrors ImportsService's mapWithConcurrency pattern.
+    const outcomes = await mapWithConcurrency(prefs, DIGEST_CONCURRENCY, async (pref) => {
+      if (pref.user.status !== 'active' || (!force && !shouldSend(pref, now))) return null;
       // Isolate each user: one user's send/DB error must never abort the sweep and
-      // starve every subsequent user of their digest.
+      // starve every other user of their digest.
       try {
         const since = pref.lastDigestSentAt ?? windowStart(pref.digestFrequency, now);
         const rows = await this.prisma.notification.findMany({
@@ -249,11 +266,18 @@ export class NotificationsService {
           typeEnabled(pref, row.type as AppNotificationType, 'emailDigest'),
         );
         const digestUser = authUserFromPreference(pref.user);
-        const visibleRows = [];
-        for (const row of digestRows) {
-          if (await this.canSeeLinkedDocument(digestUser, row.documentId)) visibleRows.push(row);
-        }
-        if (visibleRows.length === 0) continue;
+        // FINDING-009: resolve linked-document visibility for this user's WHOLE
+        // digest batch in one bounded set of queries, mirroring list()'s fix
+        // (FINDING-004) — a per-row canSeeLinkedDocument() call here re-ran the
+        // same document/role/ACL lookup chain once per digest row.
+        const documentIds = Array.from(
+          new Set(digestRows.map((r) => r.documentId).filter((id): id is string => !!id)),
+        );
+        const visibility = await this.resolveDocumentVisibility(digestUser, documentIds);
+        const visibleRows = digestRows.filter(
+          (row) => row.documentId === null || (visibility.get(row.documentId) ?? false),
+        );
+        if (visibleRows.length === 0) return null;
         const subject = `PolicyManager digest: ${visibleRows.length} update${visibleRows.length === 1 ? '' : 's'}`;
         const html = renderDigest(pref.user.name, visibleRows);
         const ok = await this.mail.send(
@@ -267,9 +291,6 @@ export class NotificationsService {
             where: { userId: pref.userId },
             data: { lastDigestSentAt: now },
           });
-          sent += 1;
-        } else {
-          failed += 1;
         }
         await this.prisma.notificationDelivery.create({
           data: {
@@ -289,10 +310,15 @@ export class NotificationsService {
           targetType: 'notification_digest',
           metadata: { count: visibleRows.length },
         });
+        return ok ? 'sent' : 'failed';
       } catch (err) {
-        failed += 1;
         this.logger.warn(`Digest failed for user ${pref.userId}: ${(err as Error).message}`);
+        return 'failed';
       }
+    });
+    for (const outcome of outcomes) {
+      if (outcome === 'sent') sent += 1;
+      else if (outcome === 'failed') failed += 1;
     }
     return { usersConsidered: prefs.length, digestsSent: sent, failed };
   }
@@ -461,8 +487,9 @@ export class NotificationsService {
     if (count === 0) throw new NotFoundException('Notification not found');
   }
 
-  private async toItem(row: NotificationRow, user: AuthUser): Promise<NotificationItem> {
-    const canSee = await this.canSeeLinkedDocument(user, row.documentId);
+  /** Projects a row using a pre-resolved per-documentId visibility map (see {@link resolveDocumentVisibility}). */
+  private toItem(row: NotificationRow, visibility: Map<string, boolean>): NotificationItem {
+    const canSee = row.documentId === null || (visibility.get(row.documentId) ?? false);
     const metadata = objectOrNull(row.metadata);
     return {
       id: row.id,
@@ -483,35 +510,90 @@ export class NotificationsService {
     };
   }
 
-  private async canSeeLinkedDocument(user: AuthUser, documentId: string | null): Promise<boolean> {
-    if (!documentId) return true;
-    if (!user.permissions.includes(PERMISSIONS.DOCUMENT_READ)) return false;
-    const doc = await this.prisma.document.findFirst({
-      where: { id: documentId, deletedAt: null },
+  /**
+   * FINDING-004: resolves whether `user` may see each of `documentIds` in ONE
+   * bounded set of queries — a batch fetch of the documents, then (only if any
+   * are confidential) a single role lookup and a single ACL grant lookup — instead
+   * of the previous per-document chain (document lookup + role lookup + ACL count,
+   * up to 3 sequential round-trips EACH). The visibility decision per document is
+   * identical to the prior canSeeLinkedDocument logic.
+   */
+  private async resolveDocumentVisibility(
+    user: AuthUser,
+    documentIds: string[],
+  ): Promise<Map<string, boolean>> {
+    const visibility = new Map<string, boolean>();
+    if (documentIds.length === 0) return visibility;
+    if (!user.permissions.includes(PERMISSIONS.DOCUMENT_READ)) {
+      documentIds.forEach((id) => visibility.set(id, false));
+      return visibility;
+    }
+
+    const docs = await this.prisma.document.findMany({
+      where: { id: { in: documentIds }, deletedAt: null },
       select: { id: true, ownerId: true, accessLevel: true, categoryId: true },
     });
-    if (!doc) return false;
-    if (doc.accessLevel !== 'confidential') return true;
-    if (user.roles.includes(ROLES.ADMIN) || doc.ownerId === user.id) return true;
-    const roles = await this.prisma.role.findMany({
-      where: { name: { in: user.roles } },
-      select: { id: true },
-    });
-    const roleIds = roles.map((r) => r.id);
-    const count = await this.prisma.documentAcl.count({
-      where: {
-        AND: [
-          { OR: [{ documentId }, ...(doc.categoryId ? [{ categoryId: doc.categoryId }] : [])] },
-          {
-            OR: [
-              { principalType: 'user', principalId: user.id },
-              { principalType: 'role', principalId: { in: roleIds } },
-            ],
-          },
-        ],
-      },
-    });
-    return count > 0;
+    const docById = new Map(docs.map((d) => [d.id, d]));
+
+    const isAdmin = user.roles.includes(ROLES.ADMIN);
+    const confidential = docs.filter(
+      (d) => d.accessLevel === 'confidential' && !isAdmin && d.ownerId !== user.id,
+    );
+
+    let grantedDocumentIds = new Set<string>();
+    let grantedCategoryIds = new Set<string>();
+    if (confidential.length > 0) {
+      const roles = await this.prisma.role.findMany({
+        where: { name: { in: user.roles } },
+        select: { id: true },
+      });
+      const roleIds = roles.map((r) => r.id);
+      const categoryIds = confidential
+        .map((d) => d.categoryId)
+        .filter((id): id is string => !!id);
+      const grants = await this.prisma.documentAcl.findMany({
+        where: {
+          AND: [
+            {
+              OR: [
+                { documentId: { in: confidential.map((d) => d.id) } },
+                ...(categoryIds.length ? [{ categoryId: { in: categoryIds } }] : []),
+              ],
+            },
+            {
+              OR: [
+                { principalType: 'user', principalId: user.id },
+                { principalType: 'role', principalId: { in: roleIds } },
+              ],
+            },
+          ],
+        },
+        select: { documentId: true, categoryId: true },
+      });
+      grantedDocumentIds = new Set(
+        grants.map((g) => g.documentId).filter((id): id is string => !!id),
+      );
+      grantedCategoryIds = new Set(
+        grants.map((g) => g.categoryId).filter((id): id is string => !!id),
+      );
+    }
+
+    for (const id of documentIds) {
+      const doc = docById.get(id);
+      if (!doc) {
+        visibility.set(id, false);
+        continue;
+      }
+      if (doc.accessLevel !== 'confidential' || isAdmin || doc.ownerId === user.id) {
+        visibility.set(id, true);
+        continue;
+      }
+      visibility.set(
+        id,
+        grantedDocumentIds.has(id) || (!!doc.categoryId && grantedCategoryIds.has(doc.categoryId)),
+      );
+    }
+    return visibility;
   }
 }
 

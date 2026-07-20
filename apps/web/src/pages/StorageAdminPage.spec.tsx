@@ -124,4 +124,35 @@ describe('StorageAdminPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add folder' }));
     await waitFor(() => expect(mockCreatePrefix).toHaveBeenCalledWith('policymanager-docs', 'intake'));
   });
+
+  describe('FINDING-023: configQuery loading/error states', () => {
+    it('shows an error state with retry when the config fetch fails, instead of silently omitting the card', async () => {
+      mockHasPermission.mockReturnValue(true);
+      mockGetConfig.mockReset().mockRejectedValue(new Error('network down'));
+      renderPage();
+
+      // The rest of the page (buckets) still renders normally.
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /policymanager-docs/i })).toBeInTheDocument(),
+      );
+      // The Configuration card slot shows an error + retry, not nothing.
+      expect(screen.queryByText('Configuration')).not.toBeInTheDocument();
+      expect(
+        await screen.findByText("We couldn't load the storage configuration."),
+      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
+    });
+
+    it('retries the config fetch when "Try again" is clicked', async () => {
+      mockHasPermission.mockReturnValue(true);
+      mockGetConfig.mockReset().mockRejectedValueOnce(new Error('network down')).mockResolvedValue(config);
+      renderPage();
+
+      const retry = await screen.findByRole('button', { name: 'Try again' });
+      fireEvent.click(retry);
+
+      await waitFor(() => expect(screen.getByText('Configuration')).toBeInTheDocument());
+      expect(screen.getByText('documents/')).toBeInTheDocument();
+    });
+  });
 });

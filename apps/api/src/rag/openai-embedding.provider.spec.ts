@@ -17,14 +17,22 @@ describe('OpenAiEmbeddingProvider', () => {
       apiKey: string | null;
       model: string;
       dimensions: number;
+      timeoutMs: number;
     }> = {},
   ): RagConfigService => {
-    const { configured = true, apiKey = 'sk-test', model = 'text-embedding-3-small', dimensions = 1536 } = over;
+    const {
+      configured = true,
+      apiKey = 'sk-test',
+      model = 'text-embedding-3-small',
+      dimensions = 1536,
+      timeoutMs = 20_000,
+    } = over;
     return {
       isConfigured: jest.fn(() => configured),
       openaiApiKey: apiKey,
       embeddingModel: model,
       embeddingDimensions: dimensions,
+      llmTimeoutMs: timeoutMs,
     } as unknown as RagConfigService;
   };
 
@@ -76,10 +84,16 @@ describe('OpenAiEmbeddingProvider', () => {
       expect(result).toHaveLength(2);
     });
 
-    it('constructs OpenAIEmbeddings with the configured apiKey, model, and dimensions', async () => {
+    it('constructs OpenAIEmbeddings with the configured apiKey, model, dimensions, and timeout', async () => {
       stubEmbedDocuments(async () => [[1]]);
       const provider = new OpenAiEmbeddingProvider(
-        makeConfig({ configured: true, apiKey: 'sk-live', model: 'text-embedding-3-large', dimensions: 3072 }),
+        makeConfig({
+          configured: true,
+          apiKey: 'sk-live',
+          model: 'text-embedding-3-large',
+          dimensions: 3072,
+          timeoutMs: 15_000,
+        }),
       );
 
       await provider.embed(['a']);
@@ -89,7 +103,18 @@ describe('OpenAiEmbeddingProvider', () => {
         apiKey: 'sk-live',
         model: 'text-embedding-3-large',
         dimensions: 3072,
+        timeout: 15_000,
       });
+    });
+
+    it('FINDING-003: always passes a bounded timeout, even with default config', async () => {
+      stubEmbedDocuments(async () => [[1]]);
+      const provider = new OpenAiEmbeddingProvider(makeConfig({ configured: true }));
+
+      await provider.embed(['a']);
+
+      const ctorArg = MockOpenAIEmbeddings.mock.calls[0][0] as { timeout?: number };
+      expect(ctorArg.timeout).toBeGreaterThan(0);
     });
 
     it('builds the client only once across multiple embed() calls', async () => {

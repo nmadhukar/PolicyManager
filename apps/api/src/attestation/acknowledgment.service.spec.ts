@@ -22,6 +22,7 @@ describe('AcknowledgmentService', () => {
         findUnique: jest.fn().mockResolvedValue(null),
         findMany: jest.fn().mockResolvedValue([]),
         create: jest.fn().mockResolvedValue({ id: 'asg-new' }),
+        createMany: jest.fn().mockResolvedValue({ count: 0 }),
         update: jest.fn(),
         updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
@@ -34,12 +35,20 @@ describe('AcknowledgmentService', () => {
   };
   const makeAudit = () => ({ record: jest.fn().mockResolvedValue('ae-1') });
   const makeAttestation = () => ({ record: jest.fn().mockResolvedValue({ id: 'att-1', action: 'acknowledged' }) });
+  // Defaults to granting access — most tests aren't about the ACL gate itself.
+  const makeAccess = () => ({ canAccess: jest.fn().mockResolvedValue(true) });
 
-  const build = (prisma = makePrisma(), audit = makeAudit(), attestation = makeAttestation()) => ({
+  const build = (
+    prisma = makePrisma(),
+    audit = makeAudit(),
+    attestation = makeAttestation(),
+    access = makeAccess(),
+  ) => ({
     prisma,
     audit,
     attestation,
-    svc: new AcknowledgmentService(prisma as never, audit as never, attestation as never),
+    access,
+    svc: new AcknowledgmentService(prisma as never, audit as never, attestation as never, access as never),
   });
 
   const manager: AuthUser = {
@@ -60,14 +69,24 @@ describe('AcknowledgmentService', () => {
   };
 
   describe('distribute', () => {
-    it('assigns the union of explicit users + role members (deduped), idempotently', async () => {
+    it('assigns the union of explicit users + role members (deduped), idempotently, via one batched createMany', async () => {
       const { svc, prisma, audit } = build();
-      prisma.document.findFirst.mockResolvedValue({ id: 'doc-1', currentVersionId: 'v-2' });
+      prisma.document.findFirst.mockResolvedValue({
+        id: 'doc-1',
+        currentVersionId: 'v-2',
+        ownerId: 'mgr-1',
+        accessLevel: 'restricted',
+        categoryId: null,
+      });
       prisma.user.findMany.mockResolvedValue([{ id: 'staff-1' }]);
       prisma.role.findMany.mockResolvedValue([{ id: 'role-staff', name: 'Staff' }]);
       // Role members include staff-1 (dup) + staff-2.
       prisma.userRole.findMany.mockResolvedValue([{ userId: 'staff-1' }, { userId: 'staff-2' }]);
-      prisma.acknowledgmentAssignment.findMany.mockResolvedValue([]);
+      // 1st findMany: existence check (none already assigned). 2nd findMany:
+      // post-createMany lookup of the newly created rows (for notifications).
+      prisma.acknowledgmentAssignment.findMany
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'asg-1' }, { id: 'asg-2' }]);
 
       await svc.distribute(
         'doc-1',
@@ -75,11 +94,17 @@ describe('AcknowledgmentService', () => {
         manager,
       );
 
-      // Two distinct assignees (staff-1, staff-2) => two creates against v-2.
-      expect(prisma.acknowledgmentAssignment.create).toHaveBeenCalledTimes(2);
-      const created = prisma.acknowledgmentAssignment.create.mock.calls.map((c: unknown[]) => (c[0] as { data: { assigneeId: string; versionId: string } }).data);
-      expect(new Set(created.map((d: { assigneeId: string }) => d.assigneeId))).toEqual(new Set(['staff-1', 'staff-2']));
-      expect(created.every((d: { versionId: string }) => d.versionId === 'v-2')).toBe(true);
+      // One batched insert (not one create() per assignee) covering both distinct
+      // assignees (staff-1, staff-2) against v-2.
+      expect(prisma.acknowledgmentAssignment.createMany).toHaveBeenCalledTimes(1);
+      expect(prisma.acknowledgmentAssignment.create).not.toHaveBeenCalled();
+      const arg = prisma.acknowledgmentAssignment.createMany.mock.calls[0][0] as {
+        data: { assigneeId: string; versionId: string }[];
+        skipDuplicates: boolean;
+      };
+      expect(new Set(arg.data.map((d) => d.assigneeId))).toEqual(new Set(['staff-1', 'staff-2']));
+      expect(arg.data.every((d) => d.versionId === 'v-2')).toBe(true);
+      expect(arg.skipDuplicates).toBe(true);
       expect(audit.record).toHaveBeenCalledWith(
         expect.objectContaining({ action: 'acknowledgment.assigned' }),
       );
@@ -87,17 +112,31 @@ describe('AcknowledgmentService', () => {
 
     it('skips an assignee already assigned for the version (idempotent, preserves evidence)', async () => {
       const { svc, prisma } = build();
-      prisma.document.findFirst.mockResolvedValue({ id: 'doc-1', currentVersionId: 'v-2' });
+      prisma.document.findFirst.mockResolvedValue({
+        id: 'doc-1',
+        currentVersionId: 'v-2',
+        ownerId: 'mgr-1',
+        accessLevel: 'restricted',
+        categoryId: null,
+      });
       prisma.user.findMany.mockResolvedValue([{ id: 'staff-1' }]);
-      prisma.acknowledgmentAssignment.findUnique.mockResolvedValue({ id: 'existing' });
+      // The batched existence check finds staff-1 already assigned.
+      prisma.acknowledgmentAssignment.findMany.mockResolvedValue([{ assigneeId: 'staff-1' }]);
 
       await svc.distribute('doc-1', { assigneeIds: ['staff-1'] }, manager);
       expect(prisma.acknowledgmentAssignment.create).not.toHaveBeenCalled();
+      expect(prisma.acknowledgmentAssignment.createMany).not.toHaveBeenCalled();
     });
 
     it('400s when the document has no current version to distribute', async () => {
       const { svc, prisma } = build();
-      prisma.document.findFirst.mockResolvedValue({ id: 'doc-1', currentVersionId: null });
+      prisma.document.findFirst.mockResolvedValue({
+        id: 'doc-1',
+        currentVersionId: null,
+        ownerId: 'mgr-1',
+        accessLevel: 'restricted',
+        categoryId: null,
+      });
       await expect(svc.distribute('doc-1', { assigneeIds: ['staff-1'] }, manager)).rejects.toBeInstanceOf(
         BadRequestException,
       );
@@ -105,13 +144,25 @@ describe('AcknowledgmentService', () => {
 
     it('400s when no assignees resolve', async () => {
       const { svc, prisma } = build();
-      prisma.document.findFirst.mockResolvedValue({ id: 'doc-1', currentVersionId: 'v-2' });
+      prisma.document.findFirst.mockResolvedValue({
+        id: 'doc-1',
+        currentVersionId: 'v-2',
+        ownerId: 'mgr-1',
+        accessLevel: 'restricted',
+        categoryId: null,
+      });
       await expect(svc.distribute('doc-1', {}, manager)).rejects.toBeInstanceOf(BadRequestException);
     });
 
     it('400s on an unknown user id', async () => {
       const { svc, prisma } = build();
-      prisma.document.findFirst.mockResolvedValue({ id: 'doc-1', currentVersionId: 'v-2' });
+      prisma.document.findFirst.mockResolvedValue({
+        id: 'doc-1',
+        currentVersionId: 'v-2',
+        ownerId: 'mgr-1',
+        accessLevel: 'restricted',
+        categoryId: null,
+      });
       prisma.user.findMany.mockResolvedValue([]); // none found
       await expect(
         svc.distribute('doc-1', { assigneeIds: ['ghost'] }, manager),
@@ -125,21 +176,58 @@ describe('AcknowledgmentService', () => {
         NotFoundException,
       );
     });
+
+    it('FINDING-015: 403s a review.manage holder with no ACL grant on a confidential document', async () => {
+      const { svc, prisma, access, audit } = build();
+      prisma.document.findFirst.mockResolvedValue({
+        id: 'doc-1',
+        currentVersionId: 'v-2',
+        ownerId: 'someone-else',
+        accessLevel: 'confidential',
+        categoryId: null,
+      });
+      access.canAccess.mockResolvedValue(false);
+
+      await expect(
+        svc.distribute('doc-1', { assigneeIds: ['staff-1'] }, manager),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(prisma.acknowledgmentAssignment.create).not.toHaveBeenCalled();
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'access.denied', documentId: 'doc-1' }),
+      );
+    });
+
+    it('FINDING-015: 404s distributing a soft-deleted document', async () => {
+      const { svc, prisma } = build();
+      // findFirst is called with deletedAt: null, so a soft-deleted doc resolves to null.
+      prisma.document.findFirst.mockResolvedValue(null);
+      await expect(
+        svc.distribute('doc-1', { assigneeIds: ['staff-1'] }, manager),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
   });
 
   describe('retriggerForVersion', () => {
-    it('creates fresh pending rows for prior distinct assignees against the new version', async () => {
+    it('creates fresh pending rows for prior distinct assignees against the new version, via one batched createMany', async () => {
       const { svc, prisma } = build();
-      prisma.acknowledgmentAssignment.findMany.mockResolvedValue([
-        { assigneeId: 'staff-1' },
-        { assigneeId: 'staff-2' },
-      ]);
-      prisma.acknowledgmentAssignment.findUnique.mockResolvedValue(null); // none exist for v-3 yet
+      // 1st findMany: prior distinct assignees (excludes v-3). 2nd findMany:
+      // existence check against v-3 (none yet). 3rd findMany: post-createMany
+      // lookup of the newly created rows (for notifications).
+      prisma.acknowledgmentAssignment.findMany
+        .mockResolvedValueOnce([{ assigneeId: 'staff-1' }, { assigneeId: 'staff-2' }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'asg-1' }, { id: 'asg-2' }]);
 
       const count = await svc.retriggerForVersion('doc-1', 'v-3', manager);
       expect(count).toBe(2);
-      const created = prisma.acknowledgmentAssignment.create.mock.calls.map((c: unknown[]) => (c[0] as { data: { versionId: string; status: string } }).data);
-      expect(created.every((d: { versionId: string; status: string }) => d.versionId === 'v-3' && d.status === 'pending')).toBe(true);
+      expect(prisma.acknowledgmentAssignment.create).not.toHaveBeenCalled();
+      expect(prisma.acknowledgmentAssignment.createMany).toHaveBeenCalledTimes(1);
+      const arg = prisma.acknowledgmentAssignment.createMany.mock.calls[0][0] as {
+        data: { versionId: string; status: string }[];
+        skipDuplicates: boolean;
+      };
+      expect(arg.data.every((d) => d.versionId === 'v-3' && d.status === 'pending')).toBe(true);
+      expect(arg.skipDuplicates).toBe(true);
       // The lookup for prior assignees excludes the target version.
       expect(prisma.acknowledgmentAssignment.findMany.mock.calls[0][0].where).toEqual({
         documentId: 'doc-1',
@@ -155,14 +243,110 @@ describe('AcknowledgmentService', () => {
       const count = await svc.retriggerForVersion('doc-1', 'v-2', manager);
       expect(count).toBe(0);
       expect(prisma.acknowledgmentAssignment.create).not.toHaveBeenCalled();
+      expect(prisma.acknowledgmentAssignment.createMany).not.toHaveBeenCalled();
     });
 
     it('skips assignees who already have a row for the new version', async () => {
       const { svc, prisma } = build();
-      prisma.acknowledgmentAssignment.findMany.mockResolvedValue([{ assigneeId: 'staff-1' }]);
-      prisma.acknowledgmentAssignment.findUnique.mockResolvedValue({ id: 'already' });
+      prisma.acknowledgmentAssignment.findMany
+        .mockResolvedValueOnce([{ assigneeId: 'staff-1' }]) // prior distinct assignees
+        .mockResolvedValueOnce([{ assigneeId: 'staff-1' }]); // already assigned for v-3
       const count = await svc.retriggerForVersion('doc-1', 'v-3', manager);
       expect(count).toBe(0);
+      expect(prisma.acknowledgmentAssignment.createMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('assignAndNotify — notification fan-out (FINDING-007/FINDING-004)', () => {
+    const makeNotifications = () => ({
+      notifyAcknowledgmentAssignment: jest.fn().mockResolvedValue(undefined),
+    });
+
+    const buildWithNotifications = (prisma = makePrisma()) => {
+      const audit = makeAudit();
+      const attestation = makeAttestation();
+      const access = makeAccess();
+      const notifications = makeNotifications();
+      const svc = new AcknowledgmentService(
+        prisma as never,
+        audit as never,
+        attestation as never,
+        access as never,
+        notifications as never,
+      );
+      return { svc, prisma, notifications };
+    };
+
+    it('distribute() sends exactly ONE notification per newly created assignee (count-preserving)', async () => {
+      const { svc, prisma, notifications } = buildWithNotifications();
+      prisma.document.findFirst.mockResolvedValue({
+        id: 'doc-1',
+        currentVersionId: 'v-2',
+        ownerId: 'mgr-1',
+        accessLevel: 'restricted',
+        categoryId: null,
+      });
+      const assigneeIds = Array.from({ length: 20 }, (_, i) => `staff-${i}`);
+      prisma.user.findMany.mockResolvedValue(assigneeIds.map((id) => ({ id })));
+      const createdRows = assigneeIds.map((id) => ({ id: `asg-${id}` }));
+      prisma.acknowledgmentAssignment.findMany
+        .mockResolvedValueOnce([]) // none already assigned
+        .mockResolvedValueOnce(createdRows); // post-createMany lookup
+
+      await svc.distribute('doc-1', { assigneeIds }, manager);
+
+      expect(notifications.notifyAcknowledgmentAssignment).toHaveBeenCalledTimes(20);
+      const notifiedIds = notifications.notifyAcknowledgmentAssignment.mock.calls.map((c) => c[0]);
+      expect(new Set(notifiedIds)).toEqual(new Set(createdRows.map((r) => r.id)));
+    });
+
+    it('distribute() never runs more than the bounded concurrency limit of notify calls at once', async () => {
+      const { svc, prisma, notifications } = buildWithNotifications();
+      prisma.document.findFirst.mockResolvedValue({
+        id: 'doc-1',
+        currentVersionId: 'v-2',
+        ownerId: 'mgr-1',
+        accessLevel: 'restricted',
+        categoryId: null,
+      });
+      const assigneeIds = Array.from({ length: 20 }, (_, i) => `staff-${i}`);
+      prisma.user.findMany.mockResolvedValue(assigneeIds.map((id) => ({ id })));
+      const createdRows = assigneeIds.map((id) => ({ id: `asg-${id}` }));
+      prisma.acknowledgmentAssignment.findMany
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce(createdRows);
+
+      let active = 0;
+      let maxActive = 0;
+      notifications.notifyAcknowledgmentAssignment.mockImplementation(async () => {
+        active++;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((r) => setTimeout(r, 1));
+        active--;
+      });
+
+      await svc.distribute('doc-1', { assigneeIds }, manager);
+
+      // NOT strictly serialized (maxActive > 1) AND bounded (<= 8, the
+      // NOTIFY_CONCURRENCY cap) — proves the sequential for-loop was replaced
+      // with a bounded-concurrency fan-out, not an unbounded Promise.all.
+      expect(maxActive).toBeGreaterThan(1);
+      expect(maxActive).toBeLessThanOrEqual(8);
+    });
+
+    it('retriggerForVersion() sends exactly ONE notification per newly created assignee', async () => {
+      const { svc, prisma, notifications } = buildWithNotifications();
+      const priorAssignees = Array.from({ length: 12 }, (_, i) => ({ assigneeId: `staff-${i}` }));
+      const createdRows = priorAssignees.map((a) => ({ id: `asg-${a.assigneeId}` }));
+      prisma.acknowledgmentAssignment.findMany
+        .mockResolvedValueOnce(priorAssignees) // prior distinct assignees
+        .mockResolvedValueOnce([]) // none already assigned for v-3
+        .mockResolvedValueOnce(createdRows); // post-createMany lookup
+
+      const count = await svc.retriggerForVersion('doc-1', 'v-3', manager);
+
+      expect(count).toBe(12);
+      expect(notifications.notifyAcknowledgmentAssignment).toHaveBeenCalledTimes(12);
     });
   });
 
@@ -275,8 +459,16 @@ describe('AcknowledgmentService', () => {
   });
 
   describe('statusForDocument', () => {
+    const docRow = {
+      id: 'doc-1',
+      ownerId: 'mgr-1',
+      accessLevel: 'restricted',
+      categoryId: null,
+    };
+
     it('reports completion % for the latest distributed version', async () => {
       const { svc, prisma } = build();
+      prisma.document.findFirst.mockResolvedValue(docRow);
       prisma.acknowledgmentAssignment.findMany.mockResolvedValue([
         // Older version v1 (ignored in the summary scope).
         { id: 'o1', versionId: 'v-1', assigneeId: 's1', status: 'completed', dueDate: null, completedAt: new Date(), assignee: { id: 's1', name: 'A', email: 'a@x' }, version: { versionNumber: 1 } },
@@ -285,7 +477,7 @@ describe('AcknowledgmentService', () => {
         { id: 'n2', versionId: 'v-2', assigneeId: 's2', status: 'pending', dueDate: null, completedAt: null, assignee: { id: 's2', name: 'B', email: 'b@x' }, version: { versionNumber: 2 } },
       ]);
 
-      const summary = await svc.statusForDocument('doc-1');
+      const summary = await svc.statusForDocument('doc-1', manager);
       expect(summary.versionId).toBe('v-2');
       expect(summary.total).toBe(2);
       expect(summary.completed).toBe(1);
@@ -296,9 +488,33 @@ describe('AcknowledgmentService', () => {
 
     it('returns an empty 100% summary when never distributed', async () => {
       const { svc, prisma } = build();
+      prisma.document.findFirst.mockResolvedValue(docRow);
       prisma.acknowledgmentAssignment.findMany.mockResolvedValue([]);
-      const summary = await svc.statusForDocument('doc-1');
+      const summary = await svc.statusForDocument('doc-1', manager);
       expect(summary).toMatchObject({ versionId: null, total: 0, percentComplete: 100, rows: [] });
+    });
+
+    it('FINDING-015: 403s a review.manage holder with no ACL grant on a confidential document', async () => {
+      const { svc, prisma, access, audit } = build();
+      prisma.document.findFirst.mockResolvedValue({
+        id: 'doc-1',
+        ownerId: 'someone-else',
+        accessLevel: 'confidential',
+        categoryId: null,
+      });
+      access.canAccess.mockResolvedValue(false);
+
+      await expect(svc.statusForDocument('doc-1', manager)).rejects.toBeInstanceOf(ForbiddenException);
+      expect(prisma.acknowledgmentAssignment.findMany).not.toHaveBeenCalled();
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'access.denied', documentId: 'doc-1' }),
+      );
+    });
+
+    it('FINDING-015: 404s reading status for a soft-deleted document', async () => {
+      const { svc, prisma } = build();
+      prisma.document.findFirst.mockResolvedValue(null);
+      await expect(svc.statusForDocument('doc-1', manager)).rejects.toBeInstanceOf(NotFoundException);
     });
   });
 

@@ -181,8 +181,16 @@ export class ApiClientsService {
    * Authenticates a raw `clientId.secret` credential for the guard. Returns the
    * authenticated client on success, or null for ANY failure (unknown id, wrong
    * secret, disabled, or revoked) — the guard maps null to 401. On success it
-   * best-effort bumps `lastUsedAt`. Constant-shape: it always performs the Argon2
-   * verification when a row exists so timing does not leak the failure reason.
+   * best-effort bumps `lastUsedAt`.
+   *
+   * FINDING-014: this is NOT constant-time/constant-shape across failure modes.
+   * An unknown `clientId` returns immediately without ever calling
+   * verifySecret's Argon2 hash comparison, while a known `clientId` with a wrong
+   * secret always pays that cost — the two failures are distinguishable by
+   * response latency (Argon2 is deliberately slow, tens of milliseconds).
+   * Closing that gap (e.g. hashing against a dummy value on the not-found path)
+   * is a behavior change outside this fix's scope; this comment only corrects
+   * the prior claim, which described protection the code does not provide.
    */
   async authenticate(raw: string | undefined | null): Promise<AuthenticatedApiClient | null> {
     const parsed = parseCredential(raw);

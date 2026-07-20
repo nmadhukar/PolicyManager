@@ -8,6 +8,7 @@ import {
 import * as argon2 from 'argon2';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthService } from '../auth/auth.service';
+import { assertPasswordPolicy } from '../auth/password-policy';
 import { AssignRolesDto } from './dto/assign-roles.dto';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -134,6 +135,10 @@ export class UsersService {
     if (existing) throw new ConflictException('A user with that email already exists');
 
     const roleIds = await this.resolveRoleIds(dto.roles ?? []);
+    // FINDING-016: an admin-supplied password must clear the same authoritative
+    // policy gate as self-service reset/change — @MinLength(8) on the DTO alone
+    // is not sufficient.
+    if (dto.password) assertPasswordPolicy(dto.password);
     const temporaryPassword = dto.password ?? UsersService.generateTempPassword();
     const passwordHash = await argon2.hash(temporaryPassword);
 

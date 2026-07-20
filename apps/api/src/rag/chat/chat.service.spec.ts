@@ -312,5 +312,37 @@ describe('ChatService', () => {
       expect(res.hasMoreOlder).toBe(false);
       expect(res.messages.map((m) => m.sequence)).toEqual([7, 8, 9]); // ascending
     });
+
+    it('FINDING-005: degrades to [] instead of throwing when citations is null, non-array, or shape-mismatched', async () => {
+      const prisma = makePrisma();
+      prisma.ragConversation.findUnique.mockResolvedValue(ownedConvo);
+      // findMany returns newest-first (desc by sequence); the service reverses
+      // to ascending for display, so this mock is intentionally seq 4..1.
+      prisma.ragMessage.findMany.mockResolvedValue([
+        {
+          sequence: 4,
+          role: 'assistant',
+          content: 'd',
+          citations: [{ index: 1, documentId: 'doc-1', chunkId: 'chunk-1' }],
+          grounded: true,
+          createdAt: new Date(),
+        },
+        { sequence: 3, role: 'assistant', content: 'c', citations: [{ foo: 'bar' }], grounded: false, createdAt: new Date() },
+        { sequence: 2, role: 'assistant', content: 'b', citations: 'not-an-array', grounded: false, createdAt: new Date() },
+        { sequence: 1, role: 'assistant', content: 'a', citations: null, grounded: false, createdAt: new Date() },
+      ]);
+      const svc = build(prisma, makeOrchestrator(emptyContext), makeLlm());
+
+      const res = await svc.getConversation('c', USER);
+
+      // Displayed ascending by sequence (1, 2, 3, 4) regardless of fetch order.
+      expect(res.messages.map((m) => m.citations)).toEqual([
+        [],
+        [],
+        [],
+        [{ index: 1, documentId: 'doc-1', chunkId: 'chunk-1' }],
+      ]);
+      expect(res.messages.map((m) => m.sequence)).toEqual([1, 2, 3, 4]);
+    });
   });
 });

@@ -84,6 +84,35 @@ describe('UsersService', () => {
         build(prisma).create({ email: 'jane@x.com', name: 'Jane', roles: ['Wizard'] }),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
+
+    it('FINDING-016: rejects a caller-supplied password that fails the password policy', async () => {
+      const prisma = makePrisma();
+      prisma.user.findUnique.mockResolvedValue(null);
+      prisma.role.findMany.mockResolvedValue([]);
+      await expect(
+        build(prisma).create({ email: 'jane@x.com', name: 'Jane', password: 'alllowercase' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.user.create).not.toHaveBeenCalled();
+    });
+
+    it('FINDING-016: accepts a caller-supplied password that passes the policy', async () => {
+      const prisma = makePrisma();
+      prisma.user.findUnique.mockResolvedValue(null);
+      prisma.role.findMany.mockResolvedValue([]);
+      prisma.user.create.mockResolvedValue(baseUserRow);
+
+      const result = await build(prisma).create({
+        email: 'jane@x.com',
+        name: 'Jane',
+        password: 'Correct-Horse-9',
+      });
+
+      expect(result.temporaryPassword).toBe('Correct-Horse-9');
+      const createArg = prisma.user.create.mock.calls[0][0];
+      await expect(
+        argon2.verify(createArg.data.passwordHash, 'Correct-Horse-9'),
+      ).resolves.toBe(true);
+    });
   });
 
   describe('assignRoles', () => {

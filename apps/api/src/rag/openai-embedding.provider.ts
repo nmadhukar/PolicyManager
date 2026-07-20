@@ -60,6 +60,9 @@ export class OpenAiEmbeddingProvider implements EmbeddingProvider {
         apiKey: this.ragConfig.openaiApiKey ?? undefined,
         model: this.model,
         dimensions: this.dimensions,
+        // FINDING-003: bound how long a single embedding request can hang — see
+        // OpenAiChatProvider.getClient for the same reasoning.
+        timeout: this.ragConfig.llmTimeoutMs,
       });
     }
     return this.client;

@@ -7,6 +7,7 @@ import {
 import { Prisma } from '@prisma/client';
 import {
   AUDIT_ACTIONS,
+  PERMISSIONS,
   type AuthUser,
   type ImportBatchDetail,
   type ImportBatchStatus,
@@ -18,6 +19,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import type { RequestContext } from '../audit/request-context';
+import { mapWithConcurrency } from '../common/concurrency.util';
 import { DocumentsService, type UploadedFile } from '../documents/documents.service';
 import type { CreateDocumentDto } from '../documents/dto/create-document.dto';
 import { sha256Hex } from '../documents/versioning.util';
@@ -47,6 +49,16 @@ interface Counters {
 interface BulkImportOptions {
   relativePaths?: string[];
 }
+
+/**
+ * FINDING-003: max rows/files processed concurrently within one import run.
+ * Bounded (rather than unbounded Promise.all) so a large manifest/bulk import
+ * doesn't open hundreds of simultaneous S3 uploads + Prisma row-locking
+ * transactions at once and exhaust the connection pool; bounded (rather than
+ * fully sequential, the prior behavior) so the request doesn't serialize one
+ * S3 round-trip at a time for up to 5000 rows / 200 files.
+ */
+const IMPORT_CONCURRENCY = 8;
 
 /** The fields of one persisted report line. */
 interface ItemData {
@@ -125,8 +137,17 @@ export class ImportsService {
       });
     }
 
-    for (const row of parsed.rows) {
-      const outcome = await this.processRowSafely(row, filesByName, categoryCache, user, ctx);
+    // FINDING-003: bounded concurrency instead of one row at a time. Outcomes
+    // are collected in original row order (mapWithConcurrency guarantees
+    // this), then recorded/counted in that same order below — identical
+    // per-row results and identical report ordering to the prior sequential
+    // version, just not serialized end-to-end.
+    const outcomes = await mapWithConcurrency(parsed.rows, IMPORT_CONCURRENCY, (row) =>
+      this.processRowSafely(row, filesByName, categoryCache, user, ctx),
+    );
+    for (let i = 0; i < parsed.rows.length; i++) {
+      const row = parsed.rows[i];
+      const outcome = outcomes[i];
       counters[outcome.status] += 1;
       await this.recordItem(batch.id, {
         rowNumber: row.rowNumber,
@@ -174,36 +195,27 @@ export class ImportsService {
 
     const counters: Counters = { created: 0, duplicate: 0, error: 0 };
     const categoryCache = new Map<string, string | null>();
-    let rowNumber = 0;
-    for (const item of prepared.items) {
-      rowNumber += 1;
-      if (item.kind === 'error') {
-        counters.error += 1;
-        await this.recordItem(batch.id, {
-          rowNumber,
-          title: null,
-          documentNumber: null,
-          categoryName: item.categoryPath,
-          fileName: item.displayPath,
-          status: 'error',
-          documentId: null,
-          message: item.message,
-        });
-        continue;
-      }
 
-      const outcome = await this.processBulkFileSafely(
-        item.title,
-        item.file,
-        item.categoryPath,
-        categoryCache,
-        user,
-        ctx,
-      );
+    // FINDING-003: bounded concurrency instead of one file at a time. A
+    // pre-validated 'error' item (e.g. an unsupported extension caught during
+    // ZIP expansion) needs no async work and resolves immediately; a 'file'
+    // item goes through the same processBulkFileSafely path as before.
+    // mapWithConcurrency preserves original item order in its result array,
+    // so recording below stays in identical rowNumber order to the prior
+    // sequential version.
+    const outcomes = await mapWithConcurrency(prepared.items, IMPORT_CONCURRENCY, (item) =>
+      item.kind === 'error'
+        ? Promise.resolve<RowOutcome>({ status: 'error', documentId: null, message: item.message })
+        : this.processBulkFileSafely(item.title, item.file, item.categoryPath, categoryCache, user, ctx),
+    );
+
+    for (let i = 0; i < prepared.items.length; i++) {
+      const item = prepared.items[i];
+      const outcome = outcomes[i];
       counters[outcome.status] += 1;
       await this.recordItem(batch.id, {
-        rowNumber,
-        title: item.title,
+        rowNumber: i + 1,
+        title: item.kind === 'error' ? null : item.title,
         documentNumber: null,
         categoryName: item.categoryPath,
         fileName: item.displayPath,
@@ -216,22 +228,56 @@ export class ImportsService {
     return this.finalize(batch.id, counters, user, ctx, bulkKind(files, options.relativePaths));
   }
 
-  /** Paginated, newest-first batch history for the report list. */
-  async listBatches(page = 1, pageSize = 20): Promise<Paginated<ImportBatchSummary>> {
+  /**
+   * Paginated, newest-first batch history for the report list.
+   *
+   * FINDING-011: scoped to the caller's own batches unless they hold
+   * user.manage — an import batch report leaks document titles/numbers/
+   * filenames (including for confidential documents the caller may have no
+   * ACL grant on), so it must not be readable system-wide by every
+   * document.write holder the way an unscoped query would allow.
+   */
+  async listBatches(
+    user: AuthUser,
+    page = 1,
+    pageSize = 20,
+  ): Promise<Paginated<ImportBatchSummary>> {
+    const where = (user.permissions ?? []).includes(PERMISSIONS.USER_MANAGE)
+      ? {}
+      : { createdById: user.id };
     const [rows, total] = await this.prisma.$transaction([
       this.prisma.importBatch.findMany({
+        where,
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * pageSize,
         take: pageSize,
         include: { createdBy: { select: { name: true } } },
       }),
-      this.prisma.importBatch.count(),
+      this.prisma.importBatch.count({ where }),
     ]);
     return { items: rows.map((r) => toSummary(r)), total, page, pageSize };
   }
 
-  /** A batch plus its full per-row report (404 if unknown). */
-  async getBatch(id: string): Promise<ImportBatchDetail> {
+  /**
+   * A batch plus its full per-row report (404 if unknown or not visible to
+   * this caller — FINDING-011: 404, not 403, so an unauthorized caller
+   * cannot distinguish "not mine" from "doesn't exist").
+   */
+  async getBatch(id: string, user: AuthUser): Promise<ImportBatchDetail> {
+    const batch = await this.loadBatchDetail(id);
+    const canManage = (user.permissions ?? []).includes(PERMISSIONS.USER_MANAGE);
+    if (!batch || (batch.createdById !== user.id && !canManage)) {
+      throw new NotFoundException('Import batch not found');
+    }
+    return batch;
+  }
+
+  /**
+   * Unchecked batch-detail loader. Used by {@link getBatch} (route-facing,
+   * enforces ownership) and by {@link finalize} (internal — the batch was
+   * just created by the same request's own actor, so no re-check is needed).
+   */
+  private async loadBatchDetail(id: string): Promise<(ImportBatchDetail & { createdById: string }) | null> {
     const batch = await this.prisma.importBatch.findUnique({
       where: { id },
       include: {
@@ -239,8 +285,12 @@ export class ImportsService {
         items: { orderBy: { rowNumber: 'asc' } },
       },
     });
-    if (!batch) throw new NotFoundException('Import batch not found');
-    return { ...toSummary(batch), items: batch.items.map((i) => toItemResult(i)) };
+    if (!batch) return null;
+    return {
+      ...toSummary(batch),
+      items: batch.items.map((i) => toItemResult(i)),
+      createdById: batch.createdById,
+    };
   }
 
   // ---- Row processing ------------------------------------------------------
@@ -499,9 +549,23 @@ export class ImportsService {
     }
   }
 
-  /** Resolves an owner email (case-insensitive) to a user id; defaults to importer. */
+  /**
+   * Resolves an owner email (case-insensitive) to a user id; defaults to the
+   * importer. FINDING-010: the normal document API never lets the caller set
+   * ownerId (create/update DTOs have no such field — owner is always the
+   * caller). Reassigning to a DIFFERENT user is an elevated action here too:
+   * ownership grants implicit confidential-document visibility elsewhere
+   * (DocumentAccessService/NotificationsService treat `ownerId === user.id`
+   * as an ACL bypass), so honoring an arbitrary manifest email would let any
+   * document.write holder grant that bypass to someone else. Only a caller
+   * holding user.manage (the codebase's existing "may act for other
+   * accounts" permission) may reassign; anyone else's manifest `owner` column
+   * is ignored and the importer remains the owner, matching the documented
+   * "owner = caller" behavior of the normal create path.
+   */
   private async resolveOwnerId(email: string | undefined, importer: AuthUser): Promise<string> {
     if (!email) return importer.id;
+    if (!(importer.permissions ?? []).includes(PERMISSIONS.USER_MANAGE)) return importer.id;
     const owner = await this.prisma.user.findFirst({
       where: { email: { equals: email, mode: 'insensitive' } },
       select: { id: true },
@@ -546,7 +610,13 @@ export class ImportsService {
         error: counters.error,
       },
     });
-    return this.getBatch(batchId);
+    // Internal, unchecked lookup — the batch was just created by this same
+    // request's own actor, so the ownership re-check in getBatch() would be
+    // redundant (and this call site has no separate "viewing user" to check
+    // against; it's building the response for the actor who ran the import).
+    const detail = await this.loadBatchDetail(batchId);
+    if (!detail) throw new NotFoundException('Import batch not found');
+    return detail;
   }
 }
 

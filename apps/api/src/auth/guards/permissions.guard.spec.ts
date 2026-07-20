@@ -54,4 +54,32 @@ describe('PermissionsGuard', () => {
       UnauthorizedException,
     );
   });
+
+  describe('FINDING-012: mustChangePassword server-side enforcement', () => {
+    const tempStaff: AuthUser = { ...staff, mustChangePassword: true };
+    const tempAdmin: AuthUser = { ...admin, mustChangePassword: true };
+
+    it('denies with 403 on a permission-gated route when mustChangePassword is true, even if the user holds the permission', () => {
+      expect(() =>
+        guardFor(['document.read']).canActivate(makeContext(tempStaff)),
+      ).toThrow(ForbiddenException);
+      expect(() =>
+        guardFor(['user.manage']).canActivate(makeContext(tempAdmin)),
+      ).toThrow(ForbiddenException);
+    });
+
+    it('denies with 403 on an auth-only route (no @RequirePermission) when mustChangePassword is true', () => {
+      expect(() => guardFor(undefined).canActivate(makeContext(tempStaff))).toThrow(
+        ForbiddenException,
+      );
+      expect(() => guardFor([]).canActivate(makeContext(tempStaff))).toThrow(
+        ForbiddenException,
+      );
+    });
+
+    it('is unaffected for a user with mustChangePassword=false (regression)', () => {
+      expect(guardFor(['document.read']).canActivate(makeContext(staff))).toBe(true);
+      expect(guardFor(undefined).canActivate(makeContext(staff))).toBe(true);
+    });
+  });
 });

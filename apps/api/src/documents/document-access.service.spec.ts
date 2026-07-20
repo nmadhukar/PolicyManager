@@ -5,8 +5,11 @@ import { AccessDocument, DocumentAccessService } from './document-access.service
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const makePrisma = (): any => ({
   userRole: { findMany: jest.fn().mockResolvedValue([]) },
-  documentAcl: { count: jest.fn().mockResolvedValue(0) },
+  documentAcl: { findMany: jest.fn().mockResolvedValue([]) },
 });
+
+/** Convenience: mock a single ACL grant row of the given permission level. */
+const grantRow = (permission: 'view' | 'download' | 'edit' | 'approve') => [{ permission }];
 
 const build = (p = makePrisma()) => ({ prisma: p, svc: new DocumentAccessService(p as never) });
 
@@ -94,7 +97,7 @@ describe('DocumentAccessService.canAccess — public & restricted', () => {
     it(`${level}: never consults the ACL table (no confidential lookup)`, async () => {
       const { svc, prisma } = build();
       await svc.canAccess(plainReader(), doc({ accessLevel: level }), 'view');
-      expect(prisma.documentAcl.count).not.toHaveBeenCalled();
+      expect(prisma.documentAcl.findMany).not.toHaveBeenCalled();
     });
   }
 });
@@ -104,9 +107,9 @@ describe('DocumentAccessService.canAccess — confidential', () => {
     doc({ accessLevel: 'confidential', ...over });
 
   it('DENIES a plain reader with NO grant (document.read is not enough)', async () => {
-    const { svc, prisma } = build(); // documentAcl.count defaults to 0
+    const { svc, prisma } = build(); // documentAcl.findMany defaults to []
     expect(await svc.canAccess(plainReader(), confidential(), 'view')).toBe(false);
-    expect(prisma.documentAcl.count).toHaveBeenCalled();
+    expect(prisma.documentAcl.findMany).toHaveBeenCalled();
   });
 
   it('ALLOWS the owner (owner bypass) to view', async () => {
@@ -114,18 +117,18 @@ describe('DocumentAccessService.canAccess — confidential', () => {
     const owner = plainReader();
     expect(await svc.canAccess(owner, confidential({ ownerId: owner.id }), 'view')).toBe(true);
     // Owner short-circuits before any ACL lookup.
-    expect(prisma.documentAcl.count).not.toHaveBeenCalled();
+    expect(prisma.documentAcl.findMany).not.toHaveBeenCalled();
   });
 
   it('ALLOWS an Admin to view without a grant', async () => {
     const { svc, prisma } = build();
     expect(await svc.canAccess(admin(), confidential(), 'view')).toBe(true);
-    expect(prisma.documentAcl.count).not.toHaveBeenCalled();
+    expect(prisma.documentAcl.findMany).not.toHaveBeenCalled();
   });
 
-  it('ALLOWS a reader who has an ACL grant (user or role) to view AND download', async () => {
+  it('ALLOWS a reader who has a "view" ACL grant (user or role) to view AND download', async () => {
     const { svc, prisma } = build();
-    prisma.documentAcl.count.mockResolvedValue(1); // a matching grant exists
+    prisma.documentAcl.findMany.mockResolvedValue(grantRow('view'));
     expect(await svc.canAccess(plainReader(), confidential(), 'view')).toBe(true);
     expect(await svc.canAccess(plainReader(), confidential(), 'download')).toBe(true);
   });
@@ -133,11 +136,11 @@ describe('DocumentAccessService.canAccess — confidential', () => {
   it('scopes the ACL lookup to the document AND its category, matching user or roles', async () => {
     const { svc, prisma } = build();
     prisma.userRole.findMany.mockResolvedValue([{ roleId: 'r-1' }, { roleId: 'r-2' }]);
-    prisma.documentAcl.count.mockResolvedValue(1);
+    prisma.documentAcl.findMany.mockResolvedValue(grantRow('view'));
 
     await svc.canAccess(plainReader(), confidential({ categoryId: 'cat-1' }), 'view');
 
-    const where = prisma.documentAcl.count.mock.calls[0][0].where;
+    const where = prisma.documentAcl.findMany.mock.calls[0][0].where;
     expect(where.AND[0].OR).toEqual([{ documentId: 'doc-1' }, { categoryId: 'cat-1' }]);
     expect(where.AND[1].OR).toEqual([
       { principalType: 'user', principalId: 'reader' },
@@ -145,17 +148,47 @@ describe('DocumentAccessService.canAccess — confidential', () => {
     ]);
   });
 
-  it('edit on confidential requires BOTH document.write AND a grant/owner/admin', async () => {
+  it('edit on confidential requires BOTH document.write AND an edit-level grant/owner/admin', async () => {
     const { svc, prisma } = build();
-    // A writer with a grant can edit.
-    prisma.documentAcl.count.mockResolvedValue(1);
+    // A writer with an edit-level grant can edit.
+    prisma.documentAcl.findMany.mockResolvedValue(grantRow('edit'));
     expect(await svc.canAccess(writer(), confidential(), 'edit')).toBe(true);
     // A writer with NO grant (and not owner/admin) cannot edit.
-    prisma.documentAcl.count.mockResolvedValue(0);
+    prisma.documentAcl.findMany.mockResolvedValue([]);
     expect(await svc.canAccess(writer(), confidential(), 'edit')).toBe(false);
-    // A reader with a grant still cannot edit (no document.write).
-    prisma.documentAcl.count.mockResolvedValue(1);
+    // A reader with an edit-level grant still cannot edit (no document.write).
+    prisma.documentAcl.findMany.mockResolvedValue(grantRow('edit'));
     expect(await svc.canAccess(plainReader(), confidential(), 'edit')).toBe(false);
+  });
+
+  it('FINDING-012: a "view"-only grant does NOT satisfy "edit", even with document.write', async () => {
+    const { svc, prisma } = build();
+    prisma.documentAcl.findMany.mockResolvedValue(grantRow('view'));
+    expect(await svc.canAccess(writer(), confidential(), 'edit')).toBe(false);
+  });
+
+  it('FINDING-012: a "download"-only grant does NOT satisfy "edit" or "approve"', async () => {
+    const { svc, prisma } = build();
+    prisma.documentAcl.findMany.mockResolvedValue(grantRow('download'));
+    expect(await svc.canAccess(writer(), confidential(), 'edit')).toBe(false);
+    expect(await svc.canAccess(approver(), confidential(), 'approve')).toBe(false);
+  });
+
+  it('FINDING-012: an "edit" grant satisfies view/download/edit but not "approve"', async () => {
+    const { svc, prisma } = build();
+    prisma.documentAcl.findMany.mockResolvedValue(grantRow('edit'));
+    expect(await svc.canAccess(writer(), confidential(), 'view')).toBe(true);
+    expect(await svc.canAccess(writer(), confidential(), 'download')).toBe(true);
+    expect(await svc.canAccess(writer(), confidential(), 'edit')).toBe(true);
+    expect(await svc.canAccess(approver(), confidential(), 'approve')).toBe(false);
+  });
+
+  it('FINDING-012: an "approve" grant satisfies every lower-ranked action', async () => {
+    const { svc, prisma } = build();
+    prisma.documentAcl.findMany.mockResolvedValue(grantRow('approve'));
+    expect(await svc.canAccess(writer(), confidential(), 'view')).toBe(true);
+    expect(await svc.canAccess(writer(), confidential(), 'edit')).toBe(true);
+    expect(await svc.canAccess(approver(), confidential(), 'approve')).toBe(true);
   });
 });
 
@@ -168,6 +201,131 @@ describe('DocumentAccessService.assertCanAccess', () => {
     await expect(
       svc.assertCanAccess(plainReader(), doc({ accessLevel: 'confidential' }), 'view'),
     ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+});
+
+describe('DocumentAccessService.canAccessMany (FINDING-010)', () => {
+  const confidential = (over: Partial<AccessDocument> = {}) =>
+    doc({ accessLevel: 'confidential', ...over });
+
+  it('denies every document when the caller lacks the required permission (no DB calls)', async () => {
+    const { svc, prisma } = build();
+    const noPerm = user({ permissions: [] });
+    const decisions = await svc.canAccessMany(
+      noPerm,
+      [doc({ id: 'd1' }), confidential({ id: 'd2' })],
+      'view',
+    );
+    expect(decisions.get('d1')).toBe(false);
+    expect(decisions.get('d2')).toBe(false);
+    expect(prisma.documentAcl.findMany).not.toHaveBeenCalled();
+  });
+
+  it('allows public/restricted and owner/admin confidential docs without any ACL lookup', async () => {
+    const { svc, prisma } = build();
+    const owner = plainReader();
+    const decisions = await svc.canAccessMany(
+      owner,
+      [
+        doc({ id: 'd-public', accessLevel: 'public' }),
+        confidential({ id: 'd-owned', ownerId: owner.id }),
+      ],
+      'view',
+    );
+    expect(decisions.get('d-public')).toBe(true);
+    expect(decisions.get('d-owned')).toBe(true);
+    expect(prisma.documentAcl.findMany).not.toHaveBeenCalled();
+  });
+
+  it('issues exactly ONE role lookup + ONE ACL lookup for many confidential, non-owned targets', async () => {
+    const { svc, prisma } = build();
+    prisma.userRole.findMany.mockResolvedValue([{ roleId: 'r-1' }]);
+    prisma.documentAcl.findMany.mockResolvedValue([
+      { documentId: 'd2', categoryId: null, permission: 'view' },
+    ]);
+
+    const targets = [
+      confidential({ id: 'd1' }),
+      confidential({ id: 'd2' }),
+      confidential({ id: 'd3' }),
+    ];
+    const decisions = await svc.canAccessMany(plainReader(), targets, 'view');
+
+    expect(prisma.userRole.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.documentAcl.findMany).toHaveBeenCalledTimes(1);
+    // Only d2 has a matching grant; d1/d3 are denied — outcome matches what
+    // three independent canAccess() calls would have produced.
+    expect(decisions.get('d1')).toBe(false);
+    expect(decisions.get('d2')).toBe(true);
+    expect(decisions.get('d3')).toBe(false);
+  });
+
+  it('a category-scoped grant unlocks every confidential document in that category', async () => {
+    const { svc, prisma } = build();
+    prisma.documentAcl.findMany.mockResolvedValue([
+      { documentId: null, categoryId: 'cat-1', permission: 'view' },
+    ]);
+
+    const decisions = await svc.canAccessMany(
+      plainReader(),
+      [confidential({ id: 'd1', categoryId: 'cat-1' }), confidential({ id: 'd2', categoryId: 'cat-2' })],
+      'view',
+    );
+
+    expect(decisions.get('d1')).toBe(true); // in the granted category
+    expect(decisions.get('d2')).toBe(false); // different category, no grant
+  });
+
+  it('matches canAccess()\'s per-document outcome exactly for a mixed batch', async () => {
+    const { svc, prisma } = build();
+    prisma.userRole.findMany.mockResolvedValue([]);
+    prisma.documentAcl.findMany.mockResolvedValue([
+      { documentId: 'confidential-granted', categoryId: null, permission: 'view' },
+    ]);
+
+    const reader = plainReader();
+    const targets = [
+      doc({ id: 'public-1', accessLevel: 'public' }),
+      confidential({ id: 'confidential-granted' }),
+      confidential({ id: 'confidential-ungranted' }),
+    ];
+
+    const batched = await svc.canAccessMany(reader, targets, 'view');
+    const individual = new Map<string, boolean>();
+    for (const t of targets) {
+      // Reset the findMany mock per doc, mirroring what canAccess's hasGrant()
+      // would see for the granted vs. ungranted document in an un-batched call.
+      prisma.documentAcl.findMany.mockResolvedValue(
+        t.id === 'confidential-granted' ? grantRow('view') : [],
+      );
+      individual.set(t.id, await svc.canAccess(reader, t, 'view'));
+    }
+
+    expect(batched.get('public-1')).toBe(individual.get('public-1'));
+    expect(batched.get('confidential-granted')).toBe(individual.get('confidential-granted'));
+    expect(batched.get('confidential-ungranted')).toBe(individual.get('confidential-ungranted'));
+  });
+
+  it('FINDING-012: a "view"-only grant does not unlock "edit" for a batched target', async () => {
+    const { svc, prisma } = build();
+    prisma.documentAcl.findMany.mockResolvedValue([
+      { documentId: 'd1', categoryId: null, permission: 'view' },
+    ]);
+
+    const decisions = await svc.canAccessMany(writer(), [confidential({ id: 'd1' })], 'edit');
+
+    expect(decisions.get('d1')).toBe(false);
+  });
+
+  it('FINDING-012: an "edit" grant unlocks "edit" for a batched target', async () => {
+    const { svc, prisma } = build();
+    prisma.documentAcl.findMany.mockResolvedValue([
+      { documentId: 'd1', categoryId: null, permission: 'edit' },
+    ]);
+
+    const decisions = await svc.canAccessMany(writer(), [confidential({ id: 'd1' })], 'edit');
+
+    expect(decisions.get('d1')).toBe(true);
   });
 });
 

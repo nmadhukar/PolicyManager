@@ -13,6 +13,7 @@ import {
   type ServerSideEncryption,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { NodeHttpHandler } from '@smithy/node-http-handler';
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { hostOf } from '../common/net.util';
@@ -110,7 +111,15 @@ export class S3Service implements OnModuleInit {
     const credentials = S3Service.resolveCredentials(config, endpoint);
     const forcePathStyle = envBool(config.get('S3_FORCE_PATH_STYLE'), Boolean(endpoint));
 
-    this.client = new S3Client({ region, endpoint, forcePathStyle, credentials });
+    // FINDING-019: without an explicit requestHandler, the AWS SDK v3's default
+    // NodeHttpHandler has no bounded connection/request timeout — a stalled
+    // S3/MinIO connection can hang a request (upload/download/extraction)
+    // indefinitely instead of failing fast so the SDK's own retry can engage.
+    const connectionTimeout = Number(config.get('S3_CONNECTION_TIMEOUT_MS') ?? 5_000);
+    const requestTimeout = Number(config.get('S3_REQUEST_TIMEOUT_MS') ?? 30_000);
+    const requestHandler = new NodeHttpHandler({ connectionTimeout, requestTimeout });
+
+    this.client = new S3Client({ region, endpoint, forcePathStyle, credentials, requestHandler });
     this.presignClient =
       publicEndpoint === endpoint
         ? this.client
@@ -119,6 +128,7 @@ export class S3Service implements OnModuleInit {
             endpoint: publicEndpoint,
             forcePathStyle: envBool(config.get('S3_FORCE_PATH_STYLE'), Boolean(publicEndpoint)),
             credentials,
+            requestHandler,
           });
   }
 

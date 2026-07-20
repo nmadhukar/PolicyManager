@@ -182,6 +182,18 @@ export class RagConfigService {
     return Number(this.config.get('RAG_CHAT_RATE_TTL_MS') ?? 60_000);
   }
 
+  /**
+   * FINDING-003: request timeout (ms) for OpenAI chat/embedding calls. Neither
+   * client is given one by default, so a slow/hanging upstream response can
+   * hold a request open for the SDK's own multi-minute default — under the
+   * tight 20 req/60s chat rate limit, a handful of stuck calls can pin many
+   * event-loop/HTTP-agent slots during an OpenAI incident. Bounded to a
+   * multiple of chatMaxTokens' realistic generation time; default 20000 (20s).
+   */
+  get llmTimeoutMs(): number {
+    return Number(this.config.get('RAG_LLM_TIMEOUT_MS') ?? 20_000);
+  }
+
   /** True only when the feature is enabled and an API key is present. */
   isConfigured(): boolean {
     return this.enabled && !!this.openaiApiKey;

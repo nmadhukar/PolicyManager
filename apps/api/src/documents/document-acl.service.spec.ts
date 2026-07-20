@@ -1,6 +1,15 @@
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import type { AuthUser } from '@policymanager/shared';
 import { DocumentAclService } from './document-acl.service';
+
+/** A P2002 error shaped like the real Prisma runtime error for this test's purposes. */
+function p2002(): Prisma.PrismaClientKnownRequestError {
+  return new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+    code: 'P2002',
+    clientVersion: 'test',
+  });
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const makePrisma = (): any => ({
@@ -137,6 +146,55 @@ describe('DocumentAclService.add', () => {
 
     expect(prisma.documentAcl.create).not.toHaveBeenCalled();
     expect(audit.record).not.toHaveBeenCalled();
+  });
+
+  it('FINDING-011: a lost race (P2002 from the partial unique index) re-fetches and returns the winner, without a duplicate audit', async () => {
+    const { svc, prisma, audit } = build();
+    prisma.document.findFirst.mockResolvedValue(activeDoc);
+    prisma.user.findUnique.mockResolvedValue({ id: 'u-2' });
+    prisma.user.findMany.mockResolvedValue([{ id: 'u-2', name: 'Jane' }]);
+    // Pre-check finds nothing (both concurrent callers pass it)...
+    prisma.documentAcl.findFirst
+      .mockResolvedValueOnce(null) // pre-check
+      .mockResolvedValueOnce(aclRow()); // post-P2002 re-fetch finds the winner's row
+    // ...then create() loses the race to the DB-level partial unique index.
+    prisma.documentAcl.create.mockRejectedValue(p2002());
+
+    const grant = await svc.add(
+      'doc-1',
+      { principalType: 'user', principalId: 'u-2', permission: 'view' },
+      user,
+    );
+
+    expect(grant).toMatchObject({ id: 'acl-1', principalId: 'u-2', principalName: 'Jane' });
+    // The loser must not record a second acl.changed audit for a grant it didn't create.
+    expect(audit.record).not.toHaveBeenCalled();
+  });
+
+  it('FINDING-011: re-throws a P2002 if the post-race re-fetch still finds nothing', async () => {
+    const { svc, prisma } = build();
+    prisma.document.findFirst.mockResolvedValue(activeDoc);
+    prisma.user.findUnique.mockResolvedValue({ id: 'u-2' });
+    prisma.documentAcl.findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null); // still nothing — should not happen, but must not silently swallow
+    prisma.documentAcl.create.mockRejectedValue(p2002());
+
+    await expect(
+      svc.add('doc-1', { principalType: 'user', principalId: 'u-2', permission: 'view' }, user),
+    ).rejects.toThrow();
+  });
+
+  it('propagates a non-P2002 error from create() unchanged', async () => {
+    const { svc, prisma } = build();
+    prisma.document.findFirst.mockResolvedValue(activeDoc);
+    prisma.user.findUnique.mockResolvedValue({ id: 'u-2' });
+    prisma.documentAcl.findFirst.mockResolvedValue(null);
+    prisma.documentAcl.create.mockRejectedValue(new Error('connection lost'));
+
+    await expect(
+      svc.add('doc-1', { principalType: 'user', principalId: 'u-2', permission: 'view' }, user),
+    ).rejects.toThrow('connection lost');
   });
 });
 

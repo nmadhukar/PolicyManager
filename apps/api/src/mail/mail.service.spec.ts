@@ -110,6 +110,46 @@ describe('MailService', () => {
       );
     });
 
+    it('FINDING-020: always constructs the transport with bounded default timeouts', async () => {
+      sendMail.mockResolvedValue({});
+      const { svc } = build();
+      await svc.send({ to: 'a@b.com', subject: 's', html: 'h' });
+      expect(createTransport).toHaveBeenCalledWith(
+        expect.objectContaining({
+          connectionTimeout: 10_000,
+          greetingTimeout: 10_000,
+          socketTimeout: 20_000,
+        }),
+      );
+    });
+
+    it('FINDING-020: honours SMTP_*_TIMEOUT_MS overrides', async () => {
+      sendMail.mockResolvedValue({});
+      const prisma = makePrisma();
+      const overrideConfig = new ConfigService({
+        SMTP_HOST: 'localhost',
+        SMTP_PORT: 1025,
+        SMTP_SECURE: false,
+        SMTP_FROM_ADDRESS: 'policymanager@example.com',
+        SMTP_FROM_NAME: 'PolicyManager',
+        APP_ENCRYPTION_KEY: APP_KEY,
+        SMTP_CONNECTION_TIMEOUT_MS: '3000',
+        SMTP_GREETING_TIMEOUT_MS: '4000',
+        SMTP_SOCKET_TIMEOUT_MS: '9000',
+      });
+      const svc = new MailService(overrideConfig, prisma as never);
+
+      await svc.send({ to: 'a@b.com', subject: 's', html: 'h' });
+
+      expect(createTransport).toHaveBeenCalledWith(
+        expect.objectContaining({
+          connectionTimeout: 3_000,
+          greetingTimeout: 4_000,
+          socketTimeout: 9_000,
+        }),
+      );
+    });
+
     it('prefers an enabled DB config and decrypts its password for auth', async () => {
       sendMail.mockResolvedValue({});
       const prisma = makePrisma();

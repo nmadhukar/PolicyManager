@@ -87,9 +87,11 @@ vi.mock('../api/categories', () => ({
   flattenCategories: () => [],
 }));
 
-// The owner filter reads the user directory when permitted; stub it to no-ops.
+// The owner filter reads the user directory when permitted; stub it to no-ops
+// by default (individual tests override via mockResolvedValueOnce).
+const mockListUsers = vi.fn();
 vi.mock('../api/users', () => ({
-  listUsers: vi.fn().mockResolvedValue([]),
+  listUsers: (...args: unknown[]) => mockListUsers(...args),
 }));
 
 function renderLibrary() {
@@ -128,6 +130,7 @@ describe('LibraryPage', () => {
       children: [],
     });
     mockListSavedSearches.mockReset().mockResolvedValue([]);
+    mockListUsers.mockReset().mockResolvedValue([]);
   });
 
   it('shows the forbidden state when the user lacks document.read', () => {
@@ -323,5 +326,82 @@ describe('LibraryPage', () => {
     await waitFor(() =>
       expect(screen.getByRole('alert')).toHaveTextContent('Could not archive the document.'),
     );
+  });
+
+  describe('FINDING-002: owner-filter options cache', () => {
+    it('replaces (does not merge into) prior state once the full user directory loads', async () => {
+      // user.manage grants the full-directory query; USER_MANAGE = 'user.manage'.
+      mockHasPermission.mockImplementation((key: string) => key === 'document.read' || key === 'user.manage');
+      // First page's owner ('Stale Owner', id owner-stale) should NOT survive
+      // once the authoritative directory response lands — merging it in would
+      // be the pre-fix bug (redundant growth once the directory is known).
+      mockListDocuments.mockResolvedValue(
+        oneDoc({ ownerId: 'owner-stale', ownerName: 'Stale Owner' }),
+      );
+      mockListUsers.mockResolvedValue([{ id: 'owner-real', name: 'Real Directory Owner' }]);
+      renderLibrary();
+      await waitFor(() => expect(screen.getByText('Seclusion & Restraint Policy')).toBeInTheDocument());
+      fireEvent.click(screen.getByRole('button', { name: 'Filters' }));
+
+      const select = (await screen.findByLabelText('Owner')) as HTMLSelectElement;
+      await waitFor(() => {
+        const labels = Array.from(select.options).map((o) => o.textContent);
+        expect(labels).toContain('Real Directory Owner');
+        expect(labels).not.toContain('Stale Owner');
+      });
+    });
+
+    it('caps the fallback owner cache instead of growing it without bound across pages', async () => {
+      // No user.manage: the fallback path (accumulate owners seen per page) is
+      // exercised instead of the full-directory replace path.
+      mockHasPermission.mockImplementation((key: string) => key === 'document.read');
+      const TOTAL_OWNERS = 520; // > OWNER_OPTIONS_CAP (500 in LibraryPage.tsx)
+      mockListDocuments.mockImplementation(() =>
+        Promise.resolve({
+          items: Array.from({ length: 20 }, (_, i) => {
+            const n = (mockListDocuments.mock.calls.length - 1) * 20 + i;
+            return {
+              id: `doc-${n}`,
+              title: `Policy ${n}`,
+              documentNumber: `PP-${n}`,
+              categoryId: null,
+              categoryName: null,
+              ownerId: `owner-${n}`,
+              ownerName: `Owner ${n}`,
+              status: 'published',
+              accessLevel: 'restricted',
+              tags: [],
+              reviewCadence: 'none',
+              nextReviewDate: null,
+              effectiveDate: null,
+              createdAt: '2026-01-01T00:00:00.000Z',
+              updatedAt: '2026-01-01T00:00:00.000Z',
+              deletedAt: null,
+              deletedByName: null,
+              currentVersion: null,
+            };
+          }),
+          total: TOTAL_OWNERS,
+          page: mockListDocuments.mock.calls.length,
+          pageSize: 20,
+        }),
+      );
+      renderLibrary();
+      await waitFor(() => expect(screen.getByText('Policy 0')).toBeInTheDocument());
+      fireEvent.click(screen.getByRole('button', { name: 'Filters' }));
+
+      const nextButton = screen.getByRole('button', { name: 'Next' });
+      for (let i = 0; i < TOTAL_OWNERS / 20 - 1; i += 1) {
+        fireEvent.click(nextButton);
+        // Wait for that page's distinctive title before advancing again.
+        await waitFor(() => expect(mockListDocuments).toHaveBeenCalledTimes(i + 2));
+      }
+
+      const select = (await screen.findByLabelText('Owner')) as HTMLSelectElement;
+      await waitFor(() => {
+        // +1 for the "All owners" placeholder option.
+        expect(select.options.length).toBeLessThanOrEqual(500 + 1);
+      });
+    });
   });
 });

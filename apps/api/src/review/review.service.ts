@@ -108,13 +108,33 @@ export class ReviewService {
     const existing = await this.prisma.reviewAssignment.findUnique({
       where: { documentId_reviewerId: { documentId, reviewerId } },
     });
-    const assignment =
-      existing ??
-      (await this.prisma.reviewAssignment.create({
-        data: { documentId, reviewerId, createdById: actor.id },
-      }));
+    let assignment = existing;
+    let created = false;
+    if (!assignment) {
+      try {
+        assignment = await this.prisma.reviewAssignment.create({
+          data: { documentId, reviewerId, createdById: actor.id },
+        });
+        created = true;
+      } catch (err) {
+        // FINDING-018: the schema's own @@unique([documentId, reviewerId])
+        // comment states assigning twice must be idempotent — the pre-check
+        // above is not race-safe on its own, so a lost race re-fetches the
+        // winner's row instead of surfacing a raw P2002, mirroring
+        // imports.service.ts's findOrCreateCategory. The loser must NOT repeat
+        // the winner's audit/notification/due-task side effects below.
+        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+          assignment = await this.prisma.reviewAssignment.findUnique({
+            where: { documentId_reviewerId: { documentId, reviewerId } },
+          });
+          if (!assignment) throw err;
+        } else {
+          throw err;
+        }
+      }
+    }
 
-    if (!existing) {
+    if (created) {
       await this.audit.record({
         action: AUDIT_ACTIONS.REVIEW_ASSIGNED,
         actorUserId: actor.id,
@@ -473,9 +493,16 @@ export class ReviewService {
     // C6/D4: the task completion, the document's advanced review date, AND the
     // immutable `reviewed` sign-off commit ATOMICALLY — a completed review always
     // carries its evidence, and evidence never exists for an uncommitted completion.
+    //
+    // FINDING-021: the pre-transaction status check above is not itself a
+    // compare-and-swap — two authorized users (the assignee + a review.manage
+    // holder) could both pass it before either commits. The update inside the
+    // transaction re-checks status in its WHERE clause and aborts if another
+    // completion already won the race, instead of silently producing two
+    // "reviewed" Attestation rows for one task.
     await this.prisma.$transaction(async (tx) => {
-      await tx.reviewTask.update({
-        where: { id: taskId },
+      const { count } = await tx.reviewTask.updateMany({
+        where: { id: taskId, status: { notIn: ['completed', 'cancelled'] } },
         data: {
           status: 'completed',
           completedAt: now,
@@ -483,6 +510,9 @@ export class ReviewService {
           notes: dto.notes,
         },
       });
+      if (count === 0) {
+        throw new BadRequestException('This review task is already closed');
+      }
       await tx.document.update({
         where: { id: task.documentId },
         data: { nextReviewDate: newNextReviewDate },

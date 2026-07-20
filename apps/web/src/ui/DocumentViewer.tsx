@@ -1,4 +1,4 @@
-import { FormEvent, MouseEvent, useMemo, useRef, useState } from 'react';
+import { FormEvent, MouseEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AxiosError } from 'axios';
 import { Document, Page, pdfjs } from 'react-pdf';
@@ -30,6 +30,7 @@ import { useFocusTrap } from './useFocusTrap';
 pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 const DEFAULT_RECT: AnnotationRect = { pageNumber: 1, x: 0.08, y: 0.08, width: 0.28, height: 0.08 };
+const EMPTY_PAGE_ANNOTATIONS: DocumentAnnotationItem[] = [];
 
 /**
  * Read-only in-browser document viewer (AGENTS.md §10a). Renders the version's
@@ -71,7 +72,22 @@ export function DocumentViewer({
     queryKey: ['annotations', documentId, version.id],
     queryFn: () => listAnnotations(documentId, version.id),
   });
-  const annotations = annotationsQuery.data?.items ?? [];
+  // Stable empty-array fallback (not a fresh `[]` literal) so identity only
+  // changes when the query actually returns new data — required for the
+  // useMemo below to skip recomputation on unrelated re-renders.
+  const annotations = annotationsQuery.data?.items ?? EMPTY_PAGE_ANNOTATIONS;
+  // FINDING-008: group once per `annotations` change into a per-page map
+  // instead of each AnnotationOverlay instance re-filtering the FULL array on
+  // every render (previously O(pages x annotations) synchronous work per render).
+  const annotationsByPage = useMemo(() => {
+    const map = new Map<number, DocumentAnnotationItem[]>();
+    for (const a of annotations) {
+      const list = map.get(a.pageNumber);
+      if (list) list.push(a);
+      else map.set(a.pageNumber, [a]);
+    }
+    return map;
+  }, [annotations]);
   const openCount = annotations.filter((a) => a.status === 'open').length;
   const canAnnotate = hasCommentPermission || annotationsQuery.data?.canAnnotate === true;
   const canComplianceDelete =
@@ -117,7 +133,16 @@ export function DocumentViewer({
     onError: (err) => setActionError(apiErrorMessage(err, 'Could not delete the annotation.')),
   });
 
-  const pageWidth = Math.min(900, Math.max(320, window.innerWidth - 420));
+  // FINDING-018: previously computed once from window.innerWidth at mount, so
+  // resizing the browser (or rotating a tablet) while the viewer was open left
+  // the page width stale. Tracks viewport width via a resize listener instead.
+  const [viewportWidth, setViewportWidth] = useState(window.innerWidth);
+  useEffect(() => {
+    const onResize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  const pageWidth = Math.min(900, Math.max(320, viewportWidth - 420));
 
   const submitAnnotation = (e: FormEvent) => {
     e.preventDefault();
@@ -185,7 +210,7 @@ export function DocumentViewer({
                 className="max-h-[calc(100vh-8rem)] max-w-full rounded bg-white shadow"
                 onClick={(e) => canAnnotate && setDraftRect(rectFromClick(e, 1))}
               />
-              <AnnotationOverlay annotations={annotations} pageNumber={1} />
+              <AnnotationOverlay annotationsByPage={annotationsByPage} pageNumber={1} />
             </div>
           ) : (
             <Document
@@ -213,7 +238,7 @@ export function DocumentViewer({
                     className="rounded bg-white shadow"
                     onClick={(e) => canAnnotate && setDraftRect(rectFromClick(e, i + 1))}
                   />
-                  <AnnotationOverlay annotations={annotations} pageNumber={i + 1} />
+                  <AnnotationOverlay annotationsByPage={annotationsByPage} pageNumber={i + 1} />
                 </div>
               ))}
             </Document>
@@ -257,13 +282,13 @@ function rectFromClick(e: MouseEvent<HTMLElement>, pageNumber: number): Annotati
 }
 
 function AnnotationOverlay({
-  annotations,
+  annotationsByPage,
   pageNumber,
 }: {
-  annotations: DocumentAnnotationItem[];
+  annotationsByPage: Map<number, DocumentAnnotationItem[]>;
   pageNumber: number;
 }) {
-  const pageAnnotations = annotations.filter((a) => a.pageNumber === pageNumber);
+  const pageAnnotations = annotationsByPage.get(pageNumber) ?? EMPTY_PAGE_ANNOTATIONS;
   return (
     <div className="pointer-events-none absolute inset-0">
       {pageAnnotations.map((a) => (

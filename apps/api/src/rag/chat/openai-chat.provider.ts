@@ -73,6 +73,10 @@ export class OpenAiChatProvider implements ChatLlmProvider {
         model: this.model,
         maxTokens: this.ragConfig.chatMaxTokens,
         temperature: this.ragConfig.chatTemperature,
+        // FINDING-003: bound how long a single call can hang — without this the
+        // OpenAI SDK's own multi-minute default applies, and ChatService.chat()
+        // can issue up to two sequential calls per request.
+        timeout: this.ragConfig.llmTimeoutMs,
       });
     }
     return this.client;

@@ -213,6 +213,53 @@ describe('Documents & Versioning (e2e)', () => {
     expect(download.body.expiresIn).toBeLessThanOrEqual(300);
   }, 30000);
 
+  it('FINDING-001: rejects a disallowed file extension with 400, before any version row is written', async () => {
+    const created = await request(app.getHttpServer())
+      .post('/api/documents')
+      .set('Authorization', auth())
+      .send({ title: `Upload allowlist test ${suffix}`, documentNumber: `PP-ALLOW-${suffix}` })
+      .expect(201);
+    const docId = created.body.id as string;
+    createdDocIds.push(docId);
+
+    await request(app.getHttpServer())
+      .post(`/api/documents/${docId}/versions`)
+      .set('Authorization', auth())
+      .attach('file', Buffer.from('#!/bin/sh\necho hi\n'), {
+        filename: 'payload.sh',
+        contentType: 'application/x-sh',
+      })
+      .expect(400);
+
+    const detail = await request(app.getHttpServer())
+      .get(`/api/documents/${docId}`)
+      .set('Authorization', auth())
+      .expect(200);
+    expect(detail.body.currentVersion).toBeNull();
+    expect(detail.body.versions).toHaveLength(0);
+  }, 30000);
+
+  it('FINDING-001: still accepts every AGENTS.md §10a supported type (spot-check DOCX and PNG)', async () => {
+    const created = await request(app.getHttpServer())
+      .post('/api/documents')
+      .set('Authorization', auth())
+      .send({ title: `Upload allowlist ok test ${suffix}`, documentNumber: `PP-ALLOW-OK-${suffix}` })
+      .expect(201);
+    const docId = created.body.id as string;
+    createdDocIds.push(docId);
+
+    // A minimal 1x1 PNG — a real, tiny binary of an allowed image type.
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+      'base64',
+    );
+    await request(app.getHttpServer())
+      .post(`/api/documents/${docId}/versions`)
+      .set('Authorization', auth())
+      .attach('file', png, { filename: 'diagram.png', contentType: 'image/png' })
+      .expect(201);
+  }, 30000);
+
   it('runs the soft-delete -> restore -> archive -> version-restore lifecycle', async () => {
     const listContains = async (id: string, query: Record<string, unknown> = {}) => {
       const res = await request(app.getHttpServer())

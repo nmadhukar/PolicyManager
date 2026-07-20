@@ -19,8 +19,20 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import type { RequestContext } from '../audit/request-context';
+import { mapWithConcurrency } from '../common/concurrency.util';
 import { AttestationService } from './attestation.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { DocumentAccessService, type AccessDocument } from '../documents/document-access.service';
+
+/**
+ * FINDING-007: cap on concurrent notification sends when fanning out a new
+ * batch of assignments, mirroring NotificationsService's DIGEST_CONCURRENCY /
+ * ImportsService's IMPORT_CONCURRENCY bound. A distribution can target an
+ * entire role (uncapped membership size), so a plain sequential loop here
+ * serializes one notifyAcknowledgmentAssignment call (itself several DB
+ * round-trips) per assignee inside a single HTTP request.
+ */
+const NOTIFY_CONCURRENCY = 8;
 
 /** Assignment fields + joins for the manager status view. */
 const statusInclude = {
@@ -53,6 +65,7 @@ export class AcknowledgmentService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly attestation: AttestationService,
+    private readonly access: DocumentAccessService,
     private readonly notifications?: NotificationsService,
   ) {}
 
@@ -70,9 +83,16 @@ export class AcknowledgmentService {
   ): Promise<AcknowledgmentStatusSummary> {
     const doc = await this.prisma.document.findFirst({
       where: { id: documentId, deletedAt: null },
-      select: { id: true, currentVersionId: true },
+      select: {
+        id: true,
+        currentVersionId: true,
+        ownerId: true,
+        accessLevel: true,
+        categoryId: true,
+      },
     });
     if (!doc) throw new NotFoundException('Document not found');
+    await this.enforceAccess(actor, doc, ctx);
     if (!doc.currentVersionId) {
       throw new BadRequestException('Upload and publish a version before distributing for acknowledgment');
     }
@@ -83,26 +103,8 @@ export class AcknowledgmentService {
     }
 
     const dueDate = parseDate(input.dueDate);
-    let created = 0;
-    for (const assigneeId of assigneeIds) {
-      const existing = await this.prisma.acknowledgmentAssignment.findUnique({
-        where: { versionId_assigneeId: { versionId: doc.currentVersionId, assigneeId } },
-        select: { id: true },
-      });
-      if (existing) continue; // Idempotent — keep the existing (possibly completed) row.
-      const assignment = await this.prisma.acknowledgmentAssignment.create({
-        data: {
-          documentId,
-          versionId: doc.currentVersionId,
-          assigneeId,
-          assignedById: actor.id,
-          dueDate: dueDate ?? undefined,
-          status: 'pending',
-        },
-      });
-      await this.notifications?.notifyAcknowledgmentAssignment(assignment.id);
-      created += 1;
-    }
+    const versionId = doc.currentVersionId;
+    const created = await this.assignAndNotify(documentId, versionId, assigneeIds, actor.id, dueDate);
 
     await this.audit.record({
       action: AUDIT_ACTIONS.ACKNOWLEDGMENT_ASSIGNED,
@@ -114,7 +116,9 @@ export class AcknowledgmentService {
       metadata: { versionId: doc.currentVersionId, assigned: created, targeted: assigneeIds.length },
     });
 
-    return this.statusForDocument(documentId);
+    // Access was already enforced above for this same document — build the
+    // summary directly rather than re-checking via the route-facing method.
+    return this.buildStatusSummary(documentId);
   }
 
   /**
@@ -138,19 +142,8 @@ export class AcknowledgmentService {
     });
     if (priorAssignees.length === 0) return 0;
 
-    let created = 0;
-    for (const { assigneeId } of priorAssignees) {
-      const existing = await this.prisma.acknowledgmentAssignment.findUnique({
-        where: { versionId_assigneeId: { versionId, assigneeId } },
-        select: { id: true },
-      });
-      if (existing) continue;
-      const assignment = await this.prisma.acknowledgmentAssignment.create({
-        data: { documentId, versionId, assigneeId, assignedById: actor.id, status: 'pending' },
-      });
-      await this.notifications?.notifyAcknowledgmentAssignment(assignment.id);
-      created += 1;
-    }
+    const priorAssigneeIds = priorAssignees.map((a) => a.assigneeId);
+    const created = await this.assignAndNotify(documentId, versionId, priorAssigneeIds, actor.id);
 
     if (created > 0) {
       await this.audit.record({
@@ -202,10 +195,32 @@ export class AcknowledgmentService {
 
   /**
    * Per-assignee acknowledgment status + completion percentage for the manager
-   * view. Reports on the LATEST distributed version (by version number) so it
-   * reflects the active distribution even if the document pointer has since moved.
+   * view (route-facing — enforces confidential-document ACL before reading any
+   * assignment rows, matching every other route on the sign-off controller).
    */
-  async statusForDocument(documentId: string): Promise<AcknowledgmentStatusSummary> {
+  async statusForDocument(
+    documentId: string,
+    user: AuthUser,
+    ctx: RequestContext = {},
+  ): Promise<AcknowledgmentStatusSummary> {
+    const doc = await this.prisma.document.findFirst({
+      where: { id: documentId, deletedAt: null },
+      select: { id: true, ownerId: true, accessLevel: true, categoryId: true },
+    });
+    if (!doc) throw new NotFoundException('Document not found');
+    await this.enforceAccess(user, doc, ctx);
+    return this.buildStatusSummary(documentId);
+  }
+
+  /**
+   * Per-assignee acknowledgment status + completion percentage. Reports on the
+   * LATEST distributed version (by version number) so it reflects the active
+   * distribution even if the document pointer has since moved. Internal helper —
+   * callers that already hold a document + access decision (e.g. {@link distribute})
+   * use this directly to avoid a redundant access re-check; the route-facing
+   * entry point is {@link statusForDocument}.
+   */
+  private async buildStatusSummary(documentId: string): Promise<AcknowledgmentStatusSummary> {
     const all = await this.prisma.acknowledgmentAssignment.findMany({
       where: { documentId },
       include: statusInclude,
@@ -357,6 +372,87 @@ export class AcknowledgmentService {
   }
 
   // ---- Helpers -------------------------------------------------------------
+
+  /**
+   * FINDING-008/FINDING-004: shared by distribute() and retriggerForVersion() —
+   * batches the existence check + insert instead of one findUnique+create
+   * round-trip per candidate assignee (up to 2N sequential DB calls for N
+   * assignees; @@unique([versionId, assigneeId]) makes a single findMany +
+   * createMany(skipDuplicates) safe and preserves the exact idempotent-skip
+   * behavior), then notifies the newly-created rows.
+   *
+   * FINDING-007: the notify step fans out with bounded concurrency
+   * ({@link NOTIFY_CONCURRENCY}) instead of one notification at a time —
+   * `candidateAssigneeIds` can be an entire role's membership (uncapped size),
+   * and each notify call is itself several sequential DB round-trips, so a
+   * plain for-loop here would serialize the whole batch inside one request.
+   *
+   * Returns the number of NEWLY created assignment rows.
+   */
+  private async assignAndNotify(
+    documentId: string,
+    versionId: string,
+    candidateAssigneeIds: string[],
+    assignedById: string,
+    dueDate?: Date | null,
+  ): Promise<number> {
+    const alreadyAssigned = await this.prisma.acknowledgmentAssignment.findMany({
+      where: { versionId, assigneeId: { in: candidateAssigneeIds } },
+      select: { assigneeId: true },
+    });
+    const alreadyAssignedIds = new Set(alreadyAssigned.map((a) => a.assigneeId));
+    const newAssigneeIds = candidateAssigneeIds.filter((id) => !alreadyAssignedIds.has(id));
+
+    if (newAssigneeIds.length > 0) {
+      await this.prisma.acknowledgmentAssignment.createMany({
+        data: newAssigneeIds.map((assigneeId) => ({
+          documentId,
+          versionId,
+          assigneeId,
+          assignedById,
+          dueDate: dueDate ?? undefined,
+          status: 'pending' as const,
+        })),
+        skipDuplicates: true,
+      });
+    }
+
+    if (this.notifications && newAssigneeIds.length > 0) {
+      const createdRows = await this.prisma.acknowledgmentAssignment.findMany({
+        where: { versionId, assigneeId: { in: newAssigneeIds } },
+        select: { id: true },
+      });
+      await mapWithConcurrency(createdRows, NOTIFY_CONCURRENCY, (row) =>
+        this.notifications!.notifyAcknowledgmentAssignment(row.id),
+      );
+    }
+
+    return newAssigneeIds.length;
+  }
+
+  /**
+   * Confidential-document access check for distribute/status routes + an
+   * access.denied audit on denial (403) — mirrors
+   * {@link DocumentApprovalService}'s `enforceApprove`. `review.manage` alone is
+   * NOT sufficient for a confidential document; the caller must also be the
+   * owner, an Admin, or hold an ACL grant.
+   */
+  private async enforceAccess(
+    user: AuthUser,
+    doc: AccessDocument,
+    ctx: RequestContext,
+  ): Promise<void> {
+    if (await this.access.canAccess(user, doc, 'edit')) return;
+    await this.audit.record({
+      action: AUDIT_ACTIONS.ACCESS_DENIED,
+      actorUserId: user.id,
+      documentId: doc.id,
+      targetType: 'document',
+      ...ctx,
+      metadata: { attemptedAction: 'acknowledgment', accessLevel: doc.accessLevel },
+    });
+    throw new ForbiddenException('You do not have access to this document');
+  }
 
   /** Resolves explicit user ids + role members into a de-duplicated assignee set. */
   private async resolveAssignees(input: DistributeAcknowledgmentInput): Promise<string[]> {

@@ -5,6 +5,7 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { AzureOidcService } from './azure-oidc.service';
 import { PermissionsGuard } from './guards/permissions.guard';
+import { OidcStateCleanupScheduler } from './oidc-state-cleanup.scheduler';
 import { JwtStrategy } from './strategies/jwt.strategy';
 
 /**
@@ -14,7 +15,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
 @Module({
   imports: [PassportModule, JwtModule.register({})],
   controllers: [AuthController],
-  providers: [AuthService, AzureOidcService, JwtStrategy, PermissionsGuard],
+  providers: [AuthService, AzureOidcService, JwtStrategy, PermissionsGuard, OidcStateCleanupScheduler],
   exports: [AuthService, PermissionsGuard],
 })
 export class AuthModule {}

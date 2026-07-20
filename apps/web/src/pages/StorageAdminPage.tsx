@@ -1,7 +1,7 @@
 import { FormEvent, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { AxiosError } from 'axios';
-import { PERMISSIONS, type StorageBucket } from '@policymanager/shared';
+import { PERMISSIONS, type StorageBucket, type StorageConfigView } from '@policymanager/shared';
 import {
   createBucket,
   createPrefix,
@@ -57,7 +57,7 @@ function StorageManager() {
 
   return (
     <div className="space-y-6">
-      {configQuery.data && <ConfigCard config={configQuery.data} />}
+      <ConfigSection configQuery={configQuery} />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <BucketsCard
@@ -77,11 +77,43 @@ function StorageManager() {
   );
 }
 
-function ConfigCard({
-  config,
-}: {
-  config: { bucket: string; prefixes: { documents: string; renditions: string }; endpoint: string | null; region: string };
-}) {
+/**
+ * FINDING-023: configQuery previously gated on `configQuery.data &&` alone —
+ * a failed/slow GET /storage/config silently omitted the Configuration card
+ * with no spinner, error, or retry, unlike bucketsQuery in the same page.
+ * This mirrors that same loading/forbidden/error handling for the config card.
+ */
+function ConfigSection({ configQuery }: { configQuery: UseQueryResult<StorageConfigView> }) {
+  if (configQuery.isLoading) {
+    return (
+      <div className="card p-5">
+        <LoadingState label="Loading configuration…" />
+      </div>
+    );
+  }
+  const forbidden = (configQuery.error as AxiosError | null)?.response?.status === 403;
+  if (forbidden) {
+    return (
+      <div className="card p-5">
+        <ForbiddenState />
+      </div>
+    );
+  }
+  if (configQuery.isError) {
+    return (
+      <div className="card p-5">
+        <ErrorState
+          description="We couldn't load the storage configuration."
+          onRetry={() => void configQuery.refetch()}
+        />
+      </div>
+    );
+  }
+  if (!configQuery.data) return null;
+  return <ConfigCard config={configQuery.data} />;
+}
+
+function ConfigCard({ config }: { config: StorageConfigView }) {
   const rows: [string, string][] = [
     ['Default bucket', config.bucket],
     ['Documents prefix', config.prefixes.documents],

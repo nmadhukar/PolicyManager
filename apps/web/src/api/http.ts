@@ -80,17 +80,26 @@ http.interceptors.response.use(
     const original = error.config as (InternalAxiosRequestConfig & { _retry?: boolean }) | undefined;
     const status = error.response?.status;
 
-    if (status === 401 && original && !original._retry && getRefreshToken()) {
-      original._retry = true;
-      refreshInFlight = refreshInFlight ?? requestRefresh();
-      const result = await refreshInFlight;
-      refreshInFlight = null;
+    if (status === 401 && original && !original._retry) {
+      if (getRefreshToken()) {
+        original._retry = true;
+        refreshInFlight = refreshInFlight ?? requestRefresh();
+        const result = await refreshInFlight;
+        refreshInFlight = null;
 
-      if (result) {
-        original.headers.Authorization = `Bearer ${result.accessToken}`;
-        return http(original);
+        if (result) {
+          original.headers.Authorization = `Bearer ${result.accessToken}`;
+          return http(original);
+        }
+        onAuthFailure?.();
+      } else {
+        // FINDING-022: no refresh token to attempt (already cleared by a prior
+        // failed refresh, or another tab's logout) — without this branch the
+        // request was simply rejected below and AuthContext stayed stuck at
+        // 'authenticated' forever, since onAuthFailure() was only reachable
+        // inside the getRefreshToken() branch above.
+        onAuthFailure?.();
       }
-      onAuthFailure?.();
     }
     return Promise.reject(error);
   },

@@ -76,6 +76,11 @@ const makeAccess = () => ({
   canAccess: jest.fn().mockResolvedValue(true),
   canAccessByUserId: jest.fn().mockResolvedValue(true),
   buildListWhere: jest.fn().mockResolvedValue({}),
+  // Default: grant access to every target, matching canAccess's default. Tests
+  // asserting a denial override this per-document via mockImplementation.
+  canAccessMany: jest.fn().mockImplementation(async (_user: unknown, docs: { id: string }[]) => {
+    return new Map(docs.map((d) => [d.id, true]));
+  }),
 });
 
 const makeAudit = () => ({ record: jest.fn().mockResolvedValue('ae-1') });
@@ -282,6 +287,20 @@ describe('DocumentsService.addVersion', () => {
 
     await expect(svc.addVersion('doc-1', file, {}, actor, reqCtx)).rejects.toBeInstanceOf(
       ConflictException,
+    );
+  });
+
+  it('FINDING-006: mapVersionConflict rethrows a real Error even when a non-Error, non-P2002 value is thrown', async () => {
+    const { svc, prisma } = build();
+    prisma.document.findFirst.mockResolvedValue(accessDoc());
+    prisma.documentVersion.aggregate.mockResolvedValue({ _max: { versionNumber: 1 } });
+    // A dependency throwing a plain string (JS permits this) must not be
+    // silently mistyped as an Error by a blind `as Error` cast.
+    prisma.documentVersion.create.mockRejectedValue('storage backend exploded');
+
+    await expect(svc.addVersion('doc-1', file, {}, actor, reqCtx)).rejects.toThrow(Error);
+    await expect(svc.addVersion('doc-1', file, {}, actor, reqCtx)).rejects.toThrow(
+      'storage backend exploded',
     );
   });
 });
@@ -708,7 +727,7 @@ describe('DocumentsService.getVersionHtml (TipTap load)', () => {
 
 describe('DocumentsService.regenerateRendition', () => {
   it('regenerates + persists the new rendition key on the version', async () => {
-    const { svc, prisma, renditions, access } = build();
+    const { svc, prisma, renditions, access, audit } = build();
     prisma.documentVersion.findFirst.mockResolvedValue({
       versionNumber: 2,
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -739,6 +758,17 @@ describe('DocumentsService.regenerateRendition', () => {
       renditionS3Key: 'renditions/doc-1/v2/rendition.pdf',
     });
     expect(result.hasRendition).toBe(true);
+    // FINDING-001: on-demand rendition regeneration mutates version state and
+    // must leave a compliance trail, same as VERSION_RESTORED/VERSION_UPLOADED.
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'version.rendition_regenerated',
+        actorUserId: actor.id,
+        documentId: 'doc-1',
+        versionId: 'v-2',
+        targetType: 'version',
+      }),
+    );
   });
 
   it('404s for a version not under the (non-deleted) document', async () => {
@@ -789,6 +819,28 @@ describe('DocumentsService.addHtmlVersion (TipTap save)', () => {
     expect(audit.record).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'version.uploaded', documentId: 'doc-1' }),
     );
+  });
+
+  it('FINDING-013: sanitizes the HTML server-side before it is written (defense in depth vs. Gotenberg SSRF/XSS)', async () => {
+    const { svc, prisma, s3 } = build();
+    prisma.document.findFirst.mockResolvedValue(accessDoc());
+    prisma.documentVersion.aggregate.mockResolvedValue({ _max: { versionNumber: null } });
+    prisma.documentVersion.create.mockResolvedValue(
+      versionRow({ id: 'v-1', fileName: 'document.html', mimeType: 'text/html' }),
+    );
+    prisma.document.update.mockResolvedValue({});
+
+    const malicious =
+      '<p>Note</p><script>fetch("http://169.254.169.254/latest/meta-data/")</script>' +
+      '<img src=x onerror="alert(1)">';
+    await svc.addHtmlVersion('doc-1', malicious, undefined, actor, reqCtx);
+
+    const stored = s3.putObject.mock.calls[0][1].toString();
+    expect(stored).not.toContain('<script');
+    expect(stored).not.toContain('169.254.169.254');
+    expect(stored).not.toContain('onerror');
+    expect(stored).not.toContain('<img');
+    expect(stored).toContain('<p>Note</p>');
   });
 });
 
@@ -961,6 +1013,45 @@ describe('DocumentsService.update', () => {
     );
     expect(prisma.document.update).not.toHaveBeenCalled();
   });
+
+  it('FINDING-014: retiring via a metadata update commits the status write + work-item cancellation inside one $transaction', async () => {
+    const { svc, prisma, audit } = build();
+    prisma.document.findFirst
+      .mockResolvedValueOnce(accessDoc())
+      .mockResolvedValueOnce(fullDocRow({ status: 'retired' }));
+    prisma.document.update.mockResolvedValue({});
+
+    await svc.update('doc-1', { status: 'retired' }, actor, reqCtx);
+
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function));
+    expect(prisma.document.update.mock.calls[0][0].data.status).toBe('retired');
+    expect(prisma.reviewTask.updateMany).toHaveBeenCalledWith({
+      where: { documentId: 'doc-1', status: { in: ['pending', 'in_progress', 'overdue'] } },
+      data: { status: 'cancelled' },
+    });
+    expect(prisma.acknowledgmentAssignment.updateMany).toHaveBeenCalledWith({
+      where: { documentId: 'doc-1', status: { in: ['pending', 'overdue'] } },
+      data: { status: 'cancelled' },
+    });
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'document.updated', documentId: 'doc-1' }),
+    );
+  });
+
+  it('a non-status metadata update does NOT touch reviewTask/acknowledgmentAssignment or use $transaction', async () => {
+    const { svc, prisma } = build();
+    prisma.document.findFirst
+      .mockResolvedValueOnce(accessDoc())
+      .mockResolvedValueOnce(fullDocRow());
+    prisma.document.update.mockResolvedValue({});
+    prisma.$transaction.mockClear();
+
+    await svc.update('doc-1', { title: 'Renamed' }, actor, reqCtx);
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(prisma.reviewTask.updateMany).not.toHaveBeenCalled();
+    expect(prisma.acknowledgmentAssignment.updateMany).not.toHaveBeenCalled();
+  });
 });
 
 describe('DocumentsService.bulkUpdateReviewSchedule', () => {
@@ -1039,8 +1130,13 @@ describe('DocumentsService.bulkUpdateReviewSchedule', () => {
       reqCtx,
     );
 
-    expect(access.canAccess).toHaveBeenCalledWith(actor, accessDoc({ id: 'doc-1' }), 'edit');
-    expect(access.canAccess).toHaveBeenCalledWith(actor, accessDoc({ id: 'doc-2' }), 'edit');
+    // FINDING-010: access is checked via one batched canAccessMany call across
+    // all targets, not one canAccess call per document.
+    expect(access.canAccessMany).toHaveBeenCalledWith(
+      actor,
+      [accessDoc({ id: 'doc-1' }), accessDoc({ id: 'doc-2' })],
+      'edit',
+    );
     const updateArg = prisma.document.updateMany.mock.calls[0][0];
     expect(updateArg.where).toEqual({ id: { in: ['doc-1', 'doc-2'] }, deletedAt: null });
     expect(updateArg.data.reviewCadence).toBe('quarterly');
@@ -1118,7 +1214,12 @@ describe('DocumentsService.bulkUpdateReviewSchedule', () => {
       accessDoc({ id: 'doc-1' }),
       accessDoc({ id: 'doc-secret', accessLevel: 'confidential' }),
     ]);
-    access.canAccess.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    access.canAccessMany.mockResolvedValueOnce(
+      new Map([
+        ['doc-1', true],
+        ['doc-secret', false],
+      ]),
+    );
 
     await expect(
       svc.bulkUpdateReviewSchedule(
@@ -1137,6 +1238,43 @@ describe('DocumentsService.bulkUpdateReviewSchedule', () => {
       expect.objectContaining({ action: 'access.denied', documentId: 'doc-secret' }),
     );
   });
+
+  it('FINDING-010: authorizes a large mixed-access target set with exactly one canAccessMany call, and rejects atomically on any denial', async () => {
+    const { svc, prisma, access } = build();
+    // 500 targets: 400 non-confidential (always visible), 100 confidential —
+    // half owned by the actor, half owned by someone else with no grant.
+    const targets = [
+      ...Array.from({ length: 400 }, (_, i) => accessDoc({ id: `pub-${i}`, accessLevel: 'restricted' })),
+      ...Array.from({ length: 50 }, (_, i) =>
+        accessDoc({ id: `owned-${i}`, accessLevel: 'confidential', ownerId: actor.id }),
+      ),
+      ...Array.from({ length: 50 }, (_, i) =>
+        accessDoc({ id: `denied-${i}`, accessLevel: 'confidential', ownerId: 'someone-else' }),
+      ),
+    ];
+    prisma.document.findMany.mockResolvedValue(targets);
+    access.canAccessMany.mockResolvedValueOnce(
+      new Map(
+        targets.map((t) => [
+          t.id,
+          t.accessLevel !== 'confidential' || t.ownerId === actor.id, // matches canAccess's own rule
+        ]),
+      ),
+    );
+
+    await expect(
+      svc.bulkUpdateReviewSchedule(
+        { documentIds: targets.map((t) => t.id), reviewCadence: 'annual', nextReviewDate: '2027-01-15' },
+        actor,
+        reqCtx,
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+
+    // Exactly one batched authorization call for the whole 500-document set —
+    // not one per document (which would be up to ~1000 sequential DB calls).
+    expect(access.canAccessMany).toHaveBeenCalledTimes(1);
+    expect(prisma.document.updateMany).not.toHaveBeenCalled();
+  });
 });
 
 describe('DocumentsService.create', () => {
@@ -1147,6 +1285,15 @@ describe('DocumentsService.create', () => {
       svc.create({ title: 'X', categoryId: 'nope' } as never, actor, reqCtx),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(prisma.document.create).not.toHaveBeenCalled();
+  });
+
+  it('FINDING-006: mapWriteError rethrows a real Error even when a non-Error, non-P2002 value is thrown', async () => {
+    const { svc, prisma } = build();
+    // A dependency throwing a plain object (JS permits this) must not be
+    // silently mistyped as an Error by a blind `as Error` cast.
+    prisma.document.create.mockRejectedValue({ reason: 'unexpected driver failure' });
+
+    await expect(svc.create({ title: 'X' } as never, actor, reqCtx)).rejects.toThrow(Error);
   });
 
   it('stamps the owner from the caller and audits document.created', async () => {
@@ -1273,6 +1420,20 @@ describe('DocumentsService.softDelete', () => {
       data: { status: 'cancelled' },
     });
   });
+
+  it('FINDING-014: the status write and work-item cancellation commit inside one $transaction', async () => {
+    const { svc, prisma } = build();
+    prisma.document.findFirst
+      .mockResolvedValueOnce(accessDoc())
+      .mockResolvedValueOnce(fullDocRow({ deletedAt: new Date(), deletedBy: { name: 'Admin' } }));
+    prisma.document.update.mockResolvedValue({});
+
+    await svc.softDelete('doc-1', actor, reqCtx);
+
+    // The callback form of $transaction was used (not the array form, and not
+    // three independent un-enlisted calls) — confirms atomicity of the write.
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function));
+  });
 });
 
 describe('DocumentsService.restore', () => {
@@ -1330,6 +1491,22 @@ describe('DocumentsService.archive / unarchive', () => {
     await svc.archive('doc-1', actor, reqCtx);
     expect(prisma.document.update).not.toHaveBeenCalled();
     expect(audit.record).not.toHaveBeenCalled();
+  });
+
+  it('FINDING-014: archive commits the status write + work-item cancellation inside one $transaction', async () => {
+    const { svc, prisma } = build();
+    prisma.document.findFirst
+      .mockResolvedValueOnce(accessDoc({ status: 'published' }))
+      .mockResolvedValueOnce(fullDocRow({ status: 'archived' }));
+    prisma.document.update.mockResolvedValue({});
+
+    await svc.archive('doc-1', actor, reqCtx);
+
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function));
+    expect(prisma.reviewTask.updateMany).toHaveBeenCalledWith({
+      where: { documentId: 'doc-1', status: { in: ['pending', 'in_progress', 'overdue'] } },
+      data: { status: 'cancelled' },
+    });
   });
 
   it('unarchive restores the stashed prior status and clears it', async () => {

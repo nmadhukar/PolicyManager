@@ -134,15 +134,21 @@ export class ImportsController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'List import batches (paginated, newest first).' })
-  list(@Query() query: ImportListQueryDto) {
-    return this.imports.listBatches(query.page ?? 1, query.pageSize ?? 20);
+  @ApiOperation({
+    summary:
+      "List import batches (paginated, newest first). Scoped to the caller's own batches unless they hold user.manage.",
+  })
+  list(@Query() query: ImportListQueryDto, @CurrentUser() user: AuthUser) {
+    return this.imports.listBatches(user, query.page ?? 1, query.pageSize ?? 20);
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Get an import batch with its full per-row report.' })
-  get(@Param('id') id: string) {
-    return this.imports.getBatch(id);
+  @ApiOperation({
+    summary:
+      "Get an import batch with its full per-row report. 404s for a batch the caller doesn't own (unless they hold user.manage).",
+  })
+  get(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.imports.getBatch(id, user);
   }
 }
 

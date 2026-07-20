@@ -19,6 +19,7 @@ import { AuditService } from '../audit/audit.service';
 import type { RequestContext } from '../audit/request-context';
 import { DocumentAccessService, type AccessDocument } from './document-access.service';
 import type { CreateAnnotationDto } from './dto/create-annotation.dto';
+import { sanitizePlainText } from './html-sanitizer';
 import { NotificationsService } from '../notifications/notifications.service';
 
 const annotationInclude = {
@@ -86,7 +87,10 @@ export class DocumentAnnotationsService {
         y: dto.y,
         width: dto.width,
         height: dto.height,
-        body: dto.body.trim(),
+        // FINDING-014: body is a plain-text review comment, not rich text — strip
+        // any HTML rather than persist it verbatim, since the API is the trust
+        // boundary regardless of how the CURRENT frontend happens to render it.
+        body: sanitizePlainText(dto.body.trim()),
       },
       include: annotationInclude,
     });

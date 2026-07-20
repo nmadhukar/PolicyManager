@@ -66,6 +66,7 @@ describe('DocumentApprovalService', () => {
     accessLevel: 'restricted',
     categoryId: null,
     currentVersionId: 'v-2',
+    status: 'in_review',
     ...over,
   });
 
@@ -234,5 +235,67 @@ describe('DocumentApprovalService', () => {
     const res = await svc.approve('doc-1', { publish: true }, approver);
 
     expect(res).toMatchObject({ status: 'published' });
+  });
+
+  describe('FINDING-017: document-status guard', () => {
+    it('400s approving an archived document instead of silently re-approving it', async () => {
+      const { svc, prisma, attestation } = build();
+      prisma.document.findFirst.mockResolvedValue(docRow({ status: 'archived' }));
+
+      await expect(svc.approve('doc-1', {}, approver)).rejects.toBeInstanceOf(BadRequestException);
+      expect(attestation.record).not.toHaveBeenCalled();
+      expect(prisma.document.update).not.toHaveBeenCalled();
+    });
+
+    it('400s approving a retired document instead of silently re-publishing it', async () => {
+      const { svc, prisma, attestation, ack } = build();
+      prisma.document.findFirst.mockResolvedValue(docRow({ status: 'retired' }));
+
+      await expect(svc.approve('doc-1', { publish: true }, approver)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(attestation.record).not.toHaveBeenCalled();
+      expect(ack.retriggerForVersion).not.toHaveBeenCalled();
+    });
+
+    it('a second authorized approver re-approving an already-published document gets a no-op success, not a duplicate Attestation', async () => {
+      const { svc, prisma, attestation, ack, audit } = build();
+      prisma.document.findFirst.mockResolvedValue(docRow({ status: 'published' }));
+      const priorApproval = {
+        id: 'att-prior',
+        documentId: 'doc-1',
+        versionId: 'v-2',
+        version: { versionNumber: 2 },
+        reviewTaskId: null,
+        acknowledgmentAssignmentId: null,
+        userId: 'other-approver',
+        user: { name: 'Other Approver' },
+        action: 'approved',
+        signatureName: 'Other Approver',
+        signatureRole: null,
+        comments: null,
+        ipAddress: null,
+        signedAt: new Date('2026-07-01T00:00:00Z'),
+      };
+      prisma.attestation.findFirst
+        .mockResolvedValueOnce(null) // the per-user alreadyApproved check (different user => none)
+        .mockResolvedValueOnce(priorApproval); // the published-no-op lookup
+
+      const res = await svc.approve('doc-1', { publish: true }, approver);
+
+      expect(res).toMatchObject({
+        documentId: 'doc-1',
+        status: 'published',
+        acknowledgmentsRetriggered: 0,
+        attestation: expect.objectContaining({ id: 'att-prior', action: 'approved' }),
+      });
+      // No new sign-off, no re-triggered acknowledgment, no re-audit of approve/publish.
+      expect(attestation.record).not.toHaveBeenCalled();
+      expect(ack.retriggerForVersion).not.toHaveBeenCalled();
+      expect(prisma.document.update).not.toHaveBeenCalled();
+      expect(audit.record).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'document.published' }),
+      );
+    });
   });
 });

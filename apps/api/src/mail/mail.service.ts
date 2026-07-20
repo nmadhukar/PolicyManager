@@ -117,6 +117,15 @@ export class MailService {
       secure: cfg.secure,
       // Only attach auth when a username is configured (MailHog needs none).
       auth: cfg.user ? { user: cfg.user, pass: cfg.pass } : undefined,
+      // FINDING-020: without explicit timeouts, nodemailer's own defaults
+      // (connectionTimeout 2min, socketTimeout 10min) apply. send() is called
+      // synchronously in a loop by ReviewService.runReviewSweep (nightly, one
+      // recipient at a time) and NotificationsService.runDigest (hourly) — a
+      // hung/unreachable SMTP host would otherwise stall each send for
+      // minutes, multiplying across every recipient in one sweep.
+      connectionTimeout: Number(this.config.get('SMTP_CONNECTION_TIMEOUT_MS', '10000')),
+      greetingTimeout: Number(this.config.get('SMTP_GREETING_TIMEOUT_MS', '10000')),
+      socketTimeout: Number(this.config.get('SMTP_SOCKET_TIMEOUT_MS', '20000')),
     });
   }
 

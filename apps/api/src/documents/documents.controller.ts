@@ -15,6 +15,7 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import type { Request } from 'express';
 import {
   ApiBearerAuth,
   ApiBody,
@@ -39,6 +40,36 @@ import { BulkReviewScheduleDto, UpdateReviewScheduleDto } from './dto/bulk-revie
 
 /** Upload guardrail: reject files above this size before buffering to S3. */
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MB
+
+/**
+ * FINDING-001: server-side file-type allowlist for document version uploads,
+ * matching the supported document types (AGENTS.md §10a: PDF, DOCX/DOC,
+ * XLSX/XLS, PPTX/PPT, images, TXT/MD) and mirroring the extension allowlist
+ * already enforced for bulk ZIP imports (imports/zip-import.ts
+ * SUPPORTED_ARCHIVE_EXTENSIONS). Checked by extension — the client-supplied
+ * mimetype is trivially spoofable and is not trusted for this decision either.
+ */
+export const ALLOWED_UPLOAD_EXTENSIONS = new Set([
+  'pdf',
+  'doc',
+  'docx',
+  'xls',
+  'xlsx',
+  'ppt',
+  'pptx',
+  'txt',
+  'md',
+  'png',
+  'jpg',
+  'jpeg',
+  'gif',
+  'webp',
+]);
+
+export function extensionOf(fileName: string): string {
+  const dot = fileName.lastIndexOf('.');
+  return dot === -1 ? '' : fileName.slice(dot + 1).toLowerCase();
+}
 
 /**
  * Document CRUD + immutable versioning. Read routes require `document.read`;
@@ -154,7 +185,24 @@ export class DocumentsController {
 
   @Post(':id/versions')
   @RequirePermission(PERMISSIONS.DOCUMENT_WRITE)
-  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: MAX_UPLOAD_BYTES },
+      fileFilter: (_req: Request, file, callback) => {
+        if (!ALLOWED_UPLOAD_EXTENSIONS.has(extensionOf(file.originalname))) {
+          callback(
+            new BadRequestException(
+              `Unsupported file type ".${extensionOf(file.originalname) || '(none)'}". ` +
+                'Allowed types: PDF, DOC/DOCX, XLS/XLSX, PPT/PPTX, TXT, MD, and common image formats.',
+            ),
+            false,
+          );
+          return;
+        }
+        callback(null, true);
+      },
+    }),
+  )
   @ApiConsumes('multipart/form-data')
   @ApiBody({
     schema: {

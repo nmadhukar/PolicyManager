@@ -25,6 +25,7 @@ import { S3Service } from '../storage/s3.service';
 import { AuditService } from '../audit/audit.service';
 import type { RequestContext } from '../audit/request-context';
 import { DocumentAccessService, type AccessDocument } from './document-access.service';
+import { sanitizeTipTapHtml } from './html-sanitizer';
 import { buildDocumentListQuery, type ListDocumentsQuery } from './document-query';
 import type { CreateDocumentDto } from './dto/create-document.dto';
 import type { CreateVersionDto } from './dto/create-version.dto';
@@ -339,8 +340,20 @@ export class DocumentsService {
       data.effectiveDate = dto.effectiveDate ? new Date(dto.effectiveDate) : null;
     }
 
+    // C8/FINDING-014: retiring/archiving via a metadata update must also
+    // deactivate open work items ATOMICALLY with the status change — see
+    // softDelete()/archive() for the same reasoning. Every other field
+    // combination keeps the original single-statement write unchanged.
+    const deactivates = dto.status === 'archived' || dto.status === 'retired';
     try {
-      await this.prisma.document.update({ where: { id }, data });
+      if (deactivates) {
+        await this.prisma.$transaction(async (tx) => {
+          await tx.document.update({ where: { id }, data });
+          await this.deactivateWorkItems(id, tx);
+        });
+      } else {
+        await this.prisma.document.update({ where: { id }, data });
+      }
     } catch (err) {
       throw this.mapWriteError(err);
     }
@@ -352,10 +365,6 @@ export class DocumentsService {
       ...ctx,
       metadata: { fields: Object.keys(data) },
     });
-    // C8: retiring/archiving via a metadata update also deactivates open work items.
-    if (dto.status === 'archived' || dto.status === 'retired') {
-      await this.deactivateWorkItems(id);
-    }
     if (dto.status === 'in_review') {
       await this.notifications?.notifyApprovalRequested(id, user);
     }
@@ -491,10 +500,13 @@ export class DocumentsService {
     const doc = await this.loadAccessDoc(documentId);
     await this.enforce(user, doc, 'edit', ctx);
     if (typeof html !== 'string') throw new BadRequestException('html is required');
+    // FINDING-013: this HTML is later sent verbatim to Gotenberg's Chromium
+    // HTML-to-PDF route, a real headless browser render — sanitize server-side
+    // rather than trust the TipTap client to only ever send its own output.
     const file: VersionBytes = {
       originalname: 'document.html',
       mimetype: 'text/html',
-      buffer: Buffer.from(html, 'utf8'),
+      buffer: Buffer.from(sanitizeTipTapHtml(html), 'utf8'),
     };
     const version = await this.writeVersion(
       documentId,
@@ -672,6 +684,18 @@ export class DocumentsService {
       where: { id: versionId },
       data: { renditionS3Key: rendition.renditionS3Key },
       select: versionSummarySelect,
+    });
+    // FINDING-001: regenerateRendition mutates a version's renditionS3Key (a
+    // write, same class as VERSION_RESTORED above) but previously recorded no
+    // audit event, leaving on-demand rendition regenerations invisible to the
+    // compliance trail.
+    await this.audit.record({
+      action: AUDIT_ACTIONS.VERSION_RENDITION_REGENERATED,
+      actorUserId: user.id,
+      documentId,
+      versionId,
+      targetType: 'version',
+      ...ctx,
     });
     return this.toVersionSummary(updated);
   }
@@ -949,9 +973,16 @@ export class DocumentsService {
     if (!doc) throw new NotFoundException('Document not found');
     await this.enforce(user, doc, 'edit', ctx);
 
-    await this.prisma.document.update({
-      where: { id },
-      data: { deletedAt: new Date(), deletedBy: { connect: { id: user.id } } },
+    // FINDING-014: the status change and the C8 work-item cancellation commit
+    // ATOMICALLY — a document must never persist as soft-deleted while its
+    // review/acknowledgment obligations are still open (e.g. a crash between
+    // the two writes).
+    await this.prisma.$transaction(async (tx) => {
+      await tx.document.update({
+        where: { id },
+        data: { deletedAt: new Date(), deletedBy: { connect: { id: user.id } } },
+      });
+      await this.deactivateWorkItems(id, tx);
     });
     await this.audit.record({
       action: AUDIT_ACTIONS.DOCUMENT_DELETED,
@@ -960,8 +991,6 @@ export class DocumentsService {
       targetType: 'document',
       ...ctx,
     });
-    // C8: cancel any open review/acknowledgment obligations for the trashed doc.
-    await this.deactivateWorkItems(id);
     return this.loadDetail(id, { includeDeleted: true });
   }
 
@@ -1008,9 +1037,14 @@ export class DocumentsService {
     await this.enforce(user, doc, 'edit', ctx);
 
     if (doc.status !== 'archived') {
-      await this.prisma.document.update({
-        where: { id },
-        data: { status: 'archived', preArchiveStatus: doc.status },
+      // FINDING-014: the status change and the C8 work-item cancellation commit
+      // ATOMICALLY — see softDelete() for the same reasoning.
+      await this.prisma.$transaction(async (tx) => {
+        await tx.document.update({
+          where: { id },
+          data: { status: 'archived', preArchiveStatus: doc.status },
+        });
+        await this.deactivateWorkItems(id, tx);
       });
       await this.audit.record({
         action: AUDIT_ACTIONS.DOCUMENT_ARCHIVED,
@@ -1019,9 +1053,6 @@ export class DocumentsService {
         targetType: 'document',
         ...ctx,
       });
-      // C8: an archived document is out of active circulation — cancel its open
-      // review tasks + pending acknowledgments so it stops raising obligations.
-      await this.deactivateWorkItems(id);
     }
     return this.loadDetail(id);
   }
@@ -1223,7 +1254,24 @@ export class DocumentsService {
       );
     }
 
-    for (const target of targets) await this.enforceReviewScheduleAccess(user, target, ctx);
+    // FINDING-010: batch the ACL check across all targets (one roleIds lookup +
+    // one grant lookup) instead of one enforceReviewScheduleAccess call per
+    // target — the previous per-target loop could issue up to ~1000 sequential
+    // DB round-trips for a full 500-document bulk update. Per-document
+    // authorization outcome and denial-audit behavior are unchanged.
+    const decisions = await this.access.canAccessMany(user, targets, 'edit');
+    for (const target of targets) {
+      if (decisions.get(target.id)) continue;
+      await this.audit.record({
+        action: AUDIT_ACTIONS.ACCESS_DENIED,
+        actorUserId: user.id,
+        documentId: target.id,
+        targetType: 'document',
+        ...ctx,
+        metadata: { attemptedAction: 'review.schedule', accessLevel: target.accessLevel },
+      });
+      throw new ForbiddenException('You do not have access to this document');
+    }
     return targets;
   }
 
@@ -1357,7 +1405,7 @@ export class DocumentsService {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
       return new ConflictException('A document with that document number already exists');
     }
-    return err as Error;
+    return toError(err);
   }
 
   /**
@@ -1365,13 +1413,20 @@ export class DocumentsService {
    * its OPEN review tasks and PENDING/OVERDUE acknowledgment assignments must stop
    * being outstanding obligations. Cancel them; completed/cancelled rows are
    * terminal evidence and left untouched. Idempotent.
+   *
+   * FINDING-014: accepts an optional transaction client so callers can enlist
+   * this in the SAME transaction as the document's status-changing update — a
+   * document must never persist as inactive while its work items are still open.
    */
-  private async deactivateWorkItems(documentId: string): Promise<void> {
-    await this.prisma.reviewTask.updateMany({
+  private async deactivateWorkItems(
+    documentId: string,
+    client: PrismaService | Prisma.TransactionClient = this.prisma,
+  ): Promise<void> {
+    await client.reviewTask.updateMany({
       where: { documentId, status: { in: ['pending', 'in_progress', 'overdue'] } },
       data: { status: 'cancelled' },
     });
-    await this.prisma.acknowledgmentAssignment.updateMany({
+    await client.acknowledgmentAssignment.updateMany({
       where: { documentId, status: { in: ['pending', 'overdue'] } },
       data: { status: 'cancelled' },
     });
@@ -1454,6 +1509,16 @@ function isP2002(err: unknown): boolean {
 }
 
 /**
+ * FINDING-006: narrows an `unknown` caught value to a real `Error` instead of
+ * blindly casting it (`err as Error`), which would silently mistype any
+ * non-Error throw (JS permits throwing a plain string/object) rather than
+ * surfacing a clear error at the point of failure.
+ */
+function toError(err: unknown): Error {
+  return err instanceof Error ? err : new Error(String(err));
+}
+
+/**
  * Maps a lost version-number race (unique `(documentId, versionNumber)`) to a clean
  * 409 instead of a raw 500 (C1/D6). With the row-lock in place this should not
  * normally fire, but it is a correctness backstop against any residual concurrency.
@@ -1464,5 +1529,5 @@ function mapVersionConflict(err: unknown): Error {
       'A newer version was uploaded concurrently. Please reload and try again.',
     );
   }
-  return err as Error;
+  return toError(err);
 }

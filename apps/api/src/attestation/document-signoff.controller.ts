@@ -30,7 +30,7 @@ import { DistributeAcknowledgmentDto } from './dto/distribute-acknowledgment.dto
  * Authorization (server-side, AGENTS.md §8):
  *  - approve → `document.approve` (+ per-document access in the service),
  *  - attestations / cover-page / export → `document.read` (+ access in the service),
- *  - distribute + status → `review.manage`.
+ *  - distribute + status → `review.manage` (+ per-document access in the service).
  *
  * There is deliberately NO update/delete route for attestations — sign-offs are
  * immutable evidence.
@@ -121,7 +121,11 @@ export class DocumentSignoffController {
   @Get(':id/acknowledgments')
   @RequirePermission(PERMISSIONS.REVIEW_MANAGE)
   @ApiOperation({ summary: 'Per-assignee acknowledgment status + completion % for the document.' })
-  acknowledgmentStatus(@Param('id') id: string) {
-    return this.acknowledgment.statusForDocument(id);
+  acknowledgmentStatus(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthUser,
+    @ReqContext() ctx: RequestContext,
+  ) {
+    return this.acknowledgment.statusForDocument(id, user, ctx);
   }
 }

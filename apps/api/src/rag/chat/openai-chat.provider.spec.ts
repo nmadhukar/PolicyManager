@@ -18,6 +18,7 @@ describe('OpenAiChatProvider', () => {
       model: string;
       maxTokens: number;
       temperature: number;
+      timeoutMs: number;
     }> = {},
   ): RagConfigService => {
     const {
@@ -26,6 +27,7 @@ describe('OpenAiChatProvider', () => {
       model = 'gpt-4o-mini',
       maxTokens = 700,
       temperature = 0.1,
+      timeoutMs = 20_000,
     } = over;
     return {
       isConfigured: jest.fn(() => configured),
@@ -33,6 +35,7 @@ describe('OpenAiChatProvider', () => {
       chatModel: model,
       chatMaxTokens: maxTokens,
       chatTemperature: temperature,
+      llmTimeoutMs: timeoutMs,
     } as unknown as RagConfigService;
   };
 
@@ -86,7 +89,7 @@ describe('OpenAiChatProvider', () => {
       expect(answer).toBe('hello [1]');
     });
 
-    it('constructs ChatOpenAI with the configured apiKey, model, maxTokens, and temperature', async () => {
+    it('constructs ChatOpenAI with the configured apiKey, model, maxTokens, temperature, and timeout', async () => {
       stubInvoke(async () => ({ content: 'ok' }));
       const provider = new OpenAiChatProvider(
         makeConfig({
@@ -95,6 +98,7 @@ describe('OpenAiChatProvider', () => {
           model: 'gpt-4o',
           maxTokens: 512,
           temperature: 0.2,
+          timeoutMs: 15_000,
         }),
       );
 
@@ -106,7 +110,18 @@ describe('OpenAiChatProvider', () => {
         model: 'gpt-4o',
         maxTokens: 512,
         temperature: 0.2,
+        timeout: 15_000,
       });
+    });
+
+    it('FINDING-003: always passes a bounded timeout, even with default config', async () => {
+      stubInvoke(async () => ({ content: 'ok' }));
+      const provider = new OpenAiChatProvider(makeConfig({ configured: true }));
+
+      await provider.complete([{ role: 'user', content: 'q' }]);
+
+      const ctorArg = MockChatOpenAI.mock.calls[0][0] as { timeout?: number };
+      expect(ctorArg.timeout).toBeGreaterThan(0);
     });
 
     it('passes messages as [role, content] tuples to invoke', async () => {

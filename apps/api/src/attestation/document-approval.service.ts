@@ -59,7 +59,14 @@ export class DocumentApprovalService {
   ): Promise<ApproveDocumentResult> {
     const doc = await this.prisma.document.findFirst({
       where: { id: documentId, deletedAt: null },
-      select: { id: true, ownerId: true, accessLevel: true, categoryId: true, currentVersionId: true },
+      select: {
+        id: true,
+        ownerId: true,
+        accessLevel: true,
+        categoryId: true,
+        currentVersionId: true,
+        status: true,
+      },
     });
     if (!doc) throw new NotFoundException('Document not found');
 
@@ -67,6 +74,16 @@ export class DocumentApprovalService {
 
     if (!doc.currentVersionId) {
       throw new BadRequestException('Upload a version before approving this document');
+    }
+
+    // FINDING-017: a document that has left active circulation must go through
+    // unarchive() (or an equivalent explicit re-activation) before it can be
+    // approved/published again — approve() must not silently pull it back into
+    // the lifecycle.
+    if (doc.status === 'archived' || doc.status === 'retired') {
+      throw new BadRequestException(
+        `This document is ${doc.status} and cannot be approved. Unarchive it first.`,
+      );
     }
 
     const alreadyApproved = await this.prisma.attestation.findFirst({
@@ -80,6 +97,27 @@ export class DocumentApprovalService {
     });
     if (alreadyApproved) {
       throw new BadRequestException('You have already approved this document version');
+    }
+
+    // FINDING-017: a document already `published` is a no-op success on a repeat
+    // publish/approve call from a DIFFERENT authorized approver — it does not
+    // create a second Attestation row, re-trigger acknowledgment distribution,
+    // or re-embed the version. The per-user alreadyApproved check above only
+    // catches the SAME user re-approving; this catches any second approver.
+    if (doc.status === 'published') {
+      const existingApproval = await this.prisma.attestation.findFirst({
+        where: { documentId, versionId: doc.currentVersionId, action: 'approved' },
+        include: { user: { select: { name: true } }, version: { select: { versionNumber: true } } },
+        orderBy: { signedAt: 'desc' },
+      });
+      if (existingApproval) {
+        return {
+          documentId,
+          status: 'published',
+          attestation: AttestationService.toItem(existingApproval),
+          acknowledgmentsRetriggered: 0,
+        };
+      }
     }
 
     const status: DocumentStatus = input.publish ? 'published' : 'approved';

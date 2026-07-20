@@ -1,4 +1,5 @@
 import { ForbiddenException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import type { AuthUser, RagCitation, RagChatResponse } from '@policymanager/shared';
 import { AUDIT_ACTIONS } from '@policymanager/shared';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -30,6 +31,26 @@ export interface ConversationSummaryDto {
   title: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * FINDING-005: narrows a persisted `RagMessage.citations` JSON value (which
+ * may be null, a shape from an older app version, or otherwise malformed)
+ * to a safe `RagCitation[]` instead of blindly casting through `unknown`.
+ * Falls back to an empty array on anything that isn't a plain array of
+ * citation-shaped objects, so a stored-shape drift degrades gracefully
+ * rather than handing the caller malformed data typed as trustworthy.
+ */
+function toRagCitations(value: unknown): RagCitation[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (c): c is RagCitation =>
+      typeof c === 'object' &&
+      c !== null &&
+      typeof (c as Record<string, unknown>).index === 'number' &&
+      typeof (c as Record<string, unknown>).documentId === 'string' &&
+      typeof (c as Record<string, unknown>).chunkId === 'string',
+  );
 }
 
 /**
@@ -195,7 +216,7 @@ export class ChatService {
           role: 'assistant',
           content: answer,
           grounded,
-          citations: citations.length > 0 ? (citations as unknown as object) : undefined,
+          citations: citations.length > 0 ? (citations as unknown as Prisma.InputJsonValue) : undefined,
         },
       ],
     });
@@ -357,7 +378,7 @@ export class ChatService {
         role: m.role,
         content: m.content,
         grounded: m.grounded,
-        citations: (m.citations as unknown as RagCitation[] | null) ?? [],
+        citations: toRagCitations(m.citations),
         createdAt: m.createdAt.toISOString(),
       })),
     };

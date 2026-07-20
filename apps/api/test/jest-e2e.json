@@ -6,6 +6,9 @@
   "transform": {
     "^.+\\.(t|j)s$": "ts-jest"
   },
+  "transformIgnorePatterns": [
+    "/node_modules/(?!(htmlparser2|domutils|dom-serializer|domhandler|domelementtype|entities)/)"
+  ],
   "moduleNameMapper": {
     "^@policymanager/shared$": "<rootDir>/../../../packages/shared/src/index.ts"
   },

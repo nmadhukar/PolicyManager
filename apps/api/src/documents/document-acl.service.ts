@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { AUDIT_ACTIONS, type AclGrant, type AuthUser } from '@policymanager/shared';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
@@ -49,20 +50,46 @@ export class DocumentAclService {
       },
       include: { createdBy: { select: { name: true } } },
     });
-    const acl =
-      existing ??
-      (await this.prisma.documentAcl.create({
-        data: {
-          documentId,
-          principalType: dto.principalType,
-          principalId: dto.principalId,
-          permission: dto.permission,
-          createdById: user.id,
-        },
-        include: { createdBy: { select: { name: true } } },
-      }));
 
+    let acl = existing;
+    let created = false;
     if (!existing) {
+      try {
+        acl = await this.prisma.documentAcl.create({
+          data: {
+            documentId,
+            principalType: dto.principalType,
+            principalId: dto.principalId,
+            permission: dto.permission,
+            createdById: user.id,
+          },
+          include: { createdBy: { select: { name: true } } },
+        });
+        created = true;
+      } catch (err) {
+        // FINDING-011: the findFirst-then-create pre-check is not race-safe on
+        // its own — two concurrent add() calls for the same grant can both pass
+        // it. The partial unique index (see schema.prisma) is the real backstop;
+        // on a lost race, re-fetch and return the winner's row instead of
+        // surfacing a raw P2002 to the caller (idempotent by design).
+        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+          acl = await this.prisma.documentAcl.findFirst({
+            where: {
+              documentId,
+              principalType: dto.principalType,
+              principalId: dto.principalId,
+              permission: dto.permission,
+            },
+            include: { createdBy: { select: { name: true } } },
+          });
+          if (!acl) throw err;
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    if (created) {
       await this.audit.record({
         action: AUDIT_ACTIONS.ACL_CHANGED,
         actorUserId: user.id,
@@ -78,7 +105,10 @@ export class DocumentAclService {
       });
     }
 
-    const [grant] = await this.resolveNames([acl]);
+    // Every path above either keeps `existing`, assigns a freshly created row,
+    // or assigns the winner re-fetched after a P2002 (throwing if that also
+    // comes back empty) — `acl` is always populated here.
+    const [grant] = await this.resolveNames([acl as NonNullable<typeof acl>]);
     return grant;
   }
 

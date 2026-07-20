@@ -1,7 +1,16 @@
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Prisma } from '@prisma/client';
 import type { AuthUser } from '@policymanager/shared';
 import { ReviewService } from './review.service';
+
+/** A P2002 error shaped like the real Prisma runtime error for this test's purposes. */
+function p2002(): Prisma.PrismaClientKnownRequestError {
+  return new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+    code: 'P2002',
+    clientVersion: 'test',
+  });
+}
 
 /**
  * Business-behavior tests for the QC review service. All clock use is injected so
@@ -363,16 +372,16 @@ describe('ReviewService', () => {
       prisma.reviewTask.findUnique
         .mockResolvedValueOnce(taskRow()) // completeTask load
         .mockResolvedValueOnce(taskRow({ status: 'completed', completedBy: { name: 'Staff' } })); // getTask reload
-      prisma.reviewTask.update.mockResolvedValue({});
+      prisma.reviewTask.updateMany.mockResolvedValue({ count: 1 });
       prisma.document.update.mockResolvedValue({});
 
       const item = await svc.completeTask('task-1', { notes: 'looks good' }, staff, {}, NOW);
 
-      // Task completed with the injected clock + notes.
-      expect(prisma.reviewTask.update.mock.calls[0][0].data).toMatchObject({
-        status: 'completed',
-        completedById: 'staff-1',
-        notes: 'looks good',
+      // Task completed with the injected clock + notes, via the compare-and-swap
+      // updateMany (FINDING-021) rather than an unconditional update.
+      expect(prisma.reviewTask.updateMany.mock.calls[0][0]).toMatchObject({
+        where: { id: 'task-1', status: { notIn: ['completed', 'cancelled'] } },
+        data: { status: 'completed', completedById: 'staff-1', notes: 'looks good' },
       });
       // Document nextReviewDate advanced 3 months from NOW.
       expect(prisma.document.update.mock.calls[0][0].data.nextReviewDate.toISOString()).toBe(
@@ -389,7 +398,7 @@ describe('ReviewService', () => {
       prisma.reviewTask.findUnique
         .mockResolvedValueOnce(taskRow())
         .mockResolvedValueOnce(taskRow({ status: 'completed' }));
-      prisma.reviewTask.update.mockResolvedValue({});
+      prisma.reviewTask.updateMany.mockResolvedValue({ count: 1 });
       prisma.document.update.mockResolvedValue({});
 
       await svc.completeTask('task-1', { notes: 'ok', signatureRole: 'RN' }, staff, {}, NOW);
@@ -415,7 +424,7 @@ describe('ReviewService', () => {
       prisma.reviewTask.findUnique
         .mockResolvedValueOnce(taskRow())
         .mockResolvedValueOnce(taskRow({ status: 'completed' }));
-      prisma.reviewTask.update.mockResolvedValue({});
+      prisma.reviewTask.updateMany.mockResolvedValue({ count: 1 });
       prisma.document.update.mockResolvedValue({});
 
       await svc.completeTask('task-1', { signatureName: 'Dr. Staff' }, staff, {}, NOW);
@@ -427,7 +436,7 @@ describe('ReviewService', () => {
       prisma.reviewTask.findUnique
         .mockResolvedValueOnce(taskRow({ assignedToId: 'other-user' }))
         .mockResolvedValueOnce(taskRow({ assignedToId: 'other-user', status: 'completed' }));
-      prisma.reviewTask.update.mockResolvedValue({});
+      prisma.reviewTask.updateMany.mockResolvedValue({ count: 1 });
       prisma.document.update.mockResolvedValue({});
       await expect(
         svc.completeTask('task-1', {}, manager, {}, NOW),
@@ -440,7 +449,7 @@ describe('ReviewService', () => {
       await expect(svc.completeTask('task-1', {}, staff, {}, NOW)).rejects.toBeInstanceOf(
         ForbiddenException,
       );
-      expect(prisma.reviewTask.update).not.toHaveBeenCalled();
+      expect(prisma.reviewTask.updateMany).not.toHaveBeenCalled();
     });
 
     it('404s a missing task', async () => {
@@ -459,6 +468,23 @@ describe('ReviewService', () => {
       );
     });
 
+    it('FINDING-021: a lost race inside the transaction (updateMany count 0) aborts instead of committing a second completion', async () => {
+      const { svc, prisma, attestation } = build();
+      // The pre-check reads 'pending' (stale read — a concurrent completion has
+      // already committed by the time this transaction runs), so it passes...
+      prisma.reviewTask.findUnique.mockResolvedValue(taskRow({ status: 'pending' }));
+      // ...but the compare-and-swap inside the transaction finds the row no
+      // longer matches notIn:['completed','cancelled'] and updates zero rows.
+      prisma.reviewTask.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(svc.completeTask('task-1', {}, staff, {}, NOW)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      // No document nextReviewDate advance and no Attestation for the loser.
+      expect(prisma.document.update).not.toHaveBeenCalled();
+      expect(attestation.record).not.toHaveBeenCalled();
+    });
+
     it('rejects completing a review the user has NOT viewed (no DOCUMENT_VIEWED for the version)', async () => {
       const { svc, prisma, attestation } = build();
       prisma.reviewTask.findUnique.mockResolvedValue(taskRow()); // version v1
@@ -473,7 +499,7 @@ describe('ReviewService', () => {
       });
       // Nothing is written when the gate blocks.
       expect(attestation.record).not.toHaveBeenCalled();
-      expect(prisma.reviewTask.update).not.toHaveBeenCalled();
+      expect(prisma.reviewTask.updateMany).not.toHaveBeenCalled();
     });
 
     it('requires newNextReviewDate for a custom-cadence document', async () => {
@@ -493,7 +519,7 @@ describe('ReviewService', () => {
           taskRow({ document: { title: 'Doc', documentNumber: null, reviewCadence: 'custom' } }),
         )
         .mockResolvedValueOnce(taskRow({ status: 'completed' }));
-      prisma.reviewTask.update.mockResolvedValue({});
+      prisma.reviewTask.updateMany.mockResolvedValue({ count: 1 });
       prisma.document.update.mockResolvedValue({});
       await svc.completeTask('task-1', { newNextReviewDate: '2027-01-15' }, manager, {}, NOW);
       expect(prisma.document.update.mock.calls[0][0].data.nextReviewDate.toISOString()).toBe(
@@ -592,6 +618,25 @@ describe('ReviewService', () => {
       });
       await svc.assignReviewer('doc-1', 'rev-a', manager);
       expect(prisma.reviewAssignment.create).not.toHaveBeenCalled();
+      expect(audit.record).not.toHaveBeenCalled();
+    });
+
+    it('FINDING-018: a lost race (P2002 from the unique documentId+reviewerId index) re-fetches the winner instead of throwing a raw Prisma error', async () => {
+      const { svc, prisma, audit } = build();
+      prisma.document.findFirst.mockResolvedValue({ id: 'doc-1' });
+      prisma.user.findUnique.mockResolvedValue({ id: 'rev-a', name: 'Rev A', email: 'a@x.com' });
+      const winnerRow = { id: 'asg-1', createdAt: new Date('2026-07-10T00:00:00Z') };
+      // Pre-check finds nothing (both concurrent callers pass it)...
+      prisma.reviewAssignment.findUnique
+        .mockResolvedValueOnce(null) // pre-check
+        .mockResolvedValueOnce(winnerRow); // post-P2002 re-fetch finds the winner's row
+      // ...then create() loses the race to the DB-level unique index.
+      prisma.reviewAssignment.create.mockRejectedValue(p2002());
+
+      const res = await svc.assignReviewer('doc-1', 'rev-a', manager);
+
+      expect(res).toMatchObject({ userId: 'rev-a', name: 'Rev A' });
+      // The loser must not audit an "add" it didn't actually perform.
       expect(audit.record).not.toHaveBeenCalled();
     });
 

@@ -559,6 +559,13 @@ model DocumentAcl {
   category  DocumentCategory? @relation("CategoryAcl", fields: [categoryId], references: [id], onDelete: Cascade)
   createdBy User              @relation("AclCreatedBy", fields: [createdById], references: [id])
 
+  // FINDING-011: one grant per (scope, principal, permission) is also enforced
+  // by two raw PARTIAL unique indexes (Prisma cannot express a filtered unique
+  // in the schema DSL) — see 20260720120000_document_acl_unique_grant:
+  //   DocumentAcl_document_grant_key on (documentId, principalType,
+  //     principalId, permission) WHERE documentId IS NOT NULL
+  //   DocumentAcl_category_grant_key on (categoryId, principalType,
+  //     principalId, permission) WHERE categoryId IS NOT NULL
   @@index([documentId])
   @@index([categoryId])
   @@index([principalType, principalId])
@@ -592,6 +599,16 @@ model AuditEvent {
   @@index([actorUserId])
   @@index([createdAt])
   @@index([action])
+  // FINDING-012: the "has this user viewed this version" check (review
+  // completion, acknowledgment, batched review-list hasViewed) filters on
+  // exactly (actorUserId, action, versionId). No single-column index above
+  // covers that shape efficiently on this append-only, ever-growing table.
+  @@index([actorUserId, action, versionId])
+  // FINDING-008: AuditService.query() filters by `source` and a `createdAt`
+  // range together (compliance/evidence-binder exports scoped to system-
+  // generated events in a date window), then sorts newest-first. Neither
+  // single-column index above covers that combined filter+sort shape.
+  @@index([source, createdAt])
   @@schema("policytracker")
 }
 
@@ -657,6 +674,10 @@ model ReviewTask {
   @@index([assignedToId])
   @@index([status])
   @@index([dueDate])
+  // FINDING-006: the overdue sweep (ReviewService — flip past-due open tasks
+  // to `overdue`) filters on status IN (pending, in_progress) AND dueDate < now
+  // together. Neither single-column index above covers that combined shape.
+  @@index([status, dueDate])
   @@schema("policytracker")
 }
 
@@ -805,6 +826,10 @@ model AcknowledgmentAssignment {
   @@index([documentId])
   @@index([assigneeId])
   @@index([status])
+  // FINDING-007: AcknowledgmentService.markOverdue's sweep filters on
+  // status = pending AND dueDate < now together. Neither single-column
+  // index above covers that combined shape.
+  @@index([status, dueDate])
   @@schema("policytracker")
 }
 

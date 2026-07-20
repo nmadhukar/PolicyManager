@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import helmet from 'helmet';
 import { AppModule } from './app.module';
 
 /**
@@ -29,6 +30,24 @@ function corsOrigin(): boolean | string[] {
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  // FINDING-013: baseline hardening headers (X-Content-Type-Options,
+  // X-Frame-Options, etc.) on every response. helmet's default CSP would
+  // block Swagger UI's inline script/style (served from this same app at
+  // /api/docs), so the script/style directives are relaxed to allow inline —
+  // everything else keeps helmet's strict defaults.
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+          'script-src': ["'self'", "'unsafe-inline'"],
+          'style-src': ["'self'", "'unsafe-inline'"],
+        },
+      },
+    }),
+  );
+
   app.setGlobalPrefix('api', { exclude: ['health'] });
   app.useGlobalPipes(
     new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }),
@@ -57,6 +76,11 @@ async function bootstrap() {
     .build();
   const document = SwaggerModule.createDocument(app, swaggerConfig);
   SwaggerModule.setup('api/docs', app, document);
+
+  // FINDING-015: without this, NestJS lifecycle hooks (e.g.
+  // PrismaService.onModuleDestroy's $disconnect()) never run on SIGTERM/SIGINT,
+  // so container rolling restarts kill the process without draining the DB pool.
+  app.enableShutdownHooks();
 
   const port = process.env.API_PORT ?? 3000;
   await app.listen(port);

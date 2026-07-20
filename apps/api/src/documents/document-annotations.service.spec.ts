@@ -100,6 +100,32 @@ describe('DocumentAnnotationsService', () => {
     );
   });
 
+  it('FINDING-014: strips HTML from the annotation body before persisting it', async () => {
+    const prisma = makePrisma();
+    const svc = new DocumentAnnotationsService(prisma, makeAccess() as never, makeAudit() as never);
+
+    await svc.create(
+      'doc-1',
+      'v-1',
+      {
+        pageNumber: 1,
+        x: 0.1,
+        y: 0.1,
+        width: 0.2,
+        height: 0.1,
+        body: 'Looks fine<script>alert(document.cookie)</script> to me.',
+      },
+      user(),
+    );
+
+    const createArg = prisma.documentAnnotation.create.mock.calls[0][0] as {
+      data: { body: string };
+    };
+    expect(createArg.data.body).not.toContain('<script');
+    expect(createArg.data.body).not.toContain('alert(document.cookie)');
+    expect(createArg.data.body).toBe('Looks fine to me.');
+  });
+
   it('allows an assigned reviewer without document.comment to create an annotation', async () => {
     const prisma = makePrisma();
     prisma.reviewAssignment.count.mockResolvedValue(1);

@@ -4,6 +4,7 @@ import { ChunkingService } from './chunking.service';
 import { StructureDetectorService } from './structure-detector.service';
 import { StructureAwareChunkingService } from './structure-aware-chunking.service';
 import { EmbeddingService } from './embedding.service';
+import { EmbeddingScheduler } from './embedding.scheduler';
 import { RetrieverService } from './retriever.service';
 import { EmbeddingCache } from './embedding-cache.service';
 import { RagConfigService } from './rag-config.service';
@@ -47,6 +48,12 @@ import { AuthModule } from '../auth/auth.module';
     OpenAiEmbeddingProvider,
     { provide: EMBEDDING_PROVIDER, useExisting: OpenAiEmbeddingProvider },
     EmbeddingService,
+    // FINDING-015: periodic self-heal for the embedding backlog, mirroring
+    // NotificationsScheduler. DocumentExtractionService's post-extraction embed
+    // trigger is fire-and-forget (embedVersion().catch(logAndDrop)) — without a
+    // poller, a version left `pending` after that eager call fails or is dropped
+    // only recovers if an operator manually hits embedPending; it never self-heals.
+    EmbeddingScheduler,
     EmbeddingCache,
     RetrieverService,
     // Agent layer (Phase 3): the tool, the registry (multi-provider so future
