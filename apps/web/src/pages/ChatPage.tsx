@@ -262,7 +262,7 @@ function ChatThread({
             ) : message.pending ? (
               <PendingBubble key={index} />
             ) : (
-              <AssistantBubble key={index} message={message} />
+              <AssistantBubble key={index} message={message} index={index} />
             ),
           )
         )}
@@ -319,15 +319,19 @@ function PendingBubble() {
   );
 }
 
-function AssistantBubble({ message }: { message: ThreadMessage }) {
+function AssistantBubble({ message, index }: { message: ThreadMessage; index: number }) {
   const citationsByIndex = useMemo(() => {
     const map = new Map<number, RagCitation>();
     for (const citation of message.citations) map.set(citation.index, citation);
     return map;
   }, [message.citations]);
 
+  // Collapsed by default so a long citation list doesn't push the answer text
+  // down; expand on demand to see the grounding.
+  const [sourcesOpen, setSourcesOpen] = useState(false);
   const hasCitations = message.grounded && message.citations.length > 0;
   const time = formatMessageTime(message.createdAt);
+  const sourcesId = `sources-${index}`;
 
   return (
     <div className="flex flex-col items-start">
@@ -337,24 +341,47 @@ function AssistantBubble({ message }: { message: ThreadMessage }) {
         </p>
 
         {hasCitations && (
-          <div className="space-y-2 border-t border-slate-200 pt-3">
-            <p className="text-xs font-semibold uppercase tracking-wide text-ink-muted">Sources</p>
-            <ul className="space-y-2">
-              {message.citations.map((citation) => (
-                <li key={citation.index} className="text-xs">
-                  <Link
-                    to={`/library/${citation.documentId}`}
-                    className="font-medium text-brand-600 hover:underline"
-                  >
-                    [{citation.index}] {citation.documentTitle}
-                    {citation.documentNumber ? ` (${citation.documentNumber})` : ''}
-                  </Link>
-                  {citation.snippet && (
-                    <span className="mt-0.5 block text-ink-muted">{citation.snippet}</span>
-                  )}
-                </li>
-              ))}
-            </ul>
+          <div className="border-t border-slate-200 pt-3">
+            <button
+              type="button"
+              className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-ink-muted hover:text-brand-600"
+              onClick={() => setSourcesOpen((v) => !v)}
+              aria-expanded={sourcesOpen}
+              aria-controls={sourcesId}
+            >
+              <svg
+                viewBox="0 0 20 20"
+                className={`h-3.5 w-3.5 transition-transform ${sourcesOpen ? 'rotate-180' : ''}`}
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={1.75}
+                aria-hidden
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="m5 7.5 5 5 5-5" />
+              </svg>
+              Sources
+              <span className="rounded-full bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold normal-case tracking-normal text-ink-muted">
+                {message.citations.length}
+              </span>
+            </button>
+            {sourcesOpen && (
+              <ul id={sourcesId} className="mt-2 space-y-2">
+                {message.citations.map((citation) => (
+                  <li key={citation.index} className="text-xs">
+                    <Link
+                      to={`/library/${citation.documentId}`}
+                      className="font-medium text-brand-600 hover:underline"
+                    >
+                      [{citation.index}] {citation.documentTitle}
+                      {citation.documentNumber ? ` (${citation.documentNumber})` : ''}
+                    </Link>
+                    {citation.snippet && (
+                      <span className="mt-0.5 block text-ink-muted">{citation.snippet}</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         )}
       </div>

@@ -77,11 +77,63 @@ describe('ChatPage', () => {
 
     ask('What is the seclusion policy?');
 
+    // Sources are collapsed by default; expand to reach the citation link.
+    fireEvent.click(await screen.findByRole('button', { name: /sources/i }));
+
     const link = await screen.findByRole('link', { name: /\[1\] Seclusion Policy/ });
     expect(link).toHaveAttribute('href', '/library/doc-1');
     // The answer text and the citation snippet both mention "last resort" — assert
     // via the answer paragraph specifically to avoid ambiguity with the snippet.
     expect(screen.getAllByText(/Seclusion is a last resort/).length).toBeGreaterThan(0);
+  });
+
+  it('lets the Sources list be collapsed and reopened', async () => {
+    vi.spyOn(ragChatApi, 'sendChat').mockResolvedValue({
+      conversationId: 'conv-1',
+      answer: 'Seclusion is a last resort [1].',
+      grounded: true,
+      citations: [
+        {
+          index: 1,
+          documentId: 'doc-1',
+          versionId: 'v-1',
+          chunkId: 'c-1',
+          documentTitle: 'Seclusion Policy',
+          documentNumber: 'PP-42',
+          versionNumber: 1,
+          effectiveDate: null,
+          sectionIdentifier: null,
+          sectionTitle: null,
+          pageStart: null,
+          pageEnd: null,
+          snippet: 'Seclusion is a last resort.',
+        },
+      ],
+    });
+    renderPage();
+
+    ask('What is the seclusion policy?');
+
+    // Sources are collapsed by default.
+    const toggle = await screen.findByRole('button', { name: /sources/i });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(
+      screen.queryByRole('link', { name: /\[1\] Seclusion Policy/ }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(
+      screen.getByRole('link', { name: /\[1\] Seclusion Policy/ }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(
+      screen.queryByRole('link', { name: /\[1\] Seclusion Policy/ }),
+    ).not.toBeInTheDocument();
   });
 
   it('renders an ungrounded answer plainly with NO citation list', async () => {
