@@ -7,7 +7,16 @@ COPY apps/web/package.json apps/web/
 RUN npm ci
 COPY packages/shared ./packages/shared
 COPY apps/web ./apps/web
-# VITE_* are baked at build; runtime override handled by entrypoint below.
+# @policymanager/shared resolves via its "types"/"main" fields to dist/, which
+# is gitignored and only produced by this workspace's own build — every file
+# under apps/web that imports it needs this to exist first.
+RUN npm run build --workspace @policymanager/shared
+# VITE_API_BASE_URL is baked into the built JS at compile time (Vite inlines
+# import.meta.env.* as literals). Baking in a sentinel instead of a real URL
+# lets one image serve any environment: the container entrypoint below
+# rewrites this exact string to the runtime API_BASE_URL on startup.
+ARG VITE_API_BASE_URL=__API_BASE_URL__
+ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 RUN npm run build --workspace @policymanager/web
 
 # ---- Production stage (nginx) ----
