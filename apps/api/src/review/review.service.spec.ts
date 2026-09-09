@@ -264,7 +264,7 @@ describe('ReviewService', () => {
       const { svc, prisma } = setup({ nextReviewDate: new Date('2026-07-01T00:00:00.000Z') });
       prisma.reviewTask.create.mockResolvedValue({ id: 'task-immediate' });
 
-      await svc.assignReviewer('doc-1', reviewer.id, manager);
+      await svc.assignReviewer('doc-1', reviewer.id, manager, {}, NOW);
 
       expect(prisma.reviewTask.create).toHaveBeenCalledTimes(1);
       expect(prisma.reviewTask.create.mock.calls[0][0].data).toMatchObject({
@@ -279,7 +279,7 @@ describe('ReviewService', () => {
       const { svc, prisma } = setup({ nextReviewDate: new Date('2026-07-20T00:00:00.000Z') });
       prisma.reviewTask.create.mockResolvedValue({ id: 'task-soon' });
 
-      await svc.assignReviewer('doc-1', reviewer.id, manager);
+      await svc.assignReviewer('doc-1', reviewer.id, manager, {}, NOW);
 
       expect(prisma.reviewTask.create).toHaveBeenCalledTimes(1);
       expect(prisma.reviewTask.create.mock.calls[0][0].data.status).toBe('pending');
@@ -288,7 +288,7 @@ describe('ReviewService', () => {
     it('does NOT create a task when the document is not yet due (future nextReviewDate beyond lead time)', async () => {
       const { svc, prisma } = setup({ nextReviewDate: new Date('2026-12-31T00:00:00.000Z') });
 
-      await svc.assignReviewer('doc-1', reviewer.id, manager);
+      await svc.assignReviewer('doc-1', reviewer.id, manager, {}, NOW);
 
       expect(prisma.reviewTask.create).not.toHaveBeenCalled();
     });
@@ -296,7 +296,7 @@ describe('ReviewService', () => {
     it('does NOT create a task for an archived document even if past due', async () => {
       const { svc, prisma } = setup({ status: 'archived' });
 
-      await svc.assignReviewer('doc-1', reviewer.id, manager);
+      await svc.assignReviewer('doc-1', reviewer.id, manager, {}, NOW);
 
       expect(prisma.reviewTask.create).not.toHaveBeenCalled();
     });
@@ -305,7 +305,7 @@ describe('ReviewService', () => {
       const { svc, prisma, audit } = setup();
       prisma.reviewAssignment.findUnique.mockResolvedValue({ id: 'ra-x', createdAt: NOW }); // already assigned
 
-      await svc.assignReviewer('doc-1', reviewer.id, manager);
+      await svc.assignReviewer('doc-1', reviewer.id, manager, {}, NOW);
 
       expect(prisma.reviewAssignment.create).not.toHaveBeenCalled();
       expect(prisma.reviewTask.create).not.toHaveBeenCalled();

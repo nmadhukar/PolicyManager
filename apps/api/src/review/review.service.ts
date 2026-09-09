@@ -97,6 +97,7 @@ export class ReviewService {
     reviewerId: string,
     actor: AuthUser,
     ctx: RequestContext = {},
+    now: Date = new Date(),
   ): Promise<ReviewerAssignment> {
     await this.assertActiveDocument(documentId);
     const reviewer = await this.prisma.user.findUnique({
@@ -170,7 +171,7 @@ export class ReviewService {
           documentId,
           { id: reviewer.id, name: reviewer.name, email: reviewer.email },
           doc,
-          new Date(),
+          now,
         );
       }
     }
