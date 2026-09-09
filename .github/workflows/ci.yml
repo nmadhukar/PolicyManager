@@ -30,6 +30,11 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run prisma:generate
+      # @policymanager/shared resolves via its "types"/"main" fields to dist/,
+      # which is gitignored and only produced by this workspace's own build.
+      # Every downstream step (typecheck, lint, test) imports from that
+      # package, so it must be built before any of them run.
+      - run: npm run build --workspace @policymanager/shared
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
