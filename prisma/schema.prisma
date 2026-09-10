@@ -4,13 +4,7 @@
 // Models are added per phase as vertical slices — not one big dump.
 
 generator client {
-  provider   = "prisma-client-js"
-  // WASM engine: this Coolify server's CPU lacks AVX2, which Prisma 6's
-  // default native query engine binary requires and crashes on (SIGILL,
-  // exit 132) with no JS-level error. WASM is Prisma's own officially
-  // supported alternative engine (used by default for edge/serverless
-  // runtimes for the same reason) and runs on any CPU.
-  engineType = "wasm"
+  provider = "prisma-client-js"
 }
 
 datasource db {

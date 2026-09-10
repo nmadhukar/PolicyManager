@@ -1,3 +1,5 @@
+import { readFileSync } from 'fs';
+import { dirname, join } from 'path';
 import { TextExtractionService, selectExtractor } from './text-extraction.service';
 
 describe('selectExtractor (dispatch)', () => {
@@ -75,5 +77,42 @@ describe('TextExtractionService.extract', () => {
     const huge = 'a'.repeat(2_000_000);
     const result = await svc.extract(Buffer.from(huge), 'text/plain', 'big.txt');
     expect(result.length).toBeLessThanOrEqual(1_000_000);
+  });
+});
+
+describe('TextExtractionService PDF extraction (real document)', () => {
+  const svc = new TextExtractionService();
+
+  // A real multi-page PDF. Sourced from pdf-parse's own bundled fixtures rather
+  // than committing a binary here; pdf-parse is a pinned exact dependency, so
+  // the path is stable. Synthetic minimal PDFs are a poor substitute — the
+  // page-boundary contract below only means anything against real page geometry.
+  const realPdf = (): Buffer => {
+    const pkg = require.resolve('pdf-parse/package.json');
+    return readFileSync(join(dirname(pkg), 'test', 'data', '01-valid.pdf'));
+  };
+
+  it('extracts text from a real multi-page PDF', async () => {
+    const text = await svc.extract(realPdf(), 'application/pdf', 'paper.pdf');
+    expect(text.trim().length).toBeGreaterThan(0);
+  });
+
+  it('separates pages with a form feed so RAG chunks keep page attribution', async () => {
+    // Guards the citation contract: the structure-aware chunker derives
+    // pageStart/pageEnd from these \f boundaries. Losing them silently degrades
+    // every citation to a null page range.
+    const text = await svc.extract(realPdf(), 'application/pdf', 'paper.pdf');
+    expect(text).toContain('\f');
+    expect(text.split('\f').length).toBeGreaterThan(1);
+  });
+
+  it('does not load a native canvas/Skia binary (host CPU portability)', () => {
+    // Regression guard for the AVX2/SIGILL crash: pdf-parse v2 pulled in
+    // @napi-rs/canvas, whose prebuilt Skia binary killed the process on CPUs
+    // without AVX2. Nothing in the PDF path may reload it.
+    const native = Object.keys(require.cache).filter((k) =>
+      /@napi-rs[\\/]canvas|skia/i.test(k),
+    );
+    expect(native).toEqual([]);
   });
 });

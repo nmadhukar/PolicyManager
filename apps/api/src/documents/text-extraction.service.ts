@@ -1,7 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { ExtractionStatus } from '@policymanager/shared';
 import * as mammoth from 'mammoth';
-import { PDFParse } from 'pdf-parse';
+// pdf-parse is pinned to the v1 line ON PURPOSE. v2 pulls in pdfjs-dist v5,
+// whose Node build eagerly loads @napi-rs/canvas (to polyfill DOMMatrix /
+// ImageData / Path2D). That package ships a prebuilt Skia binary requiring AVX2,
+// which the deployment host's CPU lacks — the process died with SIGILL (exit
+// 132) during Nest bootstrap, before any JS error could be logged. v1 bundles
+// its own pdf.js and has no native dependency at all. See docs/runbooks.
+import pdfParse from 'pdf-parse';
 import { OcrService } from './ocr.service';
 
 export type ExtractorKind = 'pdf' | 'docx' | 'text' | 'image' | 'none';
@@ -121,28 +127,30 @@ export class TextExtractionService {
   }
 
   private async extractPdf(buffer: Buffer): Promise<{ text: string; pages: number | null }> {
-    const parser = new PDFParse({ data: buffer });
-    try {
-      const result = await parser.getText();
-      const pages =
-        typeof (result as { total?: unknown }).total === 'number'
-          ? ((result as { total: number }).total)
-          : null;
-      // Preserve PAGE BOUNDARIES with a form-feed (\f) between pages so the
-      // structure-aware chunker (RAG Phase 2) can attribute each chunk to a page
-      // range for citations. When per-page text is available we join it with \f;
-      // otherwise we fall back to the flat concatenated text (no page geometry, and
-      // pageStart/pageEnd degrade to null downstream — safe for non-paginated docs).
-      const perPage = (result as { pages?: Array<{ text?: string }> }).pages;
-      const text =
-        Array.isArray(perPage) && perPage.length > 1
-          ? perPage.map((p) => p.text ?? '').join('\f')
-          : (result.text ?? '');
-      return { text, pages };
-    } finally {
-      // Release the pdf.js worker so tests/process don't hang on open handles.
-      await parser.destroy().catch(() => undefined);
-    }
+    // Preserve PAGE BOUNDARIES with a form-feed (\f) between pages so the
+    // structure-aware chunker (RAG Phase 2) can attribute each chunk to a page
+    // range for citations. v1 has no per-page result field, so we capture each
+    // page through its `pagerender` hook instead; the hook's return value is
+    // what v1 concatenates into `data.text`, so returning the text keeps that
+    // flat fallback intact for the single-page case.
+    const perPage: string[] = [];
+    const data = await pdfParse(buffer, {
+      pagerender: async (pageData: {
+        getTextContent: () => Promise<{ items: Array<{ str?: string }> }>;
+      }) => {
+        const content = await pageData.getTextContent();
+        const text = content.items.map((item) => item.str ?? '').join(' ');
+        perPage.push(text);
+        return text;
+      },
+    });
+
+    const pages = typeof data.numpages === 'number' ? data.numpages : null;
+    // Multi-page: join with \f to keep page geometry. Single page (or no pages
+    // captured): fall back to the flat text — pageStart/pageEnd then degrade to
+    // null downstream, which is safe for non-paginated docs.
+    const text = perPage.length > 1 ? perPage.join('\f') : (data.text ?? '');
+    return { text, pages };
   }
 
   private cap(text: string): string {
