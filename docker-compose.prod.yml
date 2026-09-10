@@ -1,0 +1,243 @@
+# =============================================================================
+# PolicyManager - Production Docker Compose (Coolify)
+# =============================================================================
+#
+# Deploy as a single Coolify "Docker Compose" resource. PostgreSQL is NOT
+# defined here — it is managed separately as a Coolify database resource
+# (pgvector/pgvector:pg17), same pattern ESSPortal uses for its own database.
+#
+# Architecture:
+#   Browser -> Coolify/Traefik (SSL, auto-generated domain per service)
+#     -> web  (nginx, container port 80)   serves the built React app
+#     -> api  (NestJS, container port 3000) everything under /api, /health
+#   api  -> Coolify-managed PostgreSQL (external "coolify" network)
+#   api  -> gotenberg, onlyoffice           (private "policymanager-network")
+#   web  -> api                             (private "policymanager-network")
+#
+# Networks (same multi-tenant isolation rationale as ESSPortal's compose):
+#   This server hosts multiple unrelated projects on Coolify's shared external
+#   "coolify" network. A container name generic enough to collide with another
+#   project's (e.g. "postgres", "redis") would resolve round-robin across
+#   projects if both joined "coolify" under that name. This stack avoids that
+#   two ways:
+#     - api, web, gotenberg, onlyoffice all sit on a PRIVATE per-project
+#       network ("policymanager-network") only. None of their service names
+#       are reachable from any other project.
+#     - api ALSO joins the external "coolify" network, but only to reach the
+#       Coolify-managed Postgres by that database's own unique container name
+#       (set via DATABASE_URL, not a generic "postgres" hostname) — so it can
+#       never resolve a different project's database.
+#
+# Known issue not fixed by this file: the API container currently crashes on
+# start (exit 132, illegal instruction) because this server's CPU lacks AVX2,
+# which Prisma's default query engine binary requires. Tracked separately —
+# switching prisma/schema.prisma to engineType = "wasm" resolves it.
+#
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # API (NestJS backend)
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    expose:
+      - "3000"
+    environment:
+      NODE_ENV: production
+      API_PORT: 3000
+      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-1}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
+
+      # Rate limiting
+      THROTTLE_TTL: ${THROTTLE_TTL:-60000}
+      THROTTLE_LIMIT: ${THROTTLE_LIMIT:-300}
+      THROTTLE_DISABLED: ${THROTTLE_DISABLED:-false}
+
+      # Database — Coolify-managed Postgres, reached via the external
+      # "coolify" network below using its own unique container hostname.
+      DATABASE_URL: ${DATABASE_URL}
+
+      # Auth
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-900s}
+      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-7d}
+      AUTH_LOCAL_ENABLED: ${AUTH_LOCAL_ENABLED:-true}
+
+      # Encryption
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY}
+
+      # OIDC / SSO — Azure AD
+      OIDC_ENABLED: ${OIDC_ENABLED:-false}
+      OIDC_CALLBACK_BASE_URL: ${OIDC_CALLBACK_BASE_URL}
+      OIDC_AZURE_ISSUER: ${OIDC_AZURE_ISSUER}
+      OIDC_AZURE_CLIENT_ID: ${OIDC_AZURE_CLIENT_ID}
+      OIDC_AZURE_CLIENT_SECRET: ${OIDC_AZURE_CLIENT_SECRET}
+      OIDC_AZURE_SCOPES: ${OIDC_AZURE_SCOPES:-openid profile email}
+      SSO_ALLOWED_RETURN_ORIGINS: ${SSO_ALLOWED_RETURN_ORIGINS}
+
+      # S3 / object storage
+      S3_ENDPOINT: ${S3_ENDPOINT}
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT}
+      S3_REGION: ${S3_REGION:-us-east-2}
+      S3_BUCKET: ${S3_BUCKET:-policymanager-docs}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
+      S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-true}
+      S3_PREFIX_DOCUMENTS: ${S3_PREFIX_DOCUMENTS:-documents/}
+      S3_PREFIX_RENDITIONS: ${S3_PREFIX_RENDITIONS:-renditions/}
+      S3_PREFIX_COVERPAGES: ${S3_PREFIX_COVERPAGES:-coverpages/}
+      S3_PREFIX_IMPORTS: ${S3_PREFIX_IMPORTS:-imports/}
+      S3_SSE: ${S3_SSE:-}
+      S3_KMS_KEY_ID: ${S3_KMS_KEY_ID:-}
+      S3_AUTO_CREATE: ${S3_AUTO_CREATE:-false}
+
+      # Email / SMTP
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-true}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM_ADDRESS: ${SMTP_FROM_ADDRESS:-policymanager@example.com}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-PolicyManager}
+      FRONTEND_URL: ${FRONTEND_URL}
+
+      # Document conversion — internal, reached by compose service name
+      GOTENBERG_URL: http://gotenberg:3000
+      GOTENBERG_TIMEOUT_MS: ${GOTENBERG_TIMEOUT_MS:-60000}
+
+      # OCR (disabled by default)
+      OCR_ENABLED: ${OCR_ENABLED:-false}
+      OCR_ENDPOINT: ${OCR_ENDPOINT:-}
+      OCR_TIMEOUT_MS: ${OCR_TIMEOUT_MS:-120000}
+      OCR_MAX_BYTES: ${OCR_MAX_BYTES:-26214400}
+      OCR_MAX_PAGES: ${OCR_MAX_PAGES:-50}
+      OCR_PDF_MIN_TEXT_CHARS: ${OCR_PDF_MIN_TEXT_CHARS:-24}
+
+      # RAG / embeddings — enabling sends document text to OpenAI
+      RAG_ENABLED: ${RAG_ENABLED:-false}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1536}
+      RAG_CHUNK_MAX_TOKENS: ${RAG_CHUNK_MAX_TOKENS:-500}
+      RAG_CHUNK_OVERLAP_TOKENS: ${RAG_CHUNK_OVERLAP_TOKENS:-75}
+      EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-96}
+      RAG_RETRIEVAL_TOP_K: ${RAG_RETRIEVAL_TOP_K:-10}
+      RAG_RETRIEVAL_CANDIDATE_POOL: ${RAG_RETRIEVAL_CANDIDATE_POOL:-100}
+      RAG_FTS_CANDIDATE_POOL: ${RAG_FTS_CANDIDATE_POOL:-100}
+      RAG_RRF_K: ${RAG_RRF_K:-60}
+      RAG_RETRIEVAL_MAX_DISTANCE: ${RAG_RETRIEVAL_MAX_DISTANCE:-0.80}
+      RAG_CONTEXT_MAX_CHARS: ${RAG_CONTEXT_MAX_CHARS:-12000}
+      OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL:-gpt-4o-mini}
+      RAG_CHAT_HISTORY_TURNS: ${RAG_CHAT_HISTORY_TURNS:-6}
+      RAG_CHAT_MAX_TOKENS: ${RAG_CHAT_MAX_TOKENS:-900}
+      RAG_CHAT_TEMPERATURE: ${RAG_CHAT_TEMPERATURE:-0.1}
+      RAG_EMBED_CACHE_TTL_MS: ${RAG_EMBED_CACHE_TTL_MS:-300000}
+      RAG_EMBED_CACHE_MAX: ${RAG_EMBED_CACHE_MAX:-500}
+      RAG_CHAT_RATE_LIMIT: ${RAG_CHAT_RATE_LIMIT:-20}
+      RAG_CHAT_RATE_TTL_MS: ${RAG_CHAT_RATE_TTL_MS:-60000}
+
+      # OnlyOffice — public URL for the browser, internal URL for callbacks,
+      # reached by compose service name on the private network.
+      ONLYOFFICE_URL: ${ONLYOFFICE_URL}
+      ONLYOFFICE_JWT_SECRET: ${ONLYOFFICE_JWT_SECRET}
+      ONLYOFFICE_API_INTERNAL_URL: http://api:3000
+      ONLYOFFICE_DOWNLOAD_ALLOWED_HOSTS: ${ONLYOFFICE_DOWNLOAD_ALLOWED_HOSTS}
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks:
+      - policymanager-network
+      # Only api needs this, and only to reach the Coolify-managed Postgres by
+      # its own unique container hostname (part of DATABASE_URL above) — see
+      # the network isolation note at the top of this file.
+      - coolify
+    labels:
+      - "coolify.managed=true"
+
+  # ---------------------------------------------------------------------------
+  # Web (React/Vite served by nginx)
+  # ---------------------------------------------------------------------------
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      # Left unset deliberately: the Dockerfile's own default bakes in the
+      # __API_BASE_URL__ sentinel, which the container's entrypoint rewrites to
+      # the real API_BASE_URL runtime env below — one image works for any
+      # environment without a rebuild.
+    restart: unless-stopped
+    expose:
+      - "80"
+    environment:
+      API_BASE_URL: ${API_BASE_URL}
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      # Private network only — reaches `api` by its compose service name.
+      # Deliberately NOT on "coolify": this container has no reason to reach
+      # anything outside this project.
+      - policymanager-network
+    labels:
+      - "coolify.managed=true"
+
+  # ---------------------------------------------------------------------------
+  # Gotenberg (PDF rendition generation) — internal only, no public domain
+  # ---------------------------------------------------------------------------
+  gotenberg:
+    image: gotenberg/gotenberg:8
+    restart: unless-stopped
+    expose:
+      - "3000"
+    networks:
+      - policymanager-network
+    labels:
+      - "coolify.managed=true"
+
+  # ---------------------------------------------------------------------------
+  # OnlyOffice Document Server — public URL (browser loads the editor from it)
+  # ---------------------------------------------------------------------------
+  onlyoffice:
+    image: onlyoffice/documentserver:latest
+    restart: unless-stopped
+    expose:
+      - "80"
+    environment:
+      JWT_ENABLED: "true"
+      JWT_SECRET: ${ONLYOFFICE_JWT_SECRET}
+    volumes:
+      - onlyofficedata:/var/www/onlyoffice/Data
+    networks:
+      - policymanager-network
+    labels:
+      - "coolify.managed=true"
+
+# -----------------------------------------------------------------------------
+# Volumes
+# -----------------------------------------------------------------------------
+volumes:
+  onlyofficedata:
+    driver: local
+
+# -----------------------------------------------------------------------------
+# Networks
+# -----------------------------------------------------------------------------
+networks:
+  policymanager-network:
+    driver: bridge
+  coolify:
+    external: true
