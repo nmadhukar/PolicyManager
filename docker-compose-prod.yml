@@ -21,12 +21,19 @@
 #   projects if both joined "coolify" under that name. This stack avoids that
 #   two ways:
 #     - api, web, gotenberg, onlyoffice all sit on a PRIVATE per-project
-#       network ("policymanager-network") only. None of their service names
-#       are reachable from any other project.
+#       network ("policymanager-network"), and resolve each other ONLY there.
+#       No service here depends on a name resolved over "coolify", so a
+#       colliding name in another project can never be reached by mistake.
 #     - api ALSO joins the external "coolify" network, but only to reach the
 #       Coolify-managed Postgres by that database's own unique container name
 #       (set via DATABASE_URL, not a generic "postgres" hostname) — so it can
 #       never resolve a different project's database.
+#     - web and onlyoffice ALSO join "coolify" purely so the Coolify-managed
+#       Traefik (which runs on that network) can route inbound public traffic
+#       to them. Traefik reaches in by container ID, and these two resolve
+#       nothing by name over "coolify", so this adds reachability without
+#       reintroducing the name-collision risk described above.
+#       gotenberg stays private: it has no public domain.
 #
 # Known issue not fixed by this file: the API container currently crashes on
 # start (exit 132, illegal instruction) because this server's CPU lacks AVX2,
@@ -194,10 +201,17 @@ services:
       retries: 5
       start_period: 20s
     networks:
-      # Private network only — reaches `api` by its compose service name.
-      # Deliberately NOT on "coolify": this container has no reason to reach
-      # anything outside this project.
+      # Reaches `api` by its compose service name over the private network.
       - policymanager-network
+      # Also on "coolify" so the Coolify-managed Traefik — which runs on that
+      # shared network — can route INBOUND public traffic to this container.
+      # Without it Traefik cannot see this service and every request to
+      # policymanager.dsigworkflow.com falls through to its default 404 (which
+      # also breaks the ACME HTTP-01 challenge, so no certificate is ever
+      # issued). This grants inbound reachability only; the isolation rationale
+      # at the top of this file still holds for outbound name resolution,
+      # because this container resolves `api` on the private network above.
+      - coolify
     labels:
       - "coolify.managed=true"
 
@@ -229,6 +243,10 @@ services:
       - onlyofficedata:/var/www/onlyoffice/Data
     networks:
       - policymanager-network
+      # On "coolify" for the same reason as `web`: Traefik runs on that shared
+      # network and must reach this container to serve
+      # policymanager-docs.dsigworkflow.com.
+      - coolify
     labels:
       - "coolify.managed=true"
 
