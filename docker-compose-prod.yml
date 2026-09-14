@@ -53,6 +53,14 @@ services:
     restart: unless-stopped
     expose:
       - "3000"
+    # Published on a host port because this server's Traefik reaches app
+    # containers through the host, not over the shared "coolify" Docker network
+    # (ESSPortal on the same host does the same thing). Without a host port
+    # Traefik has no backend to forward to and every request for this service's
+    # domain falls through to its default 404. Coolify's domain entry for
+    # policymanager-api.dsigworkflow.com must point at THIS host port.
+    ports:
+      - "41891:3000"
     environment:
       NODE_ENV: production
       API_PORT: 3000
@@ -183,6 +191,10 @@ services:
     restart: unless-stopped
     expose:
       - "80"
+    # Host port for Traefik to forward to — see the note on `api` above.
+    # Coolify's entry for policymanager.dsigworkflow.com must use this port.
+    ports:
+      - "41890:80"
     environment:
       API_BASE_URL: ${API_BASE_URL}
     depends_on:
@@ -236,6 +248,10 @@ services:
     restart: unless-stopped
     expose:
       - "80"
+    # Host port for Traefik to forward to — see the note on `api` above.
+    # Coolify's entry for policymanager-docs.dsigworkflow.com must use this port.
+    ports:
+      - "41892:80"
     environment:
       JWT_ENABLED: "true"
       JWT_SECRET: ${ONLYOFFICE_JWT_SECRET}
