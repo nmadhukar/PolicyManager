@@ -1,5 +1,7 @@
 # Admin Guide
 
+For user-action and read-only bot connections, see [Hermes and MCP configuration](./mcp-hermes.md).
+
 This folder contains administrator guides.
 
 Planned guides:

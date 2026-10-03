@@ -72,6 +72,14 @@ services:
       THROTTLE_LIMIT: ${THROTTLE_LIMIT:-300}
       THROTTLE_DISABLED: ${THROTTLE_DISABLED:-false}
 
+      # MCP / Hermes (same API port; existing REST guards remain authoritative)
+      MCP_ENABLED: ${MCP_ENABLED:-false}
+      MCP_ALLOWED_ORIGINS: ${MCP_ALLOWED_ORIGINS:-}
+      MCP_MAX_REQUEST_BYTES: ${MCP_MAX_REQUEST_BYTES:-16777216}
+      MCP_MAX_RESPONSE_BYTES: ${MCP_MAX_RESPONSE_BYTES:-16777216}
+      MCP_MAX_CONCURRENT_CALLS: ${MCP_MAX_CONCURRENT_CALLS:-4}
+      MCP_TOOL_TIMEOUT_MS: ${MCP_TOOL_TIMEOUT_MS:-120000}
+
       # Database — Coolify-managed Postgres, reached via the external
       # "coolify" network below using its own unique container hostname.
       DATABASE_URL: ${DATABASE_URL}

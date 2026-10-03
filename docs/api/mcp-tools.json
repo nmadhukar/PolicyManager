@@ -1,0 +1,5452 @@
+{
+  "version": "1.0.0",
+  "endpoint": "/api/mcp",
+  "tools": [
+    {
+      "name": "api_clients_list",
+      "description": "List API clients (never the secret)..  REST: GET /api/api-clients. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/api-clients"
+      },
+      "audience": "user",
+      "permissions": [
+        "api.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "api_clients_create",
+      "description": "Create an API client; returns the secret ONCE..  REST: POST /api/api-clients. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome. Sensitive inputs/results may enter chat history; avoid exposing credentials to shared chats.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "maxLength": 120
+              },
+              "scopes": {
+                "type": "array",
+                "description": "documents:read (baseline), content:read, download.",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "documents:read",
+                    "content:read",
+                    "download"
+                  ]
+                }
+              },
+              "allowedCategoryIds": {
+                "description": "Restrict visibility to these category ids. Empty/omitted = all categories.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "name",
+              "scopes"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/api-clients"
+      },
+      "audience": "user",
+      "permissions": [
+        "api.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "api_clients_update",
+      "description": "Update a client’s scopes, category allow-list, or enabled flag..  REST: PATCH /api/api-clients/:id. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "scopes": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "documents:read",
+                    "content:read",
+                    "download"
+                  ]
+                }
+              },
+              "allowedCategoryIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "enabled": {
+                "type": "boolean",
+                "description": "Disable/enable the client without revoking it."
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path",
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "PATCH",
+        "path": "/api/api-clients/:id"
+      },
+      "audience": "user",
+      "permissions": [
+        "api.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "api_clients_revoke",
+      "description": "Revoke a client (disables it; all future calls 401)..  REST: POST /api/api-clients/:id/revoke. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/api-clients/:id/revoke"
+      },
+      "audience": "user",
+      "permissions": [
+        "api.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "api_clients_rotate",
+      "description": "Rotate the secret in place; returns the new secret ONCE..  REST: POST /api/api-clients/:id/rotate-secret. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome. Sensitive inputs/results may enter chat history; avoid exposing credentials to shared chats.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/api-clients/:id/rotate-secret"
+      },
+      "audience": "user",
+      "permissions": [
+        "api.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "acknowledgments_mine",
+      "description": "List my acknowledgment assignments (pending/overdue first, then completed)..  REST: GET /api/acknowledgments. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/acknowledgments"
+      },
+      "audience": "user",
+      "permissions": [],
+      "scopes": []
+    },
+    {
+      "name": "acknowledgments_acknowledge",
+      "description": "Acknowledge (read & understand) an assignment — records an immutable sign-off..  REST: POST /api/acknowledgments/:id/acknowledge. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "hasViewed": {
+                "type": "boolean",
+                "description": "Must be true — confirms the assignee has read the document."
+              },
+              "signatureName": {
+                "type": "string",
+                "description": "Typed sign-off name (defaults to the acting user)."
+              },
+              "signatureRole": {
+                "type": "string",
+                "description": "Signer's role/title recorded with the acknowledgment."
+              },
+              "comments": {
+                "type": "string",
+                "description": "Optional acknowledgment comments."
+              }
+            },
+            "required": [
+              "hasViewed"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path",
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/acknowledgments/:id/acknowledge"
+      },
+      "audience": "user",
+      "permissions": [],
+      "scopes": []
+    },
+    {
+      "name": "document_signoff_approve",
+      "description": "Approve (or publish) a document — records an immutable approved sign-off..  REST: POST /api/documents/:id/approve. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "signatureName": {
+                "type": "string",
+                "description": "Typed sign-off name (defaults to the acting user)."
+              },
+              "signatureRole": {
+                "type": "string",
+                "description": "Signer's role/title recorded with the sign-off."
+              },
+              "comments": {
+                "type": "string",
+                "description": "Optional sign-off comments."
+              },
+              "publish": {
+                "type": "boolean",
+                "description": "Publish (vs approve): sets status=published and re-triggers acknowledgment."
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path",
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/documents/:id/approve"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.approve"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "document_signoff_attestations",
+      "description": "The document approval chain (reviewed/approved sign-offs, newest first)..  REST: GET /api/documents/:id/attestations. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/documents/:id/attestations"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.read"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "document_signoff_cover_page_pdf",
+      "description": "Generate the compliance cover-page PDF from live metadata..  REST: GET /api/documents/:id/cover-page. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/documents/:id/cover-page"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.read"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "document_signoff_export_pdf",
+      "description": "Export the cover page prepended to the current version PDF (merged)..  REST: GET /api/documents/:id/export. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/documents/:id/export"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.read"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "document_signoff_distribute",
+      "description": "Distribute the current version to users/roles for acknowledgment..  REST: POST /api/documents/:id/acknowledgments. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "assigneeIds": {
+                "description": "Explicit user ids to assign.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "roleNames": {
+                "description": "Role names whose members are assigned.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "dueDate": {
+                "type": "string",
+                "description": "Optional ISO due date for the assignments."
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path",
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/documents/:id/acknowledgments"
+      },
+      "audience": "user",
+      "permissions": [
+        "review.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "document_signoff_acknowledgment_status",
+      "description": "Per-assignee acknowledgment status + completion % for the document..  REST: GET /api/documents/:id/acknowledgments. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/documents/:id/acknowledgments"
+      },
+      "audience": "user",
+      "permissions": [
+        "review.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "audit_list",
+      "description": "Query the audit trail (paginated; filter by actor, document, action, source, date)..  REST: GET /api/audit. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "object",
+            "properties": {
+              "actorUserId": {
+                "type": "string"
+              },
+              "documentId": {
+                "type": "string"
+              },
+              "action": {
+                "type": "string"
+              },
+              "source": {
+                "enum": [
+                  "web",
+                  "api",
+                  "system"
+                ],
+                "type": "string"
+              },
+              "from": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              },
+              "page": {
+                "minimum": 1,
+                "default": 1,
+                "type": "number"
+              },
+              "pageSize": {
+                "minimum": 1,
+                "maximum": 200,
+                "default": 25,
+                "type": "number"
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/audit"
+      },
+      "audience": "user",
+      "permissions": [
+        "audit.read"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "auth_change_password",
+      "description": "Change the authenticated user's password (verifies the current one)..  REST: POST /api/auth/change-password. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome. Sensitive inputs/results may enter chat history; avoid exposing credentials to shared chats.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "object",
+            "properties": {
+              "currentPassword": {
+                "type": "string",
+                "description": "The current password, for re-authentication."
+              },
+              "newPassword": {
+                "type": "string",
+                "description": "The new password (policy enforced server-side).",
+                "minLength": 8
+              }
+            },
+            "required": [
+              "currentPassword",
+              "newPassword"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/auth/change-password"
+      },
+      "audience": "user",
+      "permissions": [],
+      "scopes": []
+    },
+    {
+      "name": "auth_me",
+      "description": "Current authenticated user with resolved roles + permissions..  REST: GET /api/auth/me. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/auth/me"
+      },
+      "audience": "user",
+      "permissions": [],
+      "scopes": []
+    },
+    {
+      "name": "document_acl_list",
+      "description": "List the access-control grants on a document..  REST: GET /api/documents/:id/acl. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/documents/:id/acl"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.write"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "document_acl_add",
+      "description": "Grant a role or user a capability on the document..  REST: POST /api/documents/:id/acl. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "principalType": {
+                "type": "string",
+                "enum": [
+                  "role",
+                  "user"
+                ]
+              },
+              "principalId": {
+                "type": "string",
+                "description": "A roleId when principalType=role, else a userId."
+              },
+              "permission": {
+                "type": "string",
+                "enum": [
+                  "view",
+                  "download",
+                  "edit",
+                  "approve"
+                ]
+              }
+            },
+            "required": [
+              "principalType",
+              "principalId",
+              "permission"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path",
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/documents/:id/acl"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.write"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "document_acl_remove",
+      "description": "Remove an access-control grant from the document..  REST: DELETE /api/documents/:id/acl/:aclId. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              },
+              "aclId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id",
+              "aclId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "DELETE",
+        "path": "/api/documents/:id/acl/:aclId"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.write"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "document_annotations_list",
+      "description": "List internal review annotations for a document version..  REST: GET /api/documents/:documentId/versions/:versionId/annotations. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "documentId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              },
+              "versionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "documentId",
+              "versionId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/documents/:documentId/versions/:versionId/annotations"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.read"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "document_annotations_create",
+      "description": "Create an internal review annotation (requires document.comment or reviewer assignment)..  REST: POST /api/documents/:documentId/versions/:versionId/annotations. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "documentId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              },
+              "versionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "documentId",
+              "versionId"
+            ],
+            "additionalProperties": false
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "comment",
+                  "issue",
+                  "suggested_change"
+                ]
+              },
+              "pageNumber": {
+                "type": "number",
+                "minimum": 1
+              },
+              "x": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "y": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "width": {
+                "type": "number",
+                "minimum": 0.001,
+                "maximum": 1
+              },
+              "height": {
+                "type": "number",
+                "minimum": 0.001,
+                "maximum": 1
+              },
+              "body": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "pageNumber",
+              "x",
+              "y",
+              "width",
+              "height",
+              "body"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path",
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/documents/:documentId/versions/:versionId/annotations"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.read"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "document_annotations_resolve",
+      "description": "Resolve an annotation..  REST: POST /api/documents/:documentId/versions/:versionId/annotations/:annotationId/resolve. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "documentId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              },
+              "versionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              },
+              "annotationId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "documentId",
+              "versionId",
+              "annotationId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/documents/:documentId/versions/:versionId/annotations/:annotationId/resolve"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.read"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "document_annotations_reopen",
+      "description": "Reopen a resolved annotation..  REST: POST /api/documents/:documentId/versions/:versionId/annotations/:annotationId/reopen. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "documentId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              },
+              "versionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              },
+              "annotationId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "documentId",
+              "versionId",
+              "annotationId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/documents/:documentId/versions/:versionId/annotations/:annotationId/reopen"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.read"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "document_annotations_soft_delete",
+      "description": "Soft-delete an annotation (author or compliance staff)..  REST: DELETE /api/documents/:documentId/versions/:versionId/annotations/:annotationId. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "documentId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              },
+              "versionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              },
+              "annotationId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "documentId",
+              "versionId",
+              "annotationId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "DELETE",
+        "path": "/api/documents/:documentId/versions/:versionId/annotations/:annotationId"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.read"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "document_categories_tree",
+      "description": "Get the category tree..  REST: GET /api/document-categories. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/document-categories"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.read"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "document_categories_create",
+      "description": "Create a category (optionally nested under a parent)..  REST: POST /api/document-categories. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "parentId": {
+                "type": "string",
+                "description": "Parent category id for a nested folder."
+              },
+              "description": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/document-categories"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.write"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "document_compare_compare",
+      "description": "Compare two immutable document versions with redline hunks..  REST: GET /api/documents/:id/versions/:fromVersionId/compare/:toVersionId. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              },
+              "fromVersionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              },
+              "toVersionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id",
+              "fromVersionId",
+              "toVersionId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/documents/:id/versions/:fromVersionId/compare/:toVersionId"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.read"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "document_compare_export",
+      "description": "Export the compare/redline summary as a PDF..  REST: GET /api/documents/:id/versions/:fromVersionId/compare/:toVersionId/export. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              },
+              "fromVersionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              },
+              "toVersionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id",
+              "fromVersionId",
+              "toVersionId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/documents/:id/versions/:fromVersionId/compare/:toVersionId/export"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.read"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "documents_list",
+      "description": "List documents (paginated, filterable, sortable).. Excludes soft-deleted and archived documents by default, and hides confidential documents the caller has no grant for. `includeArchived=true` surfaces archived; `deleted=true` is the trash view (only soft-deleted) and additionally requires document.write. REST: GET /api/documents. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "object",
+            "properties": {
+              "q": {
+                "type": "string"
+              },
+              "categoryId": {
+                "type": "string"
+              },
+              "ownerId": {
+                "type": "string"
+              },
+              "tag": {
+                "type": "string"
+              },
+              "tags": {
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "draft",
+                  "in_review",
+                  "approved",
+                  "published",
+                  "archived",
+                  "retired"
+                ],
+                "type": "string"
+              },
+              "accessLevel": {
+                "enum": [
+                  "public",
+                  "restricted",
+                  "confidential"
+                ],
+                "type": "string"
+              },
+              "extractionStatus": {
+                "enum": [
+                  "pending",
+                  "processing",
+                  "done",
+                  "failed",
+                  "skipped"
+                ],
+                "type": "string"
+              },
+              "reviewBefore": {
+                "type": "string"
+              },
+              "reviewAfter": {
+                "type": "string"
+              },
+              "effectiveBefore": {
+                "type": "string"
+              },
+              "effectiveAfter": {
+                "type": "string"
+              },
+              "dueState": {
+                "enum": [
+                  "expired",
+                  "dueSoon",
+                  "missingApproval",
+                  "notAcknowledged"
+                ],
+                "type": "string"
+              },
+              "deleted": {
+                "type": "boolean"
+              },
+              "includeArchived": {
+                "type": "boolean"
+              },
+              "page": {
+                "minimum": 1,
+                "default": 1,
+                "type": "number"
+              },
+              "pageSize": {
+                "minimum": 1,
+                "maximum": 100,
+                "default": 20,
+                "type": "number"
+              },
+              "sort": {
+                "enum": [
+                  "title",
+                  "createdAt",
+                  "nextReviewDate",
+                  "status"
+                ],
+                "type": "string"
+              },
+              "order": {
+                "enum": [
+                  "asc",
+                  "desc"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/documents"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.read"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "documents_reindex_extraction",
+      "description": "Queue all live versions for text/OCR extraction and process the first batch..  REST: POST /api/documents/extraction/reindex. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/documents/extraction/reindex"
+      },
+      "audience": "user",
+      "permissions": [
+        "storage.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "documents_get",
+      "description": "Get a document with its full version history..  REST: GET /api/documents/:id. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/documents/:id"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.read"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "documents_retry_extraction",
+      "description": "Re-run text/OCR extraction for a single document (recover a failed/stuck scan)..  REST: POST /api/documents/:id/extraction/retry. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/documents/:id/extraction/retry"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.write"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "documents_create",
+      "description": "Create a document (title required; owner = caller)..  REST: POST /api/documents. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "documentNumber": {
+                "type": "string"
+              },
+              "categoryId": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "tags": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "accessLevel": {
+                "type": "string",
+                "enum": [
+                  "public",
+                  "restricted",
+                  "confidential"
+                ]
+              },
+              "reviewCadence": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "quarterly",
+                  "annual",
+                  "custom"
+                ]
+              },
+              "nextReviewDate": {
+                "type": "string"
+              },
+              "effectiveDate": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "title"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/documents"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.write"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "documents_bulk_review_schedule",
+      "description": "Apply one review cadence and next-review date to selected or filtered documents..  REST: POST /api/documents/bulk-review-schedule. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "object",
+            "properties": {
+              "documentIds": {
+                "description": "Explicit document ids selected in the library table.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "filters": {
+                "description": "Current library filters; targets every matching active document.",
+                "allOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "q": {
+                        "type": "string"
+                      },
+                      "categoryId": {
+                        "type": "string"
+                      },
+                      "ownerId": {
+                        "type": "string"
+                      },
+                      "tag": {
+                        "type": "string"
+                      },
+                      "tags": {
+                        "type": "string",
+                        "description": "Comma-separated tags; all listed tags must be present."
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "draft",
+                          "in_review",
+                          "approved",
+                          "published",
+                          "archived",
+                          "retired"
+                        ]
+                      },
+                      "accessLevel": {
+                        "type": "string",
+                        "enum": [
+                          "public",
+                          "restricted",
+                          "confidential"
+                        ]
+                      },
+                      "extractionStatus": {
+                        "type": "string",
+                        "enum": [
+                          "pending",
+                          "processing",
+                          "done",
+                          "failed",
+                          "skipped"
+                        ]
+                      },
+                      "reviewBefore": {
+                        "type": "string"
+                      },
+                      "reviewAfter": {
+                        "type": "string"
+                      },
+                      "effectiveBefore": {
+                        "type": "string"
+                      },
+                      "effectiveAfter": {
+                        "type": "string"
+                      },
+                      "dueState": {
+                        "type": "string",
+                        "enum": [
+                          "expired",
+                          "dueSoon",
+                          "missingApproval",
+                          "notAcknowledged"
+                        ]
+                      },
+                      "includeArchived": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "reviewCadence": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "quarterly",
+                  "annual",
+                  "custom"
+                ]
+              },
+              "nextReviewDate": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "reviewCadence"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/documents/bulk-review-schedule"
+      },
+      "audience": "user",
+      "permissions": [
+        "review.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "documents_update_review_schedule",
+      "description": "Update one document review cadence and next-review date..  REST: PATCH /api/documents/:id/review-schedule. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "reviewCadence": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "quarterly",
+                  "annual",
+                  "custom"
+                ]
+              },
+              "nextReviewDate": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "reviewCadence"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path",
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "PATCH",
+        "path": "/api/documents/:id/review-schedule"
+      },
+      "audience": "user",
+      "permissions": [
+        "review.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "documents_update",
+      "description": "Update document metadata (tags, category, status, cadence…)..  REST: PATCH /api/documents/:id. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "documentNumber": {
+                "type": "string"
+              },
+              "categoryId": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "description": {
+                "type": "string"
+              },
+              "tags": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "draft",
+                  "in_review",
+                  "approved",
+                  "published",
+                  "archived",
+                  "retired"
+                ]
+              },
+              "accessLevel": {
+                "type": "string",
+                "enum": [
+                  "public",
+                  "restricted",
+                  "confidential"
+                ]
+              },
+              "reviewCadence": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "quarterly",
+                  "annual",
+                  "custom"
+                ]
+              },
+              "nextReviewDate": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "effectiveDate": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path",
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "PATCH",
+        "path": "/api/documents/:id"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.write"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "documents_add_version",
+      "description": "Upload a new immutable version (multipart file)..  REST: POST /api/documents/:id/versions. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          "files": {
+            "type": "object",
+            "properties": {
+              "file": {
+                "type": "object",
+                "properties": {
+                  "fileName": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "description": "Original filename with supported extension; no server path."
+                  },
+                  "mimeType": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 150
+                  },
+                  "contentBase64": {
+                    "type": "string",
+                    "description": "Complete standard padded base64 file bytes (no data URL)."
+                  }
+                },
+                "required": [
+                  "fileName",
+                  "mimeType",
+                  "contentBase64"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "file"
+            ],
+            "additionalProperties": false
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "changeSummary": {
+                "type": "string"
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path",
+          "files"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/documents/:id/versions"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.write"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "documents_download",
+      "description": "Get a short-lived presigned download URL for a version..  REST: GET /api/documents/:id/versions/:versionId/download. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              },
+              "versionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id",
+              "versionId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/documents/:id/versions/:versionId/download"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.read"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "documents_view_url",
+      "description": "Get a short-lived presigned URL for in-browser viewing (PDF rendition/PDF/image)..  REST: GET /api/documents/:id/versions/:versionId/view-url. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              },
+              "versionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id",
+              "versionId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/documents/:id/versions/:versionId/view-url"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.read"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "documents_regenerate_rendition",
+      "description": "Regenerate the PDF rendition for a version (best-effort)..  REST: POST /api/documents/:id/versions/:versionId/rendition. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              },
+              "versionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id",
+              "versionId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/documents/:id/versions/:versionId/rendition"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.write"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "documents_version_html",
+      "description": "Get the raw HTML of an app-authored (TipTap) text version..  REST: GET /api/documents/:id/versions/:versionId/html. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              },
+              "versionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id",
+              "versionId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/documents/:id/versions/:versionId/html"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.read"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "documents_add_html_version",
+      "description": "Save an app-authored HTML (TipTap) document as a new immutable version..  REST: POST /api/documents/:id/versions/html. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "html": {
+                "type": "string",
+                "description": "The document body as sanitized HTML."
+              },
+              "changeSummary": {
+                "type": "string",
+                "description": "What changed in this version (revision history)."
+              }
+            },
+            "required": [
+              "html"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path",
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/documents/:id/versions/html"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.write"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "documents_editor_config",
+      "description": "Get a signed OnlyOffice editor config for the current version (docx/xlsx/pptx)..  REST: GET /api/documents/:id/editor-config. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/documents/:id/editor-config"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.write"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "documents_restore_version",
+      "description": "Restore an older version as a new current version (history preserved)..  REST: POST /api/documents/:id/versions/:versionId/restore. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              },
+              "versionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id",
+              "versionId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/documents/:id/versions/:versionId/restore"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.write"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "documents_soft_delete",
+      "description": "Soft-delete a document (moves it to the trash; never destroys bytes)..  REST: DELETE /api/documents/:id. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "DELETE",
+        "path": "/api/documents/:id"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.write"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "documents_restore",
+      "description": "Restore a soft-deleted document from the trash..  REST: POST /api/documents/:id/restore. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/documents/:id/restore"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.write"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "documents_archive",
+      "description": "Archive a document (keeps it accessible but out of active lists)..  REST: POST /api/documents/:id/archive. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/documents/:id/archive"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.write"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "documents_unarchive",
+      "description": "Unarchive a document, restoring its prior status..  REST: POST /api/documents/:id/unarchive. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/documents/:id/unarchive"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.write"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "evidence_binder_history",
+      "description": "Recent evidence binder export history for a document..  REST: GET /api/documents/:id/evidence-binders. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/documents/:id/evidence-binders"
+      },
+      "audience": "user",
+      "permissions": [
+        "evidence.export"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "evidence_binder_export",
+      "description": "Export a compliance evidence binder as ZIP or combined PDF..  REST: POST /api/documents/:id/evidence-binders/export. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "format": {
+                "type": "string",
+                "enum": [
+                  "zip",
+                  "combined_pdf"
+                ]
+              },
+              "includePolicyPdf": {
+                "type": "boolean"
+              },
+              "includeCoverPage": {
+                "type": "boolean"
+              },
+              "includeApprovalChain": {
+                "type": "boolean"
+              },
+              "includeAcknowledgmentRoster": {
+                "type": "boolean"
+              },
+              "includeReviewHistory": {
+                "type": "boolean"
+              },
+              "includeRevisionHistory": {
+                "type": "boolean"
+              },
+              "includeAuditLog": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "format"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path",
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/documents/:id/evidence-binders/export"
+      },
+      "audience": "user",
+      "permissions": [
+        "evidence.export"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "health_check",
+      "description": "health_check.  REST: GET /health. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/health"
+      },
+      "audience": "both",
+      "permissions": [],
+      "scopes": []
+    },
+    {
+      "name": "imports_import_manifest",
+      "description": "Import documents from a CSV manifest + referenced files (returns the report)..  REST: POST /api/imports. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "files": {
+            "type": "object",
+            "properties": {
+              "manifest": {
+                "type": "object",
+                "properties": {
+                  "fileName": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "description": "Original filename with supported extension; no server path."
+                  },
+                  "mimeType": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 150
+                  },
+                  "contentBase64": {
+                    "type": "string",
+                    "description": "Complete standard padded base64 file bytes (no data URL)."
+                  }
+                },
+                "required": [
+                  "fileName",
+                  "mimeType",
+                  "contentBase64"
+                ],
+                "additionalProperties": false
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "fileName": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 255,
+                      "description": "Original filename with supported extension; no server path."
+                    },
+                    "mimeType": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 150
+                    },
+                    "contentBase64": {
+                      "type": "string",
+                      "description": "Complete standard padded base64 file bytes (no data URL)."
+                    }
+                  },
+                  "required": [
+                    "fileName",
+                    "mimeType",
+                    "contentBase64"
+                  ],
+                  "additionalProperties": false
+                },
+                "maxItems": 200
+              }
+            },
+            "required": [
+              "manifest"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "files"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/imports"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.write"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "imports_import_bulk",
+      "description": "Bulk-upload files, ZIP archives, or browser folder selections with no manifest..  REST: POST /api/imports/bulk. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "files": {
+            "type": "object",
+            "properties": {
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "fileName": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 255,
+                      "description": "Original filename with supported extension; no server path."
+                    },
+                    "mimeType": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 150
+                    },
+                    "contentBase64": {
+                      "type": "string",
+                      "description": "Complete standard padded base64 file bytes (no data URL)."
+                    }
+                  },
+                  "required": [
+                    "fileName",
+                    "mimeType",
+                    "contentBase64"
+                  ],
+                  "additionalProperties": false
+                },
+                "minItems": 1,
+                "maxItems": 200
+              }
+            },
+            "required": [
+              "files"
+            ],
+            "additionalProperties": false
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "relativePaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 200
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "files"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/imports/bulk"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.write"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "imports_list",
+      "description": "List import batches (paginated, newest first). Scoped to the caller's own batches unless they hold user.manage..  REST: GET /api/imports. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "object",
+            "properties": {
+              "page": {
+                "minimum": 1,
+                "default": 1,
+                "type": "number"
+              },
+              "pageSize": {
+                "minimum": 1,
+                "maximum": 100,
+                "default": 20,
+                "type": "number"
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/imports"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.write"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "imports_get",
+      "description": "Get an import batch with its full per-row report. 404s for a batch the caller doesn't own (unless they hold user.manage)..  REST: GET /api/imports/:id. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/imports/:id"
+      },
+      "audience": "user",
+      "permissions": [
+        "document.write"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "notifications_list",
+      "description": "List my in-app notifications..  REST: GET /api/notifications. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "object",
+            "properties": {
+              "unreadOnly": {
+                "type": "boolean"
+              },
+              "page": {
+                "minimum": 1,
+                "default": 1,
+                "type": "number"
+              },
+              "pageSize": {
+                "minimum": 1,
+                "maximum": 100,
+                "default": 25,
+                "type": "number"
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/notifications"
+      },
+      "audience": "user",
+      "permissions": [],
+      "scopes": []
+    },
+    {
+      "name": "notifications_unread_count",
+      "description": "My unread notification count..  REST: GET /api/notifications/unread-count. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/notifications/unread-count"
+      },
+      "audience": "user",
+      "permissions": [],
+      "scopes": []
+    },
+    {
+      "name": "notifications_preferences",
+      "description": "My notification preferences..  REST: GET /api/notifications/preferences. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/notifications/preferences"
+      },
+      "audience": "user",
+      "permissions": [],
+      "scopes": []
+    },
+    {
+      "name": "notifications_update_preferences",
+      "description": "Update my notification preferences..  REST: PATCH /api/notifications/preferences. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "object",
+            "properties": {
+              "inAppEnabled": {
+                "type": "boolean"
+              },
+              "emailDigestEnabled": {
+                "type": "boolean"
+              },
+              "digestFrequency": {
+                "type": "string",
+                "enum": [
+                  "daily",
+                  "weekly"
+                ]
+              },
+              "digestTimeLocal": {
+                "type": "string",
+                "description": "Local HH:mm digest time."
+              },
+              "timezone": {
+                "type": "string"
+              },
+              "typeOverrides": {
+                "type": "object"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "PATCH",
+        "path": "/api/notifications/preferences"
+      },
+      "audience": "user",
+      "permissions": [],
+      "scopes": []
+    },
+    {
+      "name": "notifications_mark_read",
+      "description": "Mark one notification read..  REST: PATCH /api/notifications/:id/read. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "PATCH",
+        "path": "/api/notifications/:id/read"
+      },
+      "audience": "user",
+      "permissions": [],
+      "scopes": []
+    },
+    {
+      "name": "notifications_read_all",
+      "description": "Mark all my notifications read..  REST: PATCH /api/notifications/read-all. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "PATCH",
+        "path": "/api/notifications/read-all"
+      },
+      "audience": "user",
+      "permissions": [],
+      "scopes": []
+    },
+    {
+      "name": "notifications_dismiss",
+      "description": "Dismiss one notification..  REST: DELETE /api/notifications/:id. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "DELETE",
+        "path": "/api/notifications/:id"
+      },
+      "audience": "user",
+      "permissions": [],
+      "scopes": []
+    },
+    {
+      "name": "notifications_run_digest",
+      "description": "Run digest generation now..  REST: POST /api/notifications/digest/run. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/notifications/digest/run"
+      },
+      "audience": "user",
+      "permissions": [
+        "smtp.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "public_documents_list",
+      "description": "List published, non-confidential documents (paginated, filterable)..  REST: GET /api/v1/documents. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "object",
+            "properties": {
+              "q": {
+                "type": "string"
+              },
+              "categoryId": {
+                "type": "string"
+              },
+              "tag": {
+                "type": "string"
+              },
+              "updatedSince": {
+                "type": "string"
+              },
+              "page": {
+                "minimum": 1,
+                "default": 1,
+                "type": "number"
+              },
+              "pageSize": {
+                "minimum": 1,
+                "maximum": 100,
+                "default": 20,
+                "type": "number"
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/v1/documents"
+      },
+      "audience": "api",
+      "permissions": [],
+      "scopes": [
+        "documents:read"
+      ]
+    },
+    {
+      "name": "public_documents_search",
+      "description": "Keyword search over title + extracted text (requires content:read)..  REST: GET /api/v1/search. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "object",
+            "properties": {
+              "q": {
+                "type": "string"
+              },
+              "page": {
+                "minimum": 1,
+                "default": 1,
+                "type": "number"
+              },
+              "pageSize": {
+                "minimum": 1,
+                "maximum": 100,
+                "default": 20,
+                "type": "number"
+              }
+            },
+            "required": [
+              "q"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/v1/search"
+      },
+      "audience": "api",
+      "permissions": [],
+      "scopes": [
+        "documents:read",
+        "content:read"
+      ]
+    },
+    {
+      "name": "public_documents_get",
+      "description": "Get one published, non-confidential document..  REST: GET /api/v1/documents/:id. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/v1/documents/:id"
+      },
+      "audience": "api",
+      "permissions": [],
+      "scopes": [
+        "documents:read"
+      ]
+    },
+    {
+      "name": "public_documents_content",
+      "description": "Get the extracted text of the current version (scope content:read)..  REST: GET /api/v1/documents/:id/content. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/v1/documents/:id/content"
+      },
+      "audience": "api",
+      "permissions": [],
+      "scopes": [
+        "content:read"
+      ]
+    },
+    {
+      "name": "public_documents_download",
+      "description": "Get a short-lived presigned download URL (scope download)..  REST: GET /api/v1/documents/:id/download. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/v1/documents/:id/download"
+      },
+      "audience": "api",
+      "permissions": [],
+      "scopes": [
+        "download"
+      ]
+    },
+    {
+      "name": "public_documents_versions",
+      "description": "List the version history (metadata only) of a document..  REST: GET /api/v1/documents/:id/versions. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/v1/documents/:id/versions"
+      },
+      "audience": "api",
+      "permissions": [],
+      "scopes": [
+        "documents:read"
+      ]
+    },
+    {
+      "name": "rag_chat_status",
+      "description": "RAG feature status + embedding backlog (authenticated)..  REST: GET /api/rag/status. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/rag/status"
+      },
+      "audience": "user",
+      "permissions": [],
+      "scopes": []
+    },
+    {
+      "name": "rag_chat_reindex",
+      "description": "Embed all published, extracted-but-unembedded document versions (operator backfill)..  REST: POST /api/rag/reindex. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/rag/reindex"
+      },
+      "audience": "user",
+      "permissions": [
+        "storage.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "rag_chat_chat",
+      "description": "Ask a grounded question; returns an answer with source citations..  REST: POST /api/rag/chat. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "object",
+            "properties": {
+              "message": {
+                "type": "string"
+              },
+              "conversationId": {
+                "type": "string",
+                "format": "uuid"
+              }
+            },
+            "required": [
+              "message"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/rag/chat"
+      },
+      "audience": "user",
+      "permissions": [],
+      "scopes": []
+    },
+    {
+      "name": "rag_chat_list_conversations",
+      "description": "List the caller's chat conversations (most recent first), paginated via limit/offset..  REST: GET /api/rag/conversations. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "object",
+            "properties": {
+              "limit": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "offset": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/rag/conversations"
+      },
+      "audience": "user",
+      "permissions": [],
+      "scopes": []
+    },
+    {
+      "name": "rag_chat_get_conversation",
+      "description": "Get one of the caller's conversations. Messages are paginated newest-first: omit `before` for the latest page, then pass the returned `oldestSequence` as `before` to load older turns (reverse infinite scroll)..  REST: GET /api/rag/conversations/:id. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          "query": {
+            "type": "object",
+            "properties": {
+              "messageLimit": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "before": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/rag/conversations/:id"
+      },
+      "audience": "user",
+      "permissions": [],
+      "scopes": []
+    },
+    {
+      "name": "reviewers_list",
+      "description": "List a document's assigned reviewers..  REST: GET /api/documents/:id/reviewers. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/documents/:id/reviewers"
+      },
+      "audience": "user",
+      "permissions": [
+        "review.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "reviewers_assign",
+      "description": "Assign a user as a reviewer for the document (idempotent)..  REST: POST /api/documents/:id/reviewers. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "reviewerId": {
+                "type": "string",
+                "description": "The userId to assign as a reviewer for this document."
+              }
+            },
+            "required": [
+              "reviewerId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path",
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/documents/:id/reviewers"
+      },
+      "audience": "user",
+      "permissions": [
+        "review.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "reviewers_unassign",
+      "description": "Remove a reviewer assignment from the document..  REST: DELETE /api/documents/:id/reviewers/:userId. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              },
+              "userId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id",
+              "userId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "DELETE",
+        "path": "/api/documents/:id/reviewers/:userId"
+      },
+      "audience": "user",
+      "permissions": [
+        "review.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "reviews_list",
+      "description": "List review tasks (own tasks for non-managers; filterable for managers)..  REST: GET /api/reviews. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "object",
+            "properties": {
+              "assignedToId": {
+                "type": "string"
+              },
+              "documentId": {
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "pending",
+                  "in_progress",
+                  "completed",
+                  "overdue",
+                  "cancelled"
+                ],
+                "type": "string"
+              },
+              "dueFrom": {
+                "type": "string"
+              },
+              "dueTo": {
+                "type": "string"
+              },
+              "mine": {
+                "type": "boolean"
+              },
+              "page": {
+                "minimum": 1,
+                "default": 1,
+                "type": "number"
+              },
+              "pageSize": {
+                "minimum": 1,
+                "maximum": 200,
+                "default": 25,
+                "type": "number"
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/reviews"
+      },
+      "audience": "user",
+      "permissions": [],
+      "scopes": []
+    },
+    {
+      "name": "reviews_compliance",
+      "description": "Clinic-wide review-compliance snapshot (% current, due-soon, overdue)..  REST: GET /api/reviews/compliance-summary. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/reviews/compliance-summary"
+      },
+      "audience": "user",
+      "permissions": [
+        "review.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "reviews_run_sweep",
+      "description": "Run the review sweep now (generate due tasks + mark overdue). Admin/test..  REST: POST /api/reviews/run-sweep. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/reviews/run-sweep"
+      },
+      "audience": "user",
+      "permissions": [
+        "review.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "reviews_get_task",
+      "description": "Get a single review task (own task unless review.manage)..  REST: GET /api/reviews/tasks/:taskId. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "taskId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "taskId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/reviews/tasks/:taskId"
+      },
+      "audience": "user",
+      "permissions": [],
+      "scopes": []
+    },
+    {
+      "name": "reviews_complete",
+      "description": "Complete a review task; advances the document nextReviewDate by cadence..  REST: POST /api/reviews/:taskId/complete. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "taskId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "taskId"
+            ],
+            "additionalProperties": false
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "notes": {
+                "type": "string",
+                "description": "Reviewer notes captured on the task."
+              },
+              "newNextReviewDate": {
+                "type": "string",
+                "description": "ISO date for the next review (required for none/custom cadence)."
+              },
+              "signatureName": {
+                "type": "string",
+                "description": "Typed sign-off name (defaults to the acting user)."
+              },
+              "signatureRole": {
+                "type": "string",
+                "description": "Reviewer's role/title recorded with the sign-off."
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path",
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/reviews/:taskId/complete"
+      },
+      "audience": "user",
+      "permissions": [],
+      "scopes": []
+    },
+    {
+      "name": "saved_searches_list",
+      "description": "List saved searches visible to the current user..  REST: GET /api/saved-searches. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/saved-searches"
+      },
+      "audience": "user",
+      "permissions": [],
+      "scopes": []
+    },
+    {
+      "name": "saved_searches_create",
+      "description": "Create a saved document-library search..  REST: POST /api/saved-searches. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "private",
+                  "role",
+                  "global"
+                ]
+              },
+              "roleName": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "filters": {
+                "type": "object"
+              },
+              "sort": {
+                "anyOf": [
+                  {
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "filters"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/saved-searches"
+      },
+      "audience": "user",
+      "permissions": [],
+      "scopes": []
+    },
+    {
+      "name": "saved_searches_update",
+      "description": "Update a saved search..  REST: PATCH /api/saved-searches/:id. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "private",
+                  "role",
+                  "global"
+                ]
+              },
+              "roleName": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "filters": {
+                "type": "object"
+              },
+              "sort": {
+                "anyOf": [
+                  {
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "filters"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path",
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "PATCH",
+        "path": "/api/saved-searches/:id"
+      },
+      "audience": "user",
+      "permissions": [],
+      "scopes": []
+    },
+    {
+      "name": "saved_searches_run",
+      "description": "Record that a saved search was used..  REST: POST /api/saved-searches/:id/run. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/saved-searches/:id/run"
+      },
+      "audience": "user",
+      "permissions": [],
+      "scopes": []
+    },
+    {
+      "name": "saved_searches_remove",
+      "description": "Delete a saved search..  REST: DELETE /api/saved-searches/:id. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "DELETE",
+        "path": "/api/saved-searches/:id"
+      },
+      "audience": "user",
+      "permissions": [],
+      "scopes": []
+    },
+    {
+      "name": "smtp_get_config",
+      "description": "Get the effective SMTP configuration (never the password)..  REST: GET /api/smtp/config. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/smtp/config"
+      },
+      "audience": "user",
+      "permissions": [
+        "smtp.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "smtp_update_config",
+      "description": "Upsert the SMTP configuration. Password is write-only + encrypted at rest; omit to keep it, empty string clears it..  REST: PUT /api/smtp/config. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "object",
+            "properties": {
+              "host": {
+                "type": "string"
+              },
+              "port": {
+                "type": "number",
+                "minimum": 1,
+                "maximum": 65535
+              },
+              "secure": {
+                "type": "boolean",
+                "description": "Use implicit TLS (SMTPS, typically port 465)."
+              },
+              "username": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "password": {
+                "type": "string",
+                "description": "Write-only. Omit to keep the current password; empty string clears it."
+              },
+              "fromAddress": {
+                "type": "string"
+              },
+              "fromName": {
+                "type": "string"
+              },
+              "enabled": {
+                "type": "boolean",
+                "description": "When true, MailService uses this config over the SMTP_* env."
+              }
+            },
+            "required": [
+              "host",
+              "port",
+              "secure",
+              "fromAddress",
+              "fromName",
+              "enabled"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "PUT",
+        "path": "/api/smtp/config"
+      },
+      "audience": "user",
+      "permissions": [
+        "smtp.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "smtp_test",
+      "description": "Send a test email via the effective config (logged + audited)..  REST: POST /api/smtp/test. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "object",
+            "properties": {
+              "to": {
+                "type": "string",
+                "description": "Recipient of the test email."
+              }
+            },
+            "required": [
+              "to"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/smtp/test"
+      },
+      "audience": "user",
+      "permissions": [
+        "smtp.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "smtp_notifications",
+      "description": "Paginated notification delivery log (newest first)..  REST: GET /api/smtp/notifications. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "enum": [
+                  "review_reminder",
+                  "review_overdue",
+                  "password_reset",
+                  "account_locked",
+                  "smtp_test",
+                  "other"
+                ],
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "sent",
+                  "failed"
+                ],
+                "type": "string"
+              },
+              "page": {
+                "minimum": 1,
+                "default": 1,
+                "type": "number"
+              },
+              "pageSize": {
+                "minimum": 1,
+                "maximum": 200,
+                "default": 25,
+                "type": "number"
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/smtp/notifications"
+      },
+      "audience": "user",
+      "permissions": [
+        "smtp.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "storage_admin_config",
+      "description": "Get the effective storage configuration (default bucket + prefixes)..  REST: GET /api/storage/config. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/storage/config"
+      },
+      "audience": "user",
+      "permissions": [
+        "storage.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "storage_admin_list_buckets",
+      "description": "List all buckets..  REST: GET /api/storage/buckets. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/storage/buckets"
+      },
+      "audience": "user",
+      "permissions": [
+        "storage.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "storage_admin_create_bucket",
+      "description": "Create a private, versioned bucket..  REST: POST /api/storage/buckets. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "DNS-style bucket name (lowercase, 3–63 chars)."
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/storage/buckets"
+      },
+      "audience": "user",
+      "permissions": [
+        "storage.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "storage_admin_list_prefixes",
+      "description": "List the immediate folders (prefixes) in a bucket..  REST: GET /api/storage/prefixes. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "object",
+            "properties": {
+              "bucket": {
+                "type": "string"
+              },
+              "prefix": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "bucket"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/storage/prefixes"
+      },
+      "audience": "user",
+      "permissions": [
+        "storage.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "storage_admin_create_prefix",
+      "description": "Create a folder (prefix) marker in a bucket..  REST: POST /api/storage/prefixes. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "object",
+            "properties": {
+              "bucket": {
+                "type": "string",
+                "description": "Target bucket."
+              },
+              "prefix": {
+                "type": "string",
+                "description": "Folder path, e.g. \"policies/intake\". Normalized server-side."
+              }
+            },
+            "required": [
+              "bucket",
+              "prefix"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/storage/prefixes"
+      },
+      "audience": "user",
+      "permissions": [
+        "storage.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "roles_list",
+      "description": "List all roles (for assignment UI)..  REST: GET /api/roles. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/roles"
+      },
+      "audience": "user",
+      "permissions": [
+        "user.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "users_list",
+      "description": "List all users..  REST: GET /api/users. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/users"
+      },
+      "audience": "user",
+      "permissions": [
+        "user.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "users_get",
+      "description": "Get a user by id..  REST: GET /api/users/:id. Existing permissions, ACLs and ownership checks apply.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "GET",
+        "path": "/api/users/:id"
+      },
+      "audience": "user",
+      "permissions": [
+        "user.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "users_create",
+      "description": "Create a user with a temporary password (returned once)..  REST: POST /api/users. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "object",
+            "properties": {
+              "email": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "password": {
+                "type": "string",
+                "description": "Optional temporary password. If omitted, one is generated and returned once.",
+                "minLength": 8
+              },
+              "roles": {
+                "description": "Role names to assign.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "email",
+              "name"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/users"
+      },
+      "audience": "user",
+      "permissions": [
+        "user.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "users_update",
+      "description": "Update a user (name, title, status)..  REST: PATCH /api/users/:id. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "disabled"
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path",
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "PATCH",
+        "path": "/api/users/:id"
+      },
+      "audience": "user",
+      "permissions": [
+        "user.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "users_disable",
+      "description": "Disable a user and revoke their refresh tokens..  REST: POST /api/users/:id/disable. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/users/:id/disable"
+      },
+      "audience": "user",
+      "permissions": [
+        "user.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "users_enable",
+      "description": "Re-enable a disabled user..  REST: POST /api/users/:id/enable. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/users/:id/enable"
+      },
+      "audience": "user",
+      "permissions": [
+        "user.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "users_lock",
+      "description": "Lock a user out of sign-in (credential lockout, distinct from disable)..  REST: POST /api/users/:id/lock. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/users/:id/lock"
+      },
+      "audience": "user",
+      "permissions": [
+        "user.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "users_unlock",
+      "description": "Clear a user lock and reset their failed-login counter..  REST: POST /api/users/:id/unlock. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/users/:id/unlock"
+      },
+      "audience": "user",
+      "permissions": [
+        "user.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "users_reset_password",
+      "description": "Admin password reset: set a temp password (returned once) or email a reset link..  REST: POST /api/users/:id/reset-password. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome. Sensitive inputs/results may enter chat history; avoid exposing credentials to shared chats.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "temp",
+                  "email"
+                ],
+                "description": "`temp` sets a temporary password returned to the admin once (user must change it); `email` sends the user a self-service reset link."
+              }
+            },
+            "required": [
+              "mode"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path",
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/users/:id/reset-password"
+      },
+      "audience": "user",
+      "permissions": [
+        "user.manage"
+      ],
+      "scopes": []
+    },
+    {
+      "name": "users_assign_roles",
+      "description": "Replace a user's role assignments..  REST: POST /api/users/:id/roles. Existing permissions, ACLs and ownership checks apply. Changes state or issues editor credentials; never automatically retry after an uncertain outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "roles": {
+                "description": "Full set of role names for the user (replaces existing assignments).",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "roles"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "path",
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "rest": {
+        "method": "POST",
+        "path": "/api/users/:id/roles"
+      },
+      "audience": "user",
+      "permissions": [
+        "user.manage"
+      ],
+      "scopes": []
+    }
+  ],
+  "exclusions": [
+    {
+      "method": "POST",
+      "path": "/api/auth/login",
+      "reason": "Credential bootstrap; sign in outside model-visible tools"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/refresh",
+      "reason": "Credential bootstrap; refresh outside model-visible tools"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/logout",
+      "reason": "Credential bootstrap; revoke refresh credentials outside model-visible tools"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/forgot-password",
+      "reason": "Credential recovery outside model-visible tools"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/reset-password",
+      "reason": "Credential recovery outside model-visible tools"
+    },
+    {
+      "method": "GET",
+      "path": "/api/auth/oidc/azure",
+      "reason": "Browser OIDC redirect protocol"
+    },
+    {
+      "method": "GET",
+      "path": "/api/auth/oidc/azure/callback",
+      "reason": "Browser OIDC callback protocol"
+    },
+    {
+      "method": "GET",
+      "path": "/api/documents/:id/versions/:versionId/content",
+      "reason": "OnlyOffice source protocol; purpose-scoped signed token"
+    },
+    {
+      "method": "POST",
+      "path": "/api/documents/:id/editor-callback",
+      "reason": "OnlyOffice save protocol; signed callback and scoped token"
+    }
+  ]
+}

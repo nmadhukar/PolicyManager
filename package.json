@@ -18,7 +18,9 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
-    "db:seed": "npm run seed --workspace @policymanager/api"
+    "db:seed": "npm run seed --workspace @policymanager/api",
+    "mcp:catalog": "ts-node --project apps/api/tsconfig.json scripts/mcp-catalog.ts",
+    "mcp:smoke": "node scripts/mcp-smoke.mjs"
   },
   "engines": {
     "node": ">=20"

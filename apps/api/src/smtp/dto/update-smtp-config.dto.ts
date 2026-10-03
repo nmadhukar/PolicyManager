@@ -33,7 +33,7 @@ export class UpdateSmtpConfigDto implements UpdateSmtpConfigInput {
   @IsBoolean()
   secure!: boolean;
 
-  @ApiPropertyOptional({ nullable: true })
+  @ApiPropertyOptional({ type: String, nullable: true })
   @IsOptional()
   @IsString()
   @MaxLength(255)

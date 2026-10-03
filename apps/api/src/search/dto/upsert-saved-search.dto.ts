@@ -22,7 +22,7 @@ export class UpsertSavedSearchDto {
   @IsIn(SAVED_SEARCH_SCOPES as unknown as string[])
   scope?: SavedSearchScope;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ type: String, nullable: true })
   @IsOptional()
   @IsString()
   @MaxLength(120)
@@ -33,7 +33,7 @@ export class UpsertSavedSearchDto {
   @MaxJsonSize(MAX_SAVED_SEARCH_JSON_BYTES)
   filters!: Record<string, unknown>;
 
-  @ApiPropertyOptional({ type: Object })
+  @ApiPropertyOptional({ type: Object, nullable: true })
   @IsOptional()
   @IsObject()
   @MaxJsonSize(MAX_SAVED_SEARCH_JSON_BYTES)

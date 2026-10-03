@@ -20,3 +20,13 @@ Documentation is part of the Definition of Done. Any behavior change must update
 - Prefer task-focused user guides over abstract feature descriptions.
 - Explain non-obvious developer contracts and extension points.
 - Update docs in the same ticket that changes behavior.
+
+## MCP and chat integrations
+
+- [MCP API contract](./api/mcp.md): 107 tools, authentication, inputs, files, results and errors.
+- [Hermes and bot setup](./admin/mcp-hermes.md): client configuration and credential lifecycle.
+- [Chat workflows](./user/mcp-chat.md): policy, review and acknowledgment actions.
+- [Developer guide](./developer/mcp.md) and [operations runbook](./runbooks/mcp.md): extension, verification, activation and rollback.
+- [REST operation inventory](./api/mcp-route-inventory.md) and [tool schemas](./api/mcp-tools.json): all 116 current operations accounted for.
+- [Accepted design](./superpowers/specs/2026-10-03-mcp-hermes-design.md) and [ADR-0004](../.ai/adr/0004-mcp-rest-adapter.md): architecture and approved boundaries.
+- [MCP delivery tickets](../.ai/tasks/MCP_INTEGRATION.md): implementation boundaries, tests, documentation, rollback, and required completion evidence.

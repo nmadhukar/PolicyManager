@@ -1,5 +1,7 @@
 # Public API v1
 
+For authenticated chat actions and integration reads, see [MCP API](./mcp.md), [route coverage](./mcp-route-inventory.md), and [tool schemas](./mcp-tools.json).
+
 Human-readable integration notes for the PolicyManager public API (Phase 7). The
 machine-readable contract is the OpenAPI/Swagger document served at `/api/docs`
 (tag **public-api-v1**, security scheme **api-key**).

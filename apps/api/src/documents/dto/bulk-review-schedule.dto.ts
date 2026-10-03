@@ -124,7 +124,7 @@ export class BulkReviewScheduleDto {
   @IsIn(REVIEW_CADENCES as unknown as string[])
   reviewCadence!: ReviewCadence;
 
-  @ApiPropertyOptional({ nullable: true, example: '2026-10-01' })
+  @ApiPropertyOptional({ type: String, nullable: true, example: '2026-10-01' })
   @IsOptional()
   @IsISO8601()
   nextReviewDate?: string | null;
@@ -135,7 +135,7 @@ export class UpdateReviewScheduleDto {
   @IsIn(REVIEW_CADENCES as unknown as string[])
   reviewCadence!: ReviewCadence;
 
-  @ApiPropertyOptional({ nullable: true, example: '2026-10-01' })
+  @ApiPropertyOptional({ type: String, nullable: true, example: '2026-10-01' })
   @IsOptional()
   @IsISO8601()
   nextReviewDate?: string | null;

@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: policy
           POSTGRES_PASSWORD: policy
@@ -37,5 +37,40 @@ jobs:
       - run: npm run build --workspace @policymanager/shared
       - run: npm run typecheck
       - run: npm run lint
+      - run: npm run mcp:catalog -- --check
       - run: npm test
       - run: npm run build
+      # Live MCP acceptance uses the locked production database/storage stack.
+      - name: Start disposable MinIO
+        run: |
+          docker run -d --name policymanager-mcp-minio -p 59000:9000 \
+            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:latest server /data
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:59000/minio/health/ready; then exit 0; fi
+            sleep 1
+          done
+          docker logs policymanager-mcp-minio
+          exit 1
+      - run: npm run prisma:deploy
+      - name: MCP live workflow acceptance
+        run: npm run test:e2e:mcp --workspace @policymanager/api
+        env:
+          MCP_ENABLED: 'true'
+          NODE_ENV: test
+          THROTTLE_DISABLED: 'true'
+          JWT_ACCESS_SECRET: ci-only-mcp-access-secret
+          JWT_REFRESH_SECRET: ci-only-mcp-refresh-secret
+          APP_ENCRYPTION_KEY: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          ONLYOFFICE_JWT_SECRET: ci-only-mcp-office-secret
+          S3_ENDPOINT: http://127.0.0.1:59000
+          S3_PUBLIC_ENDPOINT: http://127.0.0.1:59000
+          S3_ACCESS_KEY_ID: minioadmin
+          S3_SECRET_ACCESS_KEY: minioadmin
+          S3_REGION: us-east-1
+          S3_BUCKET: policymanager-mcp-e2e
+          S3_FORCE_PATH_STYLE: 'true'
+          S3_AUTO_CREATE: 'true'
+          RAG_ENABLED: 'false'
+          OCR_ENABLED: 'false'
+          OIDC_ENABLED: 'false'

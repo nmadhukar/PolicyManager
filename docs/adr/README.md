@@ -2,6 +2,8 @@
 
 Accepted ADRs live here.
 
+The canonical accepted MCP decision is [ADR-0004: Authenticated MCP over existing REST](../../.ai/adr/0004-mcp-rest-adapter.md).
+
 Use `.ai/adr/ADR_TEMPLATE.md` for new ADRs.
 
 Initial ADRs to create:

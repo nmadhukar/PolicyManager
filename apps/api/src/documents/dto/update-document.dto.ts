@@ -38,7 +38,7 @@ export class UpdateDocumentDto {
   @MaxLength(100)
   documentNumber?: string;
 
-  @ApiPropertyOptional({ nullable: true })
+  @ApiPropertyOptional({ type: String, nullable: true })
   @IsOptional()
   @IsString()
   categoryId?: string | null;
@@ -71,12 +71,12 @@ export class UpdateDocumentDto {
   @IsIn(REVIEW_CADENCES as unknown as string[])
   reviewCadence?: ReviewCadence;
 
-  @ApiPropertyOptional({ nullable: true, example: '2026-09-01' })
+  @ApiPropertyOptional({ type: String, nullable: true, example: '2026-09-01' })
   @IsOptional()
   @IsISO8601()
   nextReviewDate?: string | null;
 
-  @ApiPropertyOptional({ nullable: true, example: '2026-01-15' })
+  @ApiPropertyOptional({ type: String, nullable: true, example: '2026-01-15' })
   @IsOptional()
   @IsISO8601()
   effectiveDate?: string | null;

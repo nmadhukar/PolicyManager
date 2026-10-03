@@ -22,6 +22,7 @@ import { SearchModule } from './search/search.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { EvidenceModule } from './evidence/evidence.module';
 import { RagModule } from './rag/rag.module';
+import { McpModule } from './mcp/mcp.module';
 
 @Module({
   imports: [
@@ -70,6 +71,7 @@ import { RagModule } from './rag/rag.module';
     // RAG chatbot (ADR-0002): embedding, hybrid retrieval, agent layer, and the
     // grounded chat endpoint + metrics.
     RagModule,
+    McpModule,
   ],
   // SM3: enforce the throttler globally (auth routes add tighter @Throttle limits).
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

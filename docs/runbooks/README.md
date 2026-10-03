@@ -1,5 +1,7 @@
 # Runbooks
 
+- [MCP activation, smoke checks, troubleshooting and rollback](./mcp.md).
+
 This folder contains operational procedures.
 
 Planned runbooks:

@@ -27,6 +27,11 @@ npm run dev:web    # http://localhost:5173
 
 ## Quality gates
 
+MCP and Hermes: set `MCP_ENABLED=true` to expose authenticated tools at `/api/mcp`.
+See [the integration guide](docs/api/mcp.md), [Hermes setup](docs/admin/mcp-hermes.md),
+and [activation/verification](docs/runbooks/mcp.md). Public API credentials remain
+read-only; user JWTs use existing RBAC for actions.
+
 ```bash
 npm run typecheck
 npm run lint

@@ -1,5 +1,7 @@
 # User Guides
 
+For Hermes and bot workflows, see [Use PolicyManager from chat](./mcp-chat.md).
+
 This folder contains task-focused guides for non-technical users.
 
 Available guides:

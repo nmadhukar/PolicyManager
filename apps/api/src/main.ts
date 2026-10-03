@@ -4,6 +4,8 @@ import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
+import { installMcpBodyParsing } from './mcp/mcp.bootstrap';
+import { McpService } from './mcp/mcp.service';
 
 /**
  * SM4: CORS origin from an explicit allow-list (`WEB_APP_URL` / `FRONTEND_URL` /
@@ -29,7 +31,7 @@ function corsOrigin(): boolean | string[] {
 }
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { bodyParser: false });
 
   // FINDING-013: baseline hardening headers (X-Content-Type-Options,
   // X-Frame-Options, etc.) on every response. helmet's default CSP would
@@ -48,6 +50,7 @@ async function bootstrap() {
     }),
   );
 
+  installMcpBodyParsing(app);
   app.setGlobalPrefix('api', { exclude: ['health'] });
   app.useGlobalPipes(
     new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }),
@@ -76,6 +79,11 @@ async function bootstrap() {
     .build();
   const document = SwaggerModule.createDocument(app, swaggerConfig);
   SwaggerModule.setup('api/docs', app, document);
+  app.get(McpService).configure(document, () => {
+    const address = app.getHttpServer().address();
+    if (!address || typeof address === 'string') throw new Error('MCP requires a listening TCP socket');
+    return address.port;
+  });
 
   // FINDING-015: without this, NestJS lifecycle hooks (e.g.
   // PrismaService.onModuleDestroy's $disconnect()) never run on SIGTERM/SIGINT,
