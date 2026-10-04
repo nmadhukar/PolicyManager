@@ -27,7 +27,9 @@ import { useFocusTrap } from './useFocusTrap';
 
 // Load the pdf.js worker bundled inside react-pdf. Importing the app-level
 // pdfjs-dist worker can drift from react-pdf's API version and break previews.
-pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+// Use a fresh cache key after the nginx MIME fix: an unchanged asset path can
+// retain a pre-fix application/octet-stream response for its one-year lifetime.
+pdfjs.GlobalWorkerOptions.workerSrc = `${pdfWorkerUrl}?worker=module`;
 
 const DEFAULT_RECT: AnnotationRect = { pageNumber: 1, x: 0.08, y: 0.08, width: 0.28, height: 0.08 };
 const EMPTY_PAGE_ANNOTATIONS: DocumentAnnotationItem[] = [];

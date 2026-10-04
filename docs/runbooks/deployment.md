@@ -48,3 +48,7 @@ shows "This document could not be rendered", rebuild/redeploy the web image,
 verify the worker header and use Ctrl+Shift+R before reopening the preview.
 Preserve `nosniff` and the existing framing policy; storage permissions do not
 need weakening to repair a module MIME failure.
+
+The viewer uses a new worker cache key (`?worker=module`) so browsers holding
+the old one-year immutable response can recover after an ordinary app reload.
+Restarting Docker alone does not evict an already cached worker response.

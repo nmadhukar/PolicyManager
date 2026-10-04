@@ -62,7 +62,10 @@ nginx's standard MIME map for other assets. A200 worker response with
 PDF and worker versions are correct. See [nginx types](https://nginx.org/en/docs/http/ngx_http_core_module.html#types).
 Validate deployed viewing with a real rendered PDF canvas, not only an exported
 PDF or mocked react-pdf unit test. Keep `nosniff`; after redeploying, hard-refresh
-the browser to replace cached worker responses.
+the browser to replace cached worker responses. The worker URL includes
+`?worker=module` to bypass pre-fix responses cached under the unchanged asset
+path. An ordinary app reload loads the new bundle and fresh worker cache key;
+the cache regression uses real Chrome HTTP caching, without request interception.
 
 ## OnlyOffice editing (`documents/onlyoffice.service.ts`)
 
