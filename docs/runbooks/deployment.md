@@ -37,3 +37,14 @@ Secrets come from the platform secret store / env — never committed. `APP_ENCR
 4. Seed baseline roles/permissions/admin once (one-off job against the prod `DATABASE_URL`): `npm run db:seed` from a checkout, or a Coolify one-off command. Idempotent.
 5. Deploy the web with `API_BASE_URL` set to the public API origin.
 6. Log in as the seeded admin (`admin@policymanager.local` / seed password) and immediately change the password.
+
+## PDF preview smoke check
+
+Open an uploaded PDF or a TXT/Office version with a generated rendition and click
+**View**. Confirm a page renders. The bundled `/assets/pdf.worker.*.mjs` must
+return a JavaScript Content-Type (the web nginx image maps `.mjs` to
+`application/javascript`). If Chrome reports a module MIME error and the viewer
+shows "This document could not be rendered", rebuild/redeploy the web image,
+verify the worker header and use Ctrl+Shift+R before reopening the preview.
+Preserve `nosniff` and the existing framing policy; storage permissions do not
+need weakening to repair a module MIME failure.

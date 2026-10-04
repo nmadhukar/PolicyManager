@@ -55,6 +55,15 @@ The pdf.js worker must stay version-locked to the pdf.js API bundled by
 the versions are proven identical. A mismatch causes PDF previews to fail with
 an API/Worker version error.
 
+The emitted worker asset uses `.mjs` and must be served with a JavaScript MIME
+type. `apps/web/nginx.conf` adds `application/javascript mjs` while retaining
+nginx's standard MIME map for other assets. A200 worker response with
+`application/octet-stream` fails the browser's module MIME check even when the
+PDF and worker versions are correct. See [nginx types](https://nginx.org/en/docs/http/ngx_http_core_module.html#types).
+Validate deployed viewing with a real rendered PDF canvas, not only an exported
+PDF or mocked react-pdf unit test. Keep `nosniff`; after redeploying, hard-refresh
+the browser to replace cached worker responses.
+
 ## OnlyOffice editing (`documents/onlyoffice.service.ts`)
 
 Editing docx/xlsx/pptx uses a self-hosted OnlyOffice DocumentServer.
